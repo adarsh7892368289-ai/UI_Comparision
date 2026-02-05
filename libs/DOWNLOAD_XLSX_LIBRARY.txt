@@ -1,0 +1,29 @@
+IMPORTANT: SheetJS Library Required
+====================================
+
+This extension requires the SheetJS library to generate Excel files.
+
+Download Instructions:
+----------------------
+
+Option 1: Direct Download
+1. Visit: https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js
+2. Save the file as "xlsx.full.min.js" in the "libs" folder
+
+Option 2: Using npm
+1. Run: npm install xlsx
+2. Copy: node_modules/xlsx/dist/xlsx.full.min.js
+3. Paste into the "libs" folder as "xlsx.full.min.js"
+
+Option 3: From GitHub
+1. Visit: https://github.com/SheetJS/sheetjs
+2. Download the latest release
+3. Extract and copy dist/xlsx.full.min.js to the "libs" folder
+
+File Location:
+--------------
+chrome-extension/
+└── libs/
+    └── xlsx.full.min.js  <- Place the file here
+
+The extension will NOT work without this library!

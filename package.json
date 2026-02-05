@@ -1,0 +1,23 @@
+{
+  "name": "web-page-element-comparator",
+  "version": "1.0.0",
+  "description": "Chrome extension for extracting and comparing web page elements",
+  "scripts": {
+    "setup": "npm install && npm run copy-xlsx",
+    "copy-xlsx": "cp node_modules/xlsx/dist/xlsx.full.min.js libs/xlsx.full.min.js",
+    "clean": "rm -rf node_modules package-lock.json"
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  },
+  "keywords": [
+    "chrome-extension",
+    "web-scraping",
+    "element-extraction",
+    "comparison",
+    "testing",
+    "qa"
+  ],
+  "author": "",
+  "license": "MIT"
+}

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web Page Comparator</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Web Page Element Comparator</h1>
+    
+    <!-- Tab Navigation -->
+    <div class="tabs">
+      <button class="tab-button active" data-tab="extract">Extract Elements</button>
+      <button class="tab-button" data-tab="compare">Compare Reports</button>
+    </div>
+
+    <!-- Extract Tab -->
+    <div id="extract-tab" class="tab-content active">
+      <div class="section">
+        <h2>Extract Web Elements</h2>
+        <p class="info">Click "Extract Elements" to capture all web elements from the current page.</p>
+        
+        <div class="form-group">
+          <label for="page-url">Page URL (Optional):</label>
+          <input type="text" id="page-url" placeholder="Leave empty to use current page URL" readonly>
+        </div>
+
+        <button id="extract-btn" class="primary-btn">Extract Elements</button>
+        
+        <div id="extract-status" class="status"></div>
+        
+        <div id="extracted-reports" class="reports-list">
+          <h3>Saved Reports</h3>
+          <div id="reports-container"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Compare Tab -->
+    <div id="compare-tab" class="tab-content">
+      <div class="section">
+        <h2>Compare Reports</h2>
+        <p class="info">Select two reports to compare their differences.</p>
+        
+        <div class="form-group">
+          <label for="report1-select">Report 1:</label>
+          <select id="report1-select">
+            <option value="">-- Select Report 1 --</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="report2-select">Report 2:</label>
+          <select id="report2-select">
+            <option value="">-- Select Report 2 --</option>
+          </select>
+        </div>
+
+        <button id="compare-btn" class="primary-btn">Compare Reports</button>
+        
+        <div id="compare-status" class="status"></div>
+        
+        <div id="comparison-results" class="results"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="libs/xlsx.full.min.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

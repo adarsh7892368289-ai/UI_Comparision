@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Web Page Element Comparator",
+  "version": "1.0.0",
+  "description": "Extract and compare web page elements across different versions",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "Images/icon16.png",
+      "48": "Images/icon48.png",
+      "128": "Images/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/scripts/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "Images/icon16.png",
+    "48": "Images/icon48.png",
+    "128": "Images/icon128.png"
+  }
+}
