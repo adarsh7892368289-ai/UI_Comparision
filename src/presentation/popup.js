@@ -1,27 +1,34 @@
-// Popup script for Web Page Element Comparator
+//Popup Script - Extension UI controller
+//Handles report management, extraction orchestration, and comparison
+
+import config from '../infrastructure/config.js';
+import logger from '../infrastructure/logger.js';
+import errorTracker, { ErrorCodes } from '../infrastructure/error-tracker.js';
 
 let reports = [];
 
-// Initialize popup
+// Initialize infrastructure
+config.init();
+logger.init();
+errorTracker.init();
+
+logger.setContext({ script: 'popup' });
+
 document.addEventListener('DOMContentLoaded', async () => {
-  // Load saved reports
+  logger.info('Popup opened');
+  
   await loadReports();
-  
-  // Get current tab URL and display it
   await loadCurrentPageUrl();
-  
-  // Set up tab navigation
   setupTabs();
   
-  // Set up event listeners
   document.getElementById('extract-btn').addEventListener('click', extractElements);
   document.getElementById('compare-btn').addEventListener('click', compareReports);
   
-  // Populate report selectors
   populateReportSelectors();
 });
 
-// Get and display current page URL
+
+//Get and display current page URL
 async function loadCurrentPageUrl() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -29,76 +36,70 @@ async function loadCurrentPageUrl() {
       document.getElementById('page-url').value = tab.url;
     }
   } catch (error) {
-    console.error('Error getting current tab URL:', error);
+    logger.error('Failed to get current tab URL', { error: error.message });
   }
 }
 
-// Tab switching functionality
+//Tab switching functionality
 function setupTabs() {
   const tabButtons = document.querySelectorAll('.tab-button');
   
   tabButtons.forEach(button => {
     button.addEventListener('click', () => {
-      // Remove active class from all buttons and contents
       document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
       
-      // Add active class to clicked button and corresponding content
       button.classList.add('active');
       const tabName = button.dataset.tab;
       document.getElementById(`${tabName}-tab`).classList.add('active');
+      
+      logger.debug('Tab switched', { tab: tabName });
     });
   });
 }
 
-// Extract elements from current page
+//Extract elements from current page
 async function extractElements() {
   const statusDiv = document.getElementById('extract-status');
   const extractBtn = document.getElementById('extract-btn');
   const pageUrlInput = document.getElementById('page-url');
   
   try {
-    // Disable button during extraction
     extractBtn.disabled = true;
     extractBtn.textContent = 'Extracting...';
     
     statusDiv.className = 'status info';
     statusDiv.textContent = 'Extracting elements from the page...';
     
-    // Get the current active tab
+    logger.info('Starting extraction');
+    const startTime = performance.now();
+    
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     
     if (!tab) {
       throw new Error('No active tab found');
     }
     
-    // Check if the URL is a chrome:// or other restricted URL
     if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('edge://')) {
       throw new Error('Cannot extract elements from browser internal pages');
     }
     
-    // Use the URL from the input field or fall back to tab URL
     const pageUrl = pageUrlInput.value.trim() || tab.url;
     
-    // Try to inject content script if not already present
     try {
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         files: ['src/scripts/content.js']
       });
     } catch (injectionError) {
-      // Content script might already be injected, continue
-      console.log('Content script injection:', injectionError.message);
+      logger.debug('Content script injection', { error: injectionError.message });
     }
     
-    // Wait a moment for script to initialize
     await new Promise(resolve => setTimeout(resolve, 100));
     
-    // Send message to content script
     const response = await chrome.tabs.sendMessage(tab.id, { action: 'extractElements' });
     
     if (response && response.success) {
-      // Create report object
       const report = {
         id: Date.now().toString(),
         url: pageUrl,
@@ -106,13 +107,19 @@ async function extractElements() {
         data: response.data
       };
       
-      // Save report
       reports.push(report);
       await saveReports();
       
-      // Update UI
       displayReports();
       populateReportSelectors();
+      
+      const duration = performance.now() - startTime;
+      
+      logger.info('Extraction successful', { 
+        reportId: report.id,
+        elementCount: response.data.totalElements,
+        duration: Math.round(duration)
+      });
       
       statusDiv.className = 'status success';
       statusDiv.textContent = `Successfully extracted ${response.data.totalElements} elements from the page!`;
@@ -120,41 +127,68 @@ async function extractElements() {
       throw new Error(response?.error || 'Failed to extract elements');
     }
   } catch (error) {
+    logger.error('Extraction failed', { error: error.message });
+    
+    errorTracker.logError(
+      ErrorCodes.EXTRACTION_TIMEOUT,
+      'Extraction failed in popup',
+      { error: error.message }
+    );
+    
     statusDiv.className = 'status error';
     if (error.message.includes('Cannot access')) {
       statusDiv.textContent = 'Error: Cannot access this page. Try reloading the page first, then click Extract Elements again.';
     } else {
       statusDiv.textContent = `Error: ${error.message}`;
     }
-    console.error('Extraction error:', error);
   } finally {
-    // Re-enable button
     extractBtn.disabled = false;
     extractBtn.textContent = 'Extract Elements';
   }
 }
 
-// Load reports from storage
+//Load reports from storage
 async function loadReports() {
   try {
-    const result = await chrome.storage.local.get(['reports']);
-    reports = result.reports || [];
+    const storageKey = config.get('storage.keys.reports', 'page_comparator_reports');
+    const result = await chrome.storage.local.get([storageKey]);
+    reports = result[storageKey] || [];
+    
+    logger.debug('Reports loaded', { count: reports.length });
     displayReports();
   } catch (error) {
-    console.error('Error loading reports:', error);
+    logger.error('Failed to load reports', { error: error.message });
   }
 }
 
-// Save reports to storage
+//Save reports to storage
 async function saveReports() {
   try {
-    await chrome.storage.local.set({ reports: reports });
+    const storageKey = config.get('storage.keys.reports', 'page_comparator_reports');
+    const maxReports = config.get('storage.maxReports', 50);
+    
+    if (reports.length > maxReports) {
+      logger.warn('Report limit exceeded, removing oldest', { 
+        current: reports.length,
+        max: maxReports 
+      });
+      reports = reports.slice(-maxReports);
+    }
+    
+    await chrome.storage.local.set({ [storageKey]: reports });
+    logger.debug('Reports saved', { count: reports.length });
   } catch (error) {
-    console.error('Error saving reports:', error);
+    logger.error('Failed to save reports', { error: error.message });
+    
+    errorTracker.logError(
+      ErrorCodes.STORAGE_WRITE_FAILED,
+      'Failed to save reports',
+      { error: error.message }
+    );
   }
 }
 
-// Display saved reports
+//Display saved reports
 function displayReports() {
   const container = document.getElementById('reports-container');
   
@@ -182,7 +216,6 @@ function displayReports() {
     `;
   }).join('');
   
-  // Attach event listeners to the buttons
   container.querySelectorAll('.download-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       const reportId = e.target.getAttribute('data-report-id');
@@ -198,22 +231,24 @@ function displayReports() {
   });
 }
 
-// Download report as Excel
+//Download report as Excel
 function downloadReport(reportId) {
   const report = reports.find(r => r.id === reportId);
   if (!report) {
+    logger.warn('Report not found for download', { reportId });
     alert('Report not found');
     return;
   }
   
-  // Check if XLSX library is loaded
   if (typeof XLSX === 'undefined') {
+    logger.error('XLSX library not loaded');
     alert('Excel library not loaded. Please ensure xlsx.full.min.js is in the libs folder.');
     return;
   }
   
   try {
-    // Prepare data for Excel
+    logger.info('Downloading report', { reportId, elementCount: report.data.totalElements });
+    
     const worksheetData = report.data.elements.map(el => ({
       'Index': el.index,
       'Tag Name': el.tagName,
@@ -236,28 +271,28 @@ function downloadReport(reportId) {
       'Dimensions': el.dimensions
     }));
     
-    // Create workbook
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.json_to_sheet(worksheetData);
     
-    // Add worksheet to workbook
     XLSX.utils.book_append_sheet(wb, ws, 'Elements');
     
-    // Generate filename
     const date = new Date(report.timestamp);
     const filename = `web_elements_${date.getFullYear()}-${(date.getMonth()+1).toString().padStart(2,'0')}-${date.getDate().toString().padStart(2,'0')}_${date.getHours()}.xlsx`;
     
-    // Download
     XLSX.writeFile(wb, filename);
+    
+    logger.info('Report downloaded', { filename });
   } catch (error) {
+    logger.error('Failed to download report', { reportId, error: error.message });
     alert('Error downloading report: ' + error.message);
-    console.error('Download error:', error);
   }
 }
 
-// Delete report
+//Delete report
 async function deleteReport(reportId) {
   if (confirm('Are you sure you want to delete this report?')) {
+    logger.info('Deleting report', { reportId });
+    
     reports = reports.filter(r => r.id !== reportId);
     await saveReports();
     displayReports();
@@ -265,7 +300,7 @@ async function deleteReport(reportId) {
   }
 }
 
-// Populate report selectors for comparison
+//Populate report selectors for comparison
 function populateReportSelectors() {
   const select1 = document.getElementById('report1-select');
   const select2 = document.getElementById('report2-select');
@@ -281,12 +316,11 @@ function populateReportSelectors() {
   select2.innerHTML = '<option value="">-- Select Report 2 --</option>' + options;
 }
 
-// Compare two reports
+//Compare two reports
 function compareReports() {
   const report1Id = document.getElementById('report1-select').value;
   const report2Id = document.getElementById('report2-select').value;
   const statusDiv = document.getElementById('compare-status');
-  const resultsDiv = document.getElementById('comparison-results');
   
   if (!report1Id || !report2Id) {
     statusDiv.className = 'status error';
@@ -304,36 +338,70 @@ function compareReports() {
   const report2 = reports.find(r => r.id === report2Id);
   
   if (!report1 || !report2) {
+    logger.error('Reports not found for comparison', { report1Id, report2Id });
+    
+    errorTracker.logError(
+      ErrorCodes.COMPARISON_INVALID_REPORT,
+      'Selected reports not found',
+      { report1Id, report2Id }
+    );
+    
     statusDiv.className = 'status error';
     statusDiv.textContent = 'Selected reports not found.';
     return;
   }
   
-  // Perform comparison
-  const comparison = performComparison(report1, report2);
+  logger.info('Starting comparison', { 
+    report1: report1.url,
+    report2: report2.url 
+  });
   
-  // Display results
+  const startTime = performance.now();
+  const comparison = performComparison(report1, report2);
+  const duration = performance.now() - startTime;
+  
+  logger.info('Comparison completed', { 
+    added: comparison.added.length,
+    removed: comparison.removed.length,
+    modified: comparison.modified.length,
+    duration: Math.round(duration)
+  });
+  
   displayComparisonResults(comparison, report1, report2);
   
   statusDiv.className = 'status success';
   statusDiv.textContent = 'Comparison completed successfully!';
 }
 
-// Perform the actual comparison
+//Perform the actual comparison
 function performComparison(report1, report2) {
-  const elements1 = new Map(report1.data.elements.map(el => [el.xpath, el]));
-  const elements2 = new Map(report2.data.elements.map(el => [el.xpath, el]));
+  const matchStrategy = config.get('comparison.matchStrategy', 'xpath');
+  
+  const keyExtractor = matchStrategy === 'css' 
+    ? (el) => el.cssSelector 
+    : (el) => el.xpath;
+  
+  const elements1 = new Map(
+    report1.data.elements
+      .filter(el => keyExtractor(el))
+      .map(el => [keyExtractor(el), el])
+  );
+  
+  const elements2 = new Map(
+    report2.data.elements
+      .filter(el => keyExtractor(el))
+      .map(el => [keyExtractor(el), el])
+  );
   
   const added = [];
   const removed = [];
   const modified = [];
   
-  // Find added and modified elements
-  for (const [xpath, el2] of elements2) {
-    if (!elements1.has(xpath)) {
+  for (const [key, el2] of elements2) {
+    if (!elements1.has(key)) {
       added.push(el2);
     } else {
-      const el1 = elements1.get(xpath);
+      const el1 = elements1.get(key);
       const differences = findElementDifferences(el1, el2);
       if (differences.length > 0) {
         modified.push({ element: el2, differences });
@@ -341,9 +409,8 @@ function performComparison(report1, report2) {
     }
   }
   
-  // Find removed elements
-  for (const [xpath, el1] of elements1) {
-    if (!elements2.has(xpath)) {
+  for (const [key, el1] of elements1) {
+    if (!elements2.has(key)) {
       removed.push(el1);
     }
   }
@@ -351,7 +418,7 @@ function performComparison(report1, report2) {
   return { added, removed, modified };
 }
 
-// Find differences between two elements
+//Find differences between two elements
 function findElementDifferences(el1, el2) {
   const differences = [];
   const keysToCompare = ['tagName', 'id', 'className', 'textContent', 'visible', 'dimensions'];
@@ -369,7 +436,7 @@ function findElementDifferences(el1, el2) {
   return differences;
 }
 
-// Display comparison results
+//Display comparison results
 function displayComparisonResults(comparison, report1, report2) {
   const resultsDiv = document.getElementById('comparison-results');
   
@@ -401,7 +468,6 @@ function displayComparisonResults(comparison, report1, report2) {
   
   let differencesHTML = '<div class="differences"><h3>Differences</h3>';
   
-  // Added elements
   if (comparison.added.length > 0) {
     comparison.added.slice(0, 20).forEach(el => {
       differencesHTML += `
@@ -416,7 +482,6 @@ function displayComparisonResults(comparison, report1, report2) {
     }
   }
   
-  // Removed elements
   if (comparison.removed.length > 0) {
     comparison.removed.slice(0, 20).forEach(el => {
       differencesHTML += `
@@ -431,7 +496,6 @@ function displayComparisonResults(comparison, report1, report2) {
     }
   }
   
-  // Modified elements
   if (comparison.modified.length > 0) {
     comparison.modified.slice(0, 20).forEach(item => {
       const el = item.element;

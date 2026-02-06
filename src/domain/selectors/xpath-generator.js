@@ -1,76 +1,118 @@
-// ==========================================================================
 // XPath Generator: Production Tournament Engine (Single Selector Output)
 // Returns: Single best XPath string (null if generation fails)
-// Dependencies: common-utils.js only
-// ==========================================================================
 
+import config from '../../infrastructure/config.js';
+import errorTracker, { ErrorCodes } from '../../infrastructure/error-tracker.js';
+import logger from '../../infrastructure/logger.js';
+import { safeExecute } from '../../infrastructure/safe-execute.js';
 import {
   cleanText,
-  getDataAttributes,
-  getUniversalTag,
+  collectStableAttributes,
   extractTagFromUniversal,
+  findBestSemanticAncestor,
+  findNearbyTextElements,
+  getBestAttribute,
+  getDataAttributes,
+  getStableAncestorChain,
+  getUniversalTag,
+  isStableClass,
   isStableId,
   isStableValue,
-  isStableClass,
-  isStaticText,
-  collectStableAttributes,
-  getBestAttribute,
-  getStableAncestorChain,
-  findBestSemanticAncestor,
-  findNearbyTextElements
-} from './common-utils.js';
+  isStaticText
+} from '../../shared/dom-utils.js';
 
-// ==================== XPATH VALIDATION UTILITIES ====================
+// Main entry point that orchestrates XPath generation using a tournament strategy.
+// Executes strategies in priority order, returning the first valid unique XPath within the timeout.
+export function generateBestXPath(element) {
+  if (!element || !element.tagName) {
+    logger.debug('Invalid element for XPath generation', { element });
+    return null;
+  }
 
-function escapeXPath(value) {
-  if (typeof value !== 'string') return '';
+  const timeout = config.get('selectors.xpath.strategyTimeout', 100);
   
-  if (!value.includes("'")) return `'${value}'`;
-  if (!value.includes('"')) return `"${value}"`;
-  
-  const parts = value.split("'");
-  const escaped = parts.map((part, index) => {
-    if (index === 0) return `'${part}'`;
-    return `"'",'${part}'`;
-  });
-  
-  return `concat(${escaped.join(',')})`;
+  return safeExecute(
+    () => generateBestXPathUnsafe(element),
+    { timeout, fallback: null, operation: 'xpath-generation' }
+  );
 }
 
-function countXPathMatches(xpath, context = document) {
-  try {
-    const result = context.evaluate(
-      xpath,
-      context,
-      null,
-      XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-      null
-    );
-    return result.snapshotLength;
-  } catch (error) {
-    return -1;
-  }
-}
+function generateBestXPathUnsafe(element) {
+  const startTime = performance.now();
+  const tag = getUniversalTag(element);
+  const context = document;
+  const totalTimeout = config.get('selectors.xpath.totalTimeout', 2000);
 
-function xpathPointsToElement(xpath, element, context = document) {
-  try {
-    const result = context.evaluate(
-      xpath,
-      context,
-      null,
-      XPathResult.FIRST_ORDERED_NODE_TYPE,
-      null
-    );
-    return result.singleNodeValue === element;
-  } catch (error) {
-    return false;
+  const allStrategies = buildAllStrategies(element, tag);
+
+  for (const { fn } of allStrategies) {
+    if (performance.now() - startTime > totalTimeout) {
+      logger.debug('XPath generation timeout', { 
+        element: element.tagName,
+        duration: Math.round(performance.now() - startTime)
+      });
+      break;
+    }
+
+    try {
+      const candidates = fn();
+      if (!candidates || candidates.length === 0) continue;
+
+      for (const candidate of candidates) {
+        if (!candidate?.xpath) continue;
+
+        const validation = strictValidate(candidate.xpath, element, context);
+        if (!validation.isValid || !validation.pointsToTarget) continue;
+
+        const uniqueXPath = validation.isUnique
+          ? candidate.xpath
+          : ensureUniqueness(candidate.xpath, element, context);
+
+        const finalValidation = strictValidate(uniqueXPath, element, context);
+        if (!finalValidation.isUnique || !finalValidation.pointsToTarget) continue;
+
+        const duration = performance.now() - startTime;
+        logger.debug('XPath generated', { 
+          element: element.tagName,
+          duration: Math.round(duration)
+        });
+        
+        return uniqueXPath;
+      }
+    } catch (error) {
+      logger.warn('XPath strategy failed', { 
+        error: error.message,
+        element: element.tagName 
+      });
+      continue;
+    }
   }
+
+  const fallbackResults = executeFallbackStrategies(element, tag, context);
+  if (fallbackResults.length > 0) {
+    const duration = performance.now() - startTime;
+    logger.debug('XPath generated via fallback', { 
+      element: element.tagName,
+      duration: Math.round(duration)
+    });
+    return fallbackResults[0].xpath;
+  }
+  
+  errorTracker.logError(
+    ErrorCodes.XPATH_GENERATION_FAILED,
+    'No valid XPath found',
+    { element: element.tagName, id: element.id }
+  );
+  
+  return null;
 }
 
 // ==================== EMBEDDED STRATEGIES (22 TIERS) ====================
 
 class XPathStrategies {
   
+  // Tier 0: Exact visible text matching without normalization.
+  // Most specific and reliable method for elements with unique readable content.
   static strategyExactVisibleText(element, tag) {
     const results = [];
     const text = cleanText(element.textContent);
@@ -82,6 +124,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 1: QA/testing-specific data attributes that developers explicitly mark for automation.
+  // These are the most reliable indicators as they are intentionally set for selectors.
   static strategyTestAttributes(element, tag) {
     const results = [];
     const testAttrs = ['data-testid', 'data-test', 'data-qa', 'data-cy', 
@@ -97,6 +141,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 2: Element ID attribute which is typically unique and stable within a page.
+  // IDs are guaranteed to be unique when properly used, making them highly reliable.
   static strategyStableId(element, tag) {
     const results = [];
     const id = element.id;
@@ -107,6 +153,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 3: Normalized text matching that handles whitespace variations in content.
+  // Useful for elements where text has multiple spaces, tabs, or line breaks.
   static strategyVisibleTextNormalized(element, tag) {
     const results = [];
     const text = cleanText(element.textContent);
@@ -118,6 +166,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 4: Uses preceding sibling element as an anchor point to locate target element.
+  // Helpful when the target lacks stable attributes but has a stable reference nearby.
   static strategyPrecedingContext(element, tag) {
     const results = [];
     let sibling = element.previousElementSibling;
@@ -141,6 +191,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 5: Locates element by traversing up to stable parent, then down to element with identifier.
+  // Works well for nested components where the parent is stable but element is not.
   static strategyDescendantContext(element, tag) {
     const results = [];
     let parent = element.parentElement;
@@ -166,6 +218,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 6: Combines attribute and text content for unique identification of elements.
+  // Reduces false positives when either attribute or text alone is not sufficiently unique.
   static strategyAttrTextCombo(element, tag) {
     const results = [];
     const attrs = collectStableAttributes(element);
@@ -183,6 +237,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 7: Uses anchored reference elements (with IDs or testids) that come after target element.
+  // Provides context-based identification when preceding elements are not available or unstable.
   static strategyFollowingContext(element, tag) {
     const results = [];
     const elementAttrs = collectStableAttributes(element);
@@ -209,6 +265,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 8: Extracts and uses framework-specific data attributes for identification.
+  // Captures custom data attributes added by application frameworks and libraries.
   static strategyFrameworkAttributes(element, tag) {
     const results = [];
     const dataAttrs = getDataAttributes(element);
@@ -221,6 +279,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 9: Combines multiple attributes to create a fingerprint for unique identification.
+  // Increases specificity when individual attributes overlap across multiple elements.
   static strategyMultiAttributeFingerprint(element, tag) {
     const results = [];
     const attrs = collectStableAttributes(element);
@@ -239,6 +299,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 10: Matches elements by ARIA role and aria-label attributes for accessibility context.
+  // Useful for identifying accessible interactive elements with semantic meaning.
   static strategyAriaRoleLabel(element, tag) {
     const results = [];
     const role = element.getAttribute('role');
@@ -252,6 +314,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 11: Associates form inputs with their labels to locate elements within labeled contexts.
+  // Essential for finding form fields that are logically grouped with descriptive labels.
   static strategyLabelAssociation(element, tag) {
     const results = [];
     const formTags = ['input', 'select', 'textarea'];
@@ -276,6 +340,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 12: Uses substring matching to locate elements with longer text content.
+  // Flexible approach that works when exact text matching is too restrictive.
   static strategyPartialTextMatch(element, tag) {
     const results = [];
     const text = cleanText(element.textContent);
@@ -290,6 +356,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 13: Matches anchor links by combining title attribute and href path pattern.
+  // Identifies links based on both their visual title and URL structure for better uniqueness.
   static strategyHrefPattern(element, tag) {
     const results = [];
     const href = element.getAttribute('href');
@@ -307,6 +375,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 14: Uses parent element as context and targets descendant by tag type only.
+  // Simpler fallback when child-specific identifiers are not available.
   static strategyParentChildAxes(element, tag) {
     const results = [];
     let parent = element.parentElement;
@@ -328,6 +398,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 15: Locates elements using previous siblings as reference points without additional attributes.
+  // Works when siblings are stable anchors but may be less unique than attribute-based methods.
   static strategySiblingAxes(element, tag) {
     const results = [];
     let sibling = element.previousElementSibling;
@@ -350,6 +422,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 16: Uses semantically meaningful ancestor elements for context-aware localization.
+  // Targets elements based on their logical container relationships in the DOM hierarchy.
   static strategySemanticAncestor(element, tag) {
     const results = [];
     const semanticParent = findBestSemanticAncestor(element);
@@ -367,6 +441,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 17: Combines CSS class selectors with attribute predicates for dual-layer matching.
+  // Increases precision by leveraging styling classes alongside structural attributes.
   static strategyClassAttributeCombo(element, tag) {
     const results = [];
     const classes = Array.from(element.classList).filter(c => isStableClass(c));
@@ -383,6 +459,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 18: Chains multiple ancestor elements with stable attributes for robust deep context paths.
+  // Useful for deeply nested elements where a single parent context may be insufficient.
   static strategyAncestorChain(element, tag) {
     const results = [];
     const ancestors = getStableAncestorChain(element, 3);
@@ -400,6 +478,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 19 (Fallback): Locates elements within table rows using row attributes for context.
+  // Effective for data table cells and elements that are always contained within table rows.
   static strategyTableRowContext(element, tag) {
     const results = [];
     const row = element.closest('tr');
@@ -416,6 +496,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 20 (Fallback): Handles SVG elements using namespace-aware XPath syntax for graphic elements.
+  // SVG elements require special treatment as they operate within the SVG namespace.
   static strategySVGVisualFingerprint(element, tag) {
     const results = [];
     const isSvgElement = element.namespaceURI === 'http://www.w3.org/2000/svg';
@@ -436,6 +518,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 21 (Fallback): Locates elements using nearby text nodes as spatial reference points.
+  // Useful for elements adjacent to stable text content when no direct attributes are available.
   static strategySpatialTextContext(element, tag) {
     const results = [];
     const nearbyTextElements = findNearbyTextElements(element, 200);
@@ -459,6 +543,8 @@ class XPathStrategies {
     return results;
   }
 
+  // Tier 22 (Ultimate Fallback): Generates absolute path by walking up DOM tree with position indices.
+  // Last-resort strategy that always produces a working path by traversing from root to element.
   static strategyGuaranteedPath(element, tag) {
     const results = [];
     
@@ -501,57 +587,10 @@ class XPathStrategies {
   }
 }
 
-// ==================== MAIN GENERATOR ENGINE ====================
-
-export function generateBestXPath(element) {
-  if (!element || !element.tagName) return null;
-
-  const startTime = performance.now();
-  const tag = getUniversalTag(element);
-  const context = document;
-
-  const allStrategies = buildAllStrategies(element, tag);
-  const TIMEOUT_MS = 100;
-
-  // Return first valid unique XPath found
-  for (const { fn } of allStrategies) {
-    if (performance.now() - startTime > TIMEOUT_MS) break;
-
-    try {
-      const candidates = fn();
-      if (!candidates || candidates.length === 0) continue;
-
-      for (const candidate of candidates) {
-        if (!candidate?.xpath) continue;
-
-        const validation = strictValidate(candidate.xpath, element, context);
-        if (!validation.isValid || !validation.pointsToTarget) continue;
-
-        const uniqueXPath = validation.isUnique
-          ? candidate.xpath
-          : ensureUniqueness(candidate.xpath, element, context);
-
-        const finalValidation = strictValidate(uniqueXPath, element, context);
-        if (!finalValidation.isUnique || !finalValidation.pointsToTarget) continue;
-
-        return uniqueXPath;
-      }
-    } catch (error) {
-      continue;
-    }
-  }
-
-  // Fallback strategies
-  const fallbackResults = executeFallbackStrategies(element, tag, context);
-  if (fallbackResults.length > 0) {
-    return fallbackResults[0].xpath;
-  }
-  
-  return null;
-}
-
 // ==================== HELPER FUNCTIONS ====================
 
+// Orchestrates all 22 XPath generation strategies in priority order (tournament).
+// Returns array of strategy functions that generate candidates based on their tier ranking.
 function buildAllStrategies(element, tag) {
   return [
     { tier: 0, fn: () => XPathStrategies.strategyExactVisibleText(element, tag) },
@@ -576,6 +615,8 @@ function buildAllStrategies(element, tag) {
   ];
 }
 
+// Executes fallback strategies for complex scenarios not covered by primary tier strategies.
+// Validates each candidate XPath before returning, filtering out invalid paths early.
 function executeFallbackStrategies(element, tag, context) {
   const fallbackStrategies = [
     { fn: () => XPathStrategies.strategyTableRowContext(element, tag) },
@@ -613,6 +654,8 @@ function executeFallbackStrategies(element, tag, context) {
   return validCandidates;
 }
 
+// Validates XPath against target element by checking uniqueness and correctness of match.
+// Returns validation result object with flags indicating validity, uniqueness, and target accuracy.
 function strictValidate(xpath, targetElement, context) {
   try {
     const matchCount = countXPathMatches(xpath, context);
@@ -637,11 +680,12 @@ function strictValidate(xpath, targetElement, context) {
   }
 }
 
+// Enhances non-unique XPath by wrapping with ancestor contexts to ensure single match.
+// Attempts two strategies: stable ancestor chains first, then direct parent traversal.
 function ensureUniqueness(xpath, element, context) {
   const matches = countXPathMatches(xpath, context);
   if (matches === 1) return xpath;
 
-  // Try ancestor wrap
   const ancestors = getStableAncestorChain(element, 4);
   for (const ancestor of ancestors) {
     const ancestorTag = getUniversalTag(ancestor.element);
@@ -653,7 +697,6 @@ function ensureUniqueness(xpath, element, context) {
     }
   }
 
-  // Try parent wrap
   let parent = element.parentElement;
   let depth = 0;
 
@@ -675,4 +718,63 @@ function ensureUniqueness(xpath, element, context) {
   }
 
   return xpath;
+}
+
+// ==================== XPATH VALIDATION UTILITIES ====================
+
+// Counts total number of elements matching the given XPath expression in the context.
+// Returns -1 on error to distinguish from valid count of 0 matches.
+function countXPathMatches(xpath, context = document) {
+  try {
+    const result = context.evaluate(
+      xpath,
+      context,
+      null,
+      XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+      null
+    );
+    return result.snapshotLength;
+  } catch (error) {
+    return -1;
+  }
+}
+
+// Verifies that the given XPath expression selects exactly the target element when evaluated.
+// Critical validation step to ensure XPath is accurate before returning it.
+function xpathPointsToElement(xpath, element, context = document) {
+  try {
+    const result = context.evaluate(
+      xpath,
+      context,
+      null,
+      XPathResult.FIRST_ORDERED_NODE_TYPE,
+      null
+    );
+    return result.singleNodeValue === element;
+  } catch (error) {
+    return false;
+  }
+}
+
+// Escapes special characters in XPath string values and uses proper quoting strategy.
+// Uses concatenation method for values containing both single and double quotes.
+function escapeXPath(value) {
+  if (typeof value !== 'string') return '';
+  
+  if (!value.includes("'")) return `'${value}'`;
+  if (!value.includes('"')) return `"${value}"`;
+  
+  const parts = value.split("'");
+  const concatParts = [];
+  
+  parts.forEach((part, index) => {
+    if (part) {
+      concatParts.push(`'${part}'`);
+    }
+    if (index < parts.length - 1) {
+      concatParts.push(`"'"`);
+    }
+  });
+  
+  return concatParts.length > 1 ? `concat(${concatParts.join(',')})` : `'${value}'`;
 }

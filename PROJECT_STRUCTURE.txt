@@ -2,11 +2,13 @@ UI_Comparison Project Structure
 ================================
 
 UI_Comparison/
+├── .gitignore                    # Git ignore file
 ├── manifest.json                 # Chrome extension manifest
 ├── package.json                  # NPM package configuration
-├── package-lock.json             # NPM dependency lock file
 ├── popup.html                    # Extension popup HTML
-├── .DS_Store                     # macOS system file
+├── PROJECT_STRUCTURE.txt         # Project structure documentation
+├── SYSTEM_REFERENCE.md           # System reference documentation
+├── webpack.config.js             # Webpack configuration
 │
 ├── Images/                       # Extension icons
 │   ├── icon16.png               # 16x16 icon
@@ -14,23 +16,28 @@ UI_Comparison/
 │   └── icon128.png              # 128x128 icon
 │
 ├── libs/                         # External libraries
-│   ├── xlsx.full.min.js         # XLSX library for Excel operations
-│   └── DOWNLOAD_XLSX_LIBRARY.txt # Notes on XLSX library
+│   ├── DOWNLOAD_XLSX_LIBRARY.txt # Notes on XLSX library
+│   └── xlsx.full.min.js         # XLSX library for Excel operations
 │
-├── src/                          # Source code directory
-│   │
-│   ├── generators/               # Code generation modules
-│   │   ├── css-generator.js      # CSS generator for UI comparison
-│   │   └── xpath-generator.js    # XPath generator for element selection
-│   │
-│   ├── helpers/                  # Utility helper modules
-│   │   └── common_utils.js       # Common utility functions
-│   │
-│   ├── scripts/                  # Main extension scripts
-│   │   ├── content.js            # Content script (runs in page context)
-│   │   └── popup.js              # Popup script (runs in extension context)
-│   │
-│   └── styles/                   # Stylesheets
-│       └── popup.css             # Popup styling
-│
-└── node_modules/                 # NPM installed dependencies (generated)
+└── src/                          # Source code directory
+    │
+    ├── generators/               # Code generation modules
+    │   ├── css-generator.js      # CSS generator for UI comparison
+    │   └── xpath-generator.js    # XPath generator for element selection
+    │
+    ├── helpers/                  # Utility helper modules
+    │   └── common-utils.js       # Common utility functions
+    │
+    ├── infrastructure/           # Infrastructure modules
+    │   ├── config.js            # Configuration management
+    │   ├── di-container.js      # Dependency injection container
+    │   ├── error-tracker.js     # Error tracking utilities
+    │   ├── logger.js            # Logging utilities
+    │   └── safe-execute.js      # Safe execution wrapper
+    │
+    ├── scripts/                  # Main extension scripts
+    │   ├── content.js            # Content script (runs in page context)
+    │   └── popup.js              # Popup script (runs in extension context)
+    │
+    └── styles/                   # Stylesheets
+        └── popup.css             # Popup styling

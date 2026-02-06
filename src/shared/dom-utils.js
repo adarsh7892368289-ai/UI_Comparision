@@ -1,8 +1,7 @@
-// ======================================================================
 // Common Utilities: Shared helpers for XPath and CSS generation
 // Pure synchronous functions for text processing, DOM interrogation, and validation
-// Dependencies: None
-// ======================================================================
+
+import logger from '../infrastructure/logger.js';
 
 // ==================== TEXT UTILITIES ====================
 
@@ -10,7 +9,7 @@ const WHITESPACE_PATTERN = /\s+/g;
 const LINE_BREAKS_PATTERN = /[\r\n\t]+/g;
 
 // Removes line breaks and normalizes whitespace for single-line strings
-// Contract: Returns cleaned string; safe for null inputs
+// Returns cleaned string; safe for null inputs
 export function cleanText(text) {
   if (typeof text !== 'string') return '';
   return text.replace(LINE_BREAKS_PATTERN, ' ').replace(WHITESPACE_PATTERN, ' ').trim();
@@ -19,16 +18,24 @@ export function cleanText(text) {
 // ==================== DOM UTILITIES ====================
 
 // Extracts only data-* attributes for selector generation
-// Contract: Returns filtered attribute map; excludes non-data attributes
+// Returns filtered attribute map; excludes non-data attributes
 export function getDataAttributes(element) {
   if (!element) return {};
   
   const dataAttrs = {};
-  for (const attr of element.attributes) {
-    if (attr.name.startsWith('data-')) {
-      dataAttrs[attr.name] = attr.value;
+  try {
+    for (const attr of element.attributes) {
+      if (attr.name.startsWith('data-')) {
+        dataAttrs[attr.name] = attr.value;
+      }
     }
+  } catch (error) {
+    logger.warn('Failed to get data attributes', { 
+      error: error.message,
+      element: element.tagName 
+    });
   }
+  
   return dataAttrs;
 }
 
@@ -73,20 +80,28 @@ export function getElementPosition(element) {
     return { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
   }
 
-  const rect = element.getBoundingClientRect();
-  const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
-  const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+  try {
+    const rect = element.getBoundingClientRect();
+    const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
 
-  return {
-    x: rect.left + scrollLeft,
-    y: rect.top + scrollTop,
-    width: rect.width,
-    height: rect.height,
-    top: rect.top + scrollTop,
-    left: rect.left + scrollLeft,
-    right: rect.right + scrollLeft,
-    bottom: rect.bottom + scrollTop
-  };
+    return {
+      x: rect.left + scrollLeft,
+      y: rect.top + scrollTop,
+      width: rect.width,
+      height: rect.height,
+      top: rect.top + scrollTop,
+      left: rect.left + scrollLeft,
+      right: rect.right + scrollLeft,
+      bottom: rect.bottom + scrollTop
+    };
+  } catch (error) {
+    logger.warn('Failed to get element position', { 
+      error: error.message,
+      element: element.tagName 
+    });
+    return { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
+  }
 }
 
 // Calculates Euclidean distance between element centers using Pythagorean theorem
@@ -185,31 +200,38 @@ export function isStaticText(text) {
 export function collectStableAttributes(element) {
   const attrs = [];
   
-  // Priority 1: Test automation attributes
-  const testAttrs = ['data-testid', 'data-test', 'data-qa', 'data-cy', 'data-automation-id',
-                     'data-key', 'data-record-id', 'data-component-id', 'data-row-key-value'];
-  for (const attr of testAttrs) {
-    const value = element.getAttribute(attr);
-    if (value && isStableValue(value)) {
-      attrs.push({ name: attr, value });
+  try {
+    // Priority 1: Test automation attributes
+    const testAttrs = ['data-testid', 'data-test', 'data-qa', 'data-cy', 'data-automation-id',
+                       'data-key', 'data-record-id', 'data-component-id', 'data-row-key-value'];
+    for (const attr of testAttrs) {
+      const value = element.getAttribute(attr);
+      if (value && isStableValue(value)) {
+        attrs.push({ name: attr, value });
+      }
     }
-  }
-  
-  // Priority 2: Supplementary attributes
-  const supplementary = ['role', 'type', 'href', 'for', 'value', 'placeholder', 'class'];
-  for (const attr of supplementary) {
-    const value = element.getAttribute(attr);
-    if (value && isStableValue(value) && !attrs.find(a => a.name === attr)) {
-      attrs.push({ name: attr, value });
+    
+    // Priority 2: Supplementary attributes
+    const supplementary = ['role', 'type', 'href', 'for', 'value', 'placeholder', 'class'];
+    for (const attr of supplementary) {
+      const value = element.getAttribute(attr);
+      if (value && isStableValue(value) && !attrs.find(a => a.name === attr)) {
+        attrs.push({ name: attr, value });
+      }
     }
-  }
-  
-  // Priority 3: All data-* attributes
-  const dataAttrs = getDataAttributes(element);
-  for (const [name, value] of Object.entries(dataAttrs)) {
-    if (isStableValue(value) && !attrs.find(a => a.name === name)) {
-      attrs.push({ name, value });
+    
+    // Priority 3: All data-* attributes
+    const dataAttrs = getDataAttributes(element);
+    for (const [name, value] of Object.entries(dataAttrs)) {
+      if (isStableValue(value) && !attrs.find(a => a.name === name)) {
+        attrs.push({ name, value });
+      }
     }
+  } catch (error) {
+    logger.warn('Failed to collect stable attributes', { 
+      error: error.message,
+      element: element.tagName 
+    });
   }
   
   return attrs;
@@ -275,26 +297,34 @@ export function findNearbyTextElements(element, maxDistance = 200) {
   const centerY = rect.top + rect.height / 2;
   
   const textElements = [];
-  const candidates = document.querySelectorAll('label, span, div, p, h1, h2, h3, h4, h5, h6, legend, button, a, td, th');
   
-  for (const el of candidates) {
-    if (el === element || el.contains(element) || element.contains(el)) continue;
+  try {
+    const candidates = document.querySelectorAll('label, span, div, p, h1, h2, h3, h4, h5, h6, legend, button, a, td, th');
     
-    const text = cleanText(el.textContent);
-    if (!text || text.length === 0 || text.length > 100) continue;
-    
-    const elRect = el.getBoundingClientRect();
-    const elCenterX = elRect.left + elRect.width / 2;
-    const elCenterY = elRect.top + elRect.height / 2;
-    
-    const distance = Math.sqrt(
-      Math.pow(elCenterX - centerX, 2) + Math.pow(elCenterY - centerY, 2)
-    );
-    
-    if (distance <= maxDistance) {
-      const direction = (elCenterX < centerX || elCenterY < centerY) ? 'before' : 'after';
-      textElements.push({ element: el, text, distance, direction });
+    for (const el of candidates) {
+      if (el === element || el.contains(element) || element.contains(el)) continue;
+      
+      const text = cleanText(el.textContent);
+      if (!text || text.length === 0 || text.length > 100) continue;
+      
+      const elRect = el.getBoundingClientRect();
+      const elCenterX = elRect.left + elRect.width / 2;
+      const elCenterY = elRect.top + elRect.height / 2;
+      
+      const distance = Math.sqrt(
+        Math.pow(elCenterX - centerX, 2) + Math.pow(elCenterY - centerY, 2)
+      );
+      
+      if (distance <= maxDistance) {
+        const direction = (elCenterX < centerX || elCenterY < centerY) ? 'before' : 'after';
+        textElements.push({ element: el, text, distance, direction });
+      }
     }
+  } catch (error) {
+    logger.warn('Failed to find nearby text elements', { 
+      error: error.message,
+      element: element.tagName 
+    });
   }
   
   return textElements.sort((a, b) => a.distance - b.distance);

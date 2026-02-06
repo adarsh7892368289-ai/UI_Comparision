@@ -1,87 +1,124 @@
-// ==========================================================================
 // CSS Generator: Production 10-Strategy Cascade (Single Selector Output)
 // Returns: Single best CSS selector string (null if generation fails)
-// Dependencies: common-utils.js only
-// ==========================================================================
 
-import { walkUpTree, isStableId, isStableClass } from './common-utils.js';
-
-// ==================== CSS VALIDATION UTILITIES ====================
-
-function escapeCss(value) {
-  if (typeof value !== 'string') return '';
-  return CSS.escape(value);
-}
-
-function countCssMatches(selector, context = document) {
-  try {
-    return context.querySelectorAll(selector).length;
-  } catch (error) {
-    return 0;
-  }
-}
-
-function isValidCssSyntax(selector) {
-  try {
-    document.querySelector(selector);
-    return true;
-  } catch (error) {
-    return false;
-  }
-}
-
-// ==================== MAIN GENERATOR ====================
+import config from '../../infrastructure/config.js';
+import errorTracker, { ErrorCodes } from '../../infrastructure/error-tracker.js';
+import logger from '../../infrastructure/logger.js';
+import { safeExecute } from '../../infrastructure/safe-execute.js';
+import { isStableId, walkUpTree } from '../../shared/dom-utils.js';
 
 export function generateBestCSS(element) {
-  if (!element || !element.tagName) return null;
+  if (!element || !element.tagName) {
+    logger.debug('Invalid element for CSS generation', { element });
+    return null;
+  }
 
+  const timeout = config.get('selectors.css.strategyTimeout', 50);
+  
+  return safeExecute(
+    () => generateBestCSSUnsafe(element),
+    { timeout, fallback: null, operation: 'css-generation' }
+  );
+}
+
+function generateBestCSSUnsafe(element) {
+  const startTime = performance.now();
   const tag = element.tagName.toLowerCase();
 
-  // Try strategies in tier order - return first unique match
   let result = null;
   
   result = tryStrategy(element, tag, strategy1Id);
-  if (result) return result;
+  if (result) {
+    logSuccess(element, performance.now() - startTime);
+    return result;
+  }
   
   result = tryStrategy(element, tag, strategy2DataAttrs);
-  if (result) return result;
+  if (result) {
+    logSuccess(element, performance.now() - startTime);
+    return result;
+  }
   
   result = tryStrategy(element, tag, strategy3CombinedData);
-  if (result) return result;
+  if (result) {
+    logSuccess(element, performance.now() - startTime);
+    return result;
+  }
   
   result = tryStrategy(element, tag, strategy4TypeName);
-  if (result) return result;
+  if (result) {
+    logSuccess(element, performance.now() - startTime);
+    return result;
+  }
   
   result = tryStrategy(element, tag, strategy5ClassAttr);
-  if (result) return result;
+  if (result) {
+    logSuccess(element, performance.now() - startTime);
+    return result;
+  }
   
   result = tryStrategy(element, tag, strategy6ParentChild);
-  if (result) return result;
+  if (result) {
+    logSuccess(element, performance.now() - startTime);
+    return result;
+  }
   
   result = tryStrategy(element, tag, strategy7Descendant);
-  if (result) return result;
+  if (result) {
+    logSuccess(element, performance.now() - startTime);
+    return result;
+  }
   
   result = tryStrategy(element, tag, strategy8Pseudo);
-  if (result) return result;
+  if (result) {
+    logSuccess(element, performance.now() - startTime);
+    return result;
+  }
   
   result = tryStrategy(element, tag, strategy9NthChild);
-  if (result) return result;
+  if (result) {
+    logSuccess(element, performance.now() - startTime);
+    return result;
+  }
   
   result = tryStrategy(element, tag, strategy10NthType);
-  if (result) return result;
+  if (result) {
+    logSuccess(element, performance.now() - startTime);
+    return result;
+  }
+  
+  errorTracker.logError(
+    ErrorCodes.CSS_GENERATION_FAILED,
+    'No valid CSS selector found',
+    { element: element.tagName, id: element.id }
+  );
   
   return null;
+}
+
+function logSuccess(element, duration) {
+  logger.debug('CSS selector generated', { 
+    element: element.tagName,
+    duration: Math.round(duration)
+  });
 }
 
 // ==================== STRATEGY FUNCTIONS ====================
 
 function tryStrategy(element, tag, strategyFunc) {
-  const selectors = strategyFunc(element, tag);
-  
-  for (const selector of selectors) {
-    if (isUnique(selector, element)) {
-      return selector;
+  try {
+    const selectors = strategyFunc(element, tag);
+    
+    for (const selector of selectors) {
+      if (isUnique(selector, element)) {
+        return selector;
+      }
     }
+  } catch (error) {
+    logger.warn('CSS strategy failed', { 
+      error: error.message,
+      element: element.tagName 
+    });
   }
   
   return null;
@@ -244,20 +281,6 @@ function strategy10NthType(element, tag) {
 
 // ==================== HELPER FUNCTIONS ====================
 
-function isUnique(selector, element) {
-  try {
-    if (!isValidCssSyntax(selector)) return false;
-    
-    const count = countCssMatches(selector);
-    if (count !== 1) return false;
-    
-    const result = document.querySelector(selector);
-    return result === element;
-  } catch (e) {
-    return false;
-  }
-}
-
 function findStableParent(element) {
   const parents = walkUpTree(element, 5);
   
@@ -335,4 +358,42 @@ function getMeaningfulClasses(element) {
     .filter(c => c.length > 3)
     .filter(c => !c.match(/^[a-z]\d+$/))
     .filter(c => !['active', 'selected', 'hover', 'focus'].includes(c));
+}
+
+// ==================== CSS VALIDATION UTILITIES ====================
+
+function escapeCss(value) {
+  if (typeof value !== 'string') return '';
+  return CSS.escape(value);
+}
+
+function countCssMatches(selector, context = document) {
+  try {
+    return context.querySelectorAll(selector).length;
+  } catch (error) {
+    return 0;
+  }
+}
+
+function isValidCssSyntax(selector) {
+  try {
+    document.querySelector(selector);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+function isUnique(selector, element) {
+  try {
+    if (!isValidCssSyntax(selector)) return false;
+    
+    const count = countCssMatches(selector);
+    if (count !== 1) return false;
+    
+    const result = document.querySelector(selector);
+    return result === element;
+  } catch (e) {
+    return false;
+  }
 }
