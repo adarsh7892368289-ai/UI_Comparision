@@ -1,13 +1,15 @@
 /**
  * UNIT NORMALIZER
  * Converts all CSS units to pixels
- * 
+ *
  * Handles:
  * - Absolute: pt, pc, in, cm, mm → px
  * - Relative: em, rem, % → px (context-aware)
  * - Viewport: vw, vh, vmin, vmax → px
  * - Special: auto, 0 (no unit)
  */
+
+import logger from '../../../infrastructure/logger.js';
 
 export class UnitNormalizer {
   /**
@@ -17,52 +19,61 @@ export class UnitNormalizer {
    * @returns {string} Normalized value in px or special keyword
    */
   normalize(property, value, element) {
-    if (!value || typeof value !== 'string') return value;
-    
-    const trimmed = value.trim().toLowerCase();
-    
-    // 1. Special values
-    if (['auto', 'none', 'inherit', 'initial', 'unset'].includes(trimmed)) {
-      return trimmed;
+    try {
+      if (!value || typeof value !== 'string') return value;
+
+      const trimmed = value.trim().toLowerCase();
+
+      // 1. Special values
+      if (['auto', 'none', 'inherit', 'initial', 'unset'].includes(trimmed)) {
+        return trimmed;
+      }
+
+      // 2. Zero (no unit needed)
+      if (trimmed === '0') {
+        return '0px';
+      }
+
+      // 3. Parse value and unit
+      const match = trimmed.match(/^([-\d.]+)([a-z%]+)$/);
+      if (!match) return value;
+
+      const num = parseFloat(match[1]);
+      const unit = match[2];
+
+      // 4. Already pixels
+      if (unit === 'px') {
+        return `${num.toFixed(1)}px`;
+      }
+
+      // 5. Absolute units (no context needed)
+      const absoluteConversions = {
+        'pt': 1.333,
+        'pc': 16,
+        'in': 96,
+        'cm': 37.7953,
+        'mm': 3.77953,
+      };
+
+      if (absoluteConversions[unit]) {
+        const px = num * absoluteConversions[unit];
+        return `${px.toFixed(1)}px`;
+      }
+
+      // 6. Relative units (context-aware)
+      if (!element) {
+        return value;
+      }
+
+      return this._normalizeRelative(property, num, unit, element);
+    } catch (error) {
+      logger.warn('Unit normalization failed', {
+        property,
+        value,
+        error: error.message
+      });
+      return value; // Return original on error
     }
-    
-    // 2. Zero (no unit needed)
-    if (trimmed === '0') {
-      return '0px';
-    }
-    
-    // 3. Parse value and unit
-    const match = trimmed.match(/^([-\d.]+)([a-z%]+)$/);
-    if (!match) return value;
-    
-    const num = parseFloat(match[1]);
-    const unit = match[2];
-    
-    // 4. Already pixels
-    if (unit === 'px') {
-      return `${num.toFixed(1)}px`;
-    }
-    
-    // 5. Absolute units (no context needed)
-    const absoluteConversions = {
-      'pt': 1.333,
-      'pc': 16,
-      'in': 96,
-      'cm': 37.7953,
-      'mm': 3.77953,
-    };
-    
-    if (absoluteConversions[unit]) {
-      const px = num * absoluteConversions[unit];
-      return `${px.toFixed(1)}px`;
-    }
-    
-    // 6. Relative units (context-aware)
-    if (!element) {
-      return value;
-    }
-    
-    return this._normalizeRelative(property, num, unit, element);
   }
   
   _normalizeRelative(property, num, unit, element) {
@@ -121,40 +132,52 @@ export class UnitNormalizer {
   _normalizePercentage(property, num, element) {
     const parent = element.parentElement;
     if (!parent) return `${num}%`;
-    
+
     try {
       // Width-related properties
       if (['width', 'max-width', 'min-width', 'left', 'right'].includes(property)) {
         const parentWidth = parseFloat(getComputedStyle(parent).width);
+        if (isNaN(parentWidth) || parentWidth === 0) {
+          return `${num}%`;
+        }
         const px = (num / 100) * parentWidth;
         return `${px.toFixed(1)}px`;
       }
-      
+
       // Height-related properties
       if (['height', 'max-height', 'min-height', 'top', 'bottom'].includes(property)) {
         const parentHeight = parseFloat(getComputedStyle(parent).height);
+        if (isNaN(parentHeight) || parentHeight === 0) {
+          return `${num}%`;
+        }
         const px = (num / 100) * parentHeight;
         return `${px.toFixed(1)}px`;
       }
-      
+
       // Font-size
       if (property === 'font-size') {
         const parentFontSize = parseFloat(getComputedStyle(parent).fontSize);
+        if (isNaN(parentFontSize) || parentFontSize === 0) {
+          return `${num}%`;
+        }
         const px = (num / 100) * parentFontSize;
         return `${px.toFixed(1)}px`;
       }
-      
+
       // Padding/margin (relative to parent width)
       if (property.includes('padding') || property.includes('margin')) {
         const parentWidth = parseFloat(getComputedStyle(parent).width);
+        if (isNaN(parentWidth) || parentWidth === 0) {
+          return `${num}%`;
+        }
         const px = (num / 100) * parentWidth;
         return `${px.toFixed(1)}px`;
       }
-      
+
     } catch (error) {
       return `${num}%`;
     }
-    
+
     return `${num}%`;
   }
 }

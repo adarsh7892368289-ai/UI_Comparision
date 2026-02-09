@@ -26,6 +26,8 @@ UI_Comparison/
     │
     ├── domain/                   # Domain layer
     │   ├── engines/              # Engine modules
+    │   │   ├── detector-engine.js    # Detector engine
+    │   │   ├── matcher-engine.js     # Matcher engine
     │   │   └── normalizer-engine.js # Normalizer engine
     │   │
     │   ├── selectors/            # Selector generation modules
@@ -33,6 +35,10 @@ UI_Comparison/
     │   │   └── xpath-generator.js # XPath generator for element selection
     │   │
     │   └── strategies/           # Strategy modules
+    │       ├── matching/         # Matching strategies
+    │       │   ├── dynamic-matcher.js  # Dynamic matching strategy
+    │       │   ├── position-matcher.js # Position matching strategy
+    │       │   └── static-matcher.js   # Static matching strategy
     │       └── normalization/    # Normalization strategies
     │           ├── color-normalizer.js  # Color normalization
     │           ├── font-normalizer.js   # Font normalization

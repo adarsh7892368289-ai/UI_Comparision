@@ -1,7 +1,7 @@
 /**
  * COLOR NORMALIZER
  * Converts all color formats to canonical rgba(r, g, b, a)
- * 
+ *
  * Handles:
  * - Named: "red" → "rgba(255, 0, 0, 1)"
  * - Hex: "#FF0000", "#F00" → "rgba(255, 0, 0, 1)"
@@ -10,54 +10,69 @@
  * - Special: transparent, currentColor, inherit
  */
 
+import logger from '../../../infrastructure/logger.js';
+
 export class ColorNormalizer {
   constructor() {
     this._namedColors = null;
   }
   
   normalize(color) {
-    if (!color || typeof color !== 'string') return color;
-    
-    const trimmed = color.trim().toLowerCase();
-    
-    // 1. Special values (pass through)
-    if (['currentcolor', 'inherit', 'initial', 'unset', 'revert'].includes(trimmed)) {
-      return trimmed;
+    try {
+      if (!color || typeof color !== 'string') return color;
+
+      const trimmed = color.trim().toLowerCase();
+
+      // 1. Special values (pass through)
+      if (['currentcolor', 'inherit', 'initial', 'unset', 'revert'].includes(trimmed)) {
+        return trimmed;
+      }
+
+      // 2. Transparent
+      if (trimmed === 'transparent') {
+        return 'rgba(0, 0, 0, 0)';
+      }
+
+      // 3. Named colors
+      if (this._isNamedColor(trimmed)) {
+        return this._namedToRgba(trimmed);
+      }
+
+      // 4. Hex
+      if (trimmed.startsWith('#')) {
+        return this._hexToRgba(trimmed);
+      }
+
+      // 5. RGB/RGBA (already correct format, just standardize)
+      if (trimmed.startsWith('rgb')) {
+        return this._standardizeRgba(trimmed);
+      }
+
+      // 6. HSL/HSLA
+      if (trimmed.startsWith('hsl')) {
+        return this._hslToRgba(trimmed);
+      }
+
+      // Unknown format
+      return color;
+    } catch (error) {
+      logger.warn('Color normalization failed', {
+        color,
+        error: error.message
+      });
+      return color; // Return original on error
     }
-    
-    // 2. Transparent
-    if (trimmed === 'transparent') {
-      return 'rgba(0, 0, 0, 0)';
-    }
-    
-    // 3. Named colors
-    if (this._isNamedColor(trimmed)) {
-      return this._namedToRgba(trimmed);
-    }
-    
-    // 4. Hex
-    if (trimmed.startsWith('#')) {
-      return this._hexToRgba(trimmed);
-    }
-    
-    // 5. RGB/RGBA (already correct format, just standardize)
-    if (trimmed.startsWith('rgb')) {
-      return this._standardizeRgba(trimmed);
-    }
-    
-    // 6. HSL/HSLA
-    if (trimmed.startsWith('hsl')) {
-      return this._hslToRgba(trimmed);
-    }
-    
-    // Unknown format
-    return color;
   }
   
   _hexToRgba(hex) {
     let h = hex.slice(1);
     
-    // Expand shorthand (#F00 → #FF0000)
+    // Validate hex characters
+    if (!/^[0-9A-Fa-f]{3,8}$/.test(h)) {
+      return hex; // Return original if invalid
+    }
+    
+    // Expand shorthand
     if (h.length === 3) {
       h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
     }
@@ -66,8 +81,13 @@ export class ColorNormalizer {
     const g = parseInt(h.slice(2, 4), 16);
     const b = parseInt(h.slice(4, 6), 16);
     
-    // Parse alpha (8-digit hex)
+    // Validate parsed values
+    if (isNaN(r) || isNaN(g) || isNaN(b)) {
+      return hex; // Return original if parsing fails
+    }
+    
     const a = h.length === 8 
+    
       ? (parseInt(h.slice(6, 8), 16) / 255).toFixed(2)
       : '1';
     
@@ -77,12 +97,27 @@ export class ColorNormalizer {
   _hslToRgba(hsl) {
     const match = hsl.match(/hsla?\((\d+),\s*(\d+)%,\s*(\d+)%(?:,\s*([\d.]+))?\)/);
     if (!match) return hsl;
-    
-    const h = parseInt(match[1]) / 360;
-    const s = parseInt(match[2]) / 100;
-    const l = parseInt(match[3]) / 100;
+
+    let h = parseInt(match[1]);
+    let s = parseInt(match[2]);
+    let l = parseInt(match[3]);
     const alpha = match[4] ? parseFloat(match[4]) : 1;
-    
+
+    // Validate ranges
+    if (isNaN(h) || isNaN(s) || isNaN(l) || isNaN(alpha)) {
+      return hsl;
+    }
+
+    // Normalize out-of-range values
+    h = ((h % 360) + 360) % 360; // Handle negative, wrap to 0-359
+    s = Math.max(0, Math.min(100, s)); // Clamp to 0-100
+    l = Math.max(0, Math.min(100, l)); // Clamp to 0-100
+
+    // Convert to 0-1 range
+    h = h / 360;
+    s = s / 100;
+    l = l / 100;
+
     let r, g, b;
     
     if (s === 0) {

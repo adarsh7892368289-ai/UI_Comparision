@@ -7,6 +7,46 @@ import errorTracker, { ErrorCodes } from '../infrastructure/error-tracker.js';
 import logger from '../infrastructure/logger.js';
 import { safeExecute } from '../infrastructure/safe-execute.js';
 
+// Create maps at module level
+const XPATH_TIER_MAP = new Map([
+  ['exact-text', 0],
+  ['test-attr', 1],
+  ['stable-id', 2],
+  ['normalized-text', 3],
+  ['preceding-sibling', 4],
+  ['parent-descendant', 5],
+  ['attr-text', 6],
+  ['following-anchor', 7],
+  ['framework', 8],
+  ['multi-attr', 9],
+  ['role-aria-label', 10],
+  ['label', 11],
+  ['partial-text', 12],
+  ['href', 13],
+  ['parent-child', 14],
+  ['sibling', 15],
+  ['semantic-ancestor', 16],
+  ['class-attr-combo', 17],
+  ['ancestor-chain', 18],
+  ['table-row', 19],
+  ['svg', 20],
+  ['spatial-text', 21],
+  ['guaranteed-path', 22]
+]);
+
+const CSS_TIER_MAP = new Map([
+  ['id', 1],
+  ['data-attr', 2],
+  ['combined-data', 3],
+  ['type-name', 4],
+  ['class-attr', 5],
+  ['parent-child', 6],
+  ['descendant', 7],
+  ['pseudo', 8],
+  ['nth-child', 9],
+  ['nth-type', 10]
+]);
+
 
 // Initialize infrastructure
 config.init();
@@ -59,43 +99,53 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-//Extract element data without timeout protection 
+//Extract element data without timeout protection
 async function extractAllElements() {
   const startTime = performance.now();
-  
+
   logger.info('Starting element extraction');
 
   const elements = [];
   const allElements = document.querySelectorAll('*');
   const excludeTags = ['SCRIPT', 'STYLE', 'META', 'LINK', 'NOSCRIPT', 'BR', 'HR'];
-  
-  let index = 0;
-  
-  for (const element of allElements) {
-    if (excludeTags.includes(element.tagName)) {
-      continue;
-    }
-    
-    try {
-      const elementData = await extractElementData(element, index);
-      if (elementData) {
-        elements.push(elementData);
-        index++;
-      }
-    } catch (error) {
-      logger.warn('Failed to extract element', { 
-        index,
-        tagName: element.tagName,
-        error: error.message 
-      });
+
+  const batchSize = config.get('extraction.batchSize', 10);
+  let elementIndex = 0; // Track index separately
+
+  // Convert to array for batching
+  const elementsArray = Array.from(allElements).filter(
+    el => !excludeTags.includes(el.tagName)
+  );
+
+  // Process in batches with yielding
+  for (let i = 0; i < elementsArray.length; i += batchSize) {
+    const batch = elementsArray.slice(i, i + batchSize);
+
+    // Create indices for this batch
+    const batchIndices = batch.map((_, idx) => elementIndex + idx);
+
+    // Process batch in parallel with correct indices
+    const batchResults = await Promise.all(
+      batch.map((element, idx) => extractElementData(element, batchIndices[idx]))
+    );
+
+    // Filter nulls and add to results
+    elements.push(...batchResults.filter(Boolean));
+
+    // Update index for next batch
+    elementIndex += batchResults.filter(Boolean).length;
+
+    // Yield to main thread every batch
+    if (i + batchSize < elementsArray.length) {
+      await new Promise(resolve => setTimeout(resolve, 0));
     }
   }
-  
+
   const duration = performance.now() - startTime;
-  
-  logger.info('Extraction complete', { 
+
+  logger.info('Extraction complete', {
     totalElements: elements.length,
-    duration: Math.round(duration) 
+    duration: Math.round(duration)
   });
 
   return {
@@ -126,10 +176,15 @@ async function extractElementData(element, index) {
 
 //Extract element data without timeout protection 
 function extractElementDataUnsafe(element, index) {
-  const xpath = generateBestXPath(element);
-  const cssSelector = generateBestCSS(element);
+  // Generators return metadata objects: { xpath, strategy, robustness }
+  const xpathResult = generateBestXPath(element);
+  const cssResult = generateBestCSS(element);
   
-  if (!xpath && !cssSelector) {
+  // Extract selector strings from results
+  const xpathStr = xpathResult?.xpath || null;
+  const cssStr = cssResult?.selector || cssResult?.cssSelector || null;
+  
+  if (!xpathStr && !cssStr) {
     logger.debug('Skipping element without selectors', { 
       index,
       tagName: element.tagName 
@@ -151,6 +206,14 @@ function extractElementDataUnsafe(element, index) {
 
   // Extract computed CSS styles
   const styles = extractComputedStyles(element);
+  
+  // Extract attributes as object for matcher
+  const attributesObj = {};
+  for (const attr of element.attributes) {
+    if (attr.name && attr.value) {
+      attributesObj[attr.name] = attr.value;
+    }
+  }
 
   return {
     index,
@@ -166,16 +229,67 @@ function extractElementDataUnsafe(element, index) {
     title: element.title || '',
     value: element.value || '',
     placeholder: element.placeholder || '',
-    xpath: xpath || '',
-    cssSelector: cssSelector || '',
-    attributes: getAttributesString(element),
+    
+    // Selector strings (for backward compatibility & export)
+    xpath: xpathStr || '',
+    cssSelector: cssStr || '',
+    
+    // Selector metadata (directly from generators)
+    xpathMeta: xpathResult ? {
+      strategy: xpathResult.strategy || 'unknown',
+      robustness: xpathResult.robustness || 0,
+      tier: inferTierFromStrategy(xpathResult.strategy) // Helper function below
+    } : null,
+    
+    cssMeta: cssResult ? {
+      strategy: cssResult.strategy || 'unknown',
+      robustness: cssResult.robustness || 0,
+      tier: inferTierFromStrategy(cssResult.strategy, 'css')
+    } : null,
+    
+    // Attributes (object for matcher, string for export)
+    attributes: attributesObj,
+    attributesString: getAttributesString(element),
+    
     visible: isVisible,
-    position: `${Math.round(rect.top)},${Math.round(rect.left)}`,
+    
+    // Position (object for matcher)
+    positionObj: {
+      top: Math.round(rect.top),
+      left: Math.round(rect.left),
+      x: Math.round(rect.left),
+      y: Math.round(rect.top)
+    },
+    
+    // Dimensions (string for legacy, object for matcher)
     dimensions: `${Math.round(rect.width)}x${Math.round(rect.height)}`,
+    dimensionsObj: {
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    },
+    
     styles: styles
   };
 }
 
+// Helper: Infer tier from strategy name (XPath strategies)
+function inferTierFromStrategy(strategy, type = 'xpath') {
+  if (!strategy) return 99;
+
+  const tierMap = type === 'xpath' ? XPATH_TIER_MAP : CSS_TIER_MAP;
+
+  // Find exact match first
+  if (tierMap.has(strategy)) {
+    return tierMap.get(strategy);
+  }
+
+  // Find partial match (strategy contains key)
+  for (const [key, tier] of tierMap) {
+    if (strategy.includes(key)) return tier;
+  }
+
+  return 15; // Default mid-tier
+}
 
 //Check if element is visible
 function isElementVisible(element) {

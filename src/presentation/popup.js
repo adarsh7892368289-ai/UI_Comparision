@@ -1,10 +1,11 @@
 //Popup Script - Extension UI controller
 //Handles report management, extraction orchestration, and comparison
 
-import config from '../infrastructure/config.js';
-import logger from '../infrastructure/logger.js';
-import errorTracker, { ErrorCodes } from '../infrastructure/error-tracker.js';
+import { MatcherEngine } from '../domain/engines/matcher-engine.js';
 import { NormalizerEngine } from '../domain/engines/normalizer-engine.js';
+import config from '../infrastructure/config.js';
+import errorTracker, { ErrorCodes } from '../infrastructure/error-tracker.js';
+import logger from '../infrastructure/logger.js';
 
 let reports = [];
 
@@ -18,6 +19,10 @@ logger.setContext({ script: 'popup' });
 // Initialize normalizer engine
 const normalizerEngine = new NormalizerEngine();
 logger.info('Normalizer engine initialized');
+
+// Initialize matcher engine
+const matcherEngine = new MatcherEngine();
+logger.info('Matcher engine initialized');
 
 document.addEventListener('DOMContentLoaded', async () => {
   logger.info('Popup opened');
@@ -272,7 +277,7 @@ function downloadReport(reportId) {
       'CSS Selector': el.cssSelector,
       'Attributes': el.attributes,
       'Visible': el.visible,
-      'Position': el.position,
+      'Position': el.positionObj ? `${el.positionObj.top},${el.positionObj.left}` : '',
       'Dimensions': el.dimensions
     }));
     
@@ -386,61 +391,73 @@ function performComparison(report1, report2) {
   const normalizedReport1 = normalizeReport(report1);
   const normalizedReport2 = normalizeReport(report2);
   
-  const matchStrategy = config.get('comparison.matchStrategy', 'xpath');
+  // Get matching mode from UI
+  const matchMode = document.querySelector('input[name="match-mode"]:checked')?.value || 
+    config.get('matching.defaultMode', 'static');
   
-  const keyExtractor = matchStrategy === 'css' 
-    ? (el) => el.cssSelector 
-    : (el) => el.xpath;
+  logger.info('Starting comparison with matcher engine', { mode: matchMode });
   
-  const elements1 = new Map(
-    normalizedReport1.data.elements
-      .filter(el => keyExtractor(el))
-      .map(el => [keyExtractor(el), el])
+  // Use matcher engine to find element correspondences
+  // Configuration values come from config.matching (can be overridden here)
+  const matchResult = matcherEngine.match(
+    normalizedReport1.data.elements,
+    normalizedReport2.data.elements,
+    {
+      mode: matchMode,
+      minConfidence: config.get('matching.minConfidence'),
+      positionTolerance: config.get('matching.positionTolerance'),
+      templateThreshold: config.get('matching.templateThreshold'),
+      enableFallback: config.get('matching.enableFallback')
+    }
   );
   
-  const elements2 = new Map(
-    normalizedReport2.data.elements
-      .filter(el => keyExtractor(el))
-      .map(el => [keyExtractor(el), el])
-  );
-  
-  const added = [];
-  const removed = [];
-  const modified = [];
-  
-  // Find added and modified elements
-  for (const [key, el2] of elements2) {
-    if (!elements1.has(key)) {
-      added.push(el2);
-    } else {
-      const el1 = elements1.get(key);
-      const differences = findElementDifferences(el1, el2);
-      if (differences.length > 0) {
-        modified.push({ 
-          element: el2, 
-          baseline: el1,
-          differences 
-        });
-      }
-    }
-  }
-  
-  // Find removed elements
-  for (const [key, el1] of elements1) {
-    if (!elements2.has(key)) {
-      removed.push(el1);
-    }
-  }
-  
-  logger.debug('Comparison results', {
-    total1: elements1.size,
-    total2: elements2.size,
-    added: added.length,
-    removed: removed.length,
-    modified: modified.length
+  logger.info('Matching complete', {
+    matched: matchResult.matches.length,
+    matchRate: matchResult.stats.matchRate,
+    duration: matchResult.duration
   });
   
-  return { added, removed, modified };
+  // Process matches to find differences
+  const modified = [];
+  
+  for (const match of matchResult.matches) {
+    const differences = findElementDifferences(match.baseline, match.compare);
+    
+    if (differences.length > 0) {
+      modified.push({
+        element: match.compare,
+        baseline: match.baseline,
+        differences,
+        matchConfidence: match.confidence,
+        matchStrategy: match.strategy,
+        isTemplate: match.isTemplate || false
+      });
+    }
+  }
+  
+  // Elements that exist only in compare (added)
+  const added = matchResult.unmatched.compare || [];
+  
+  // Elements that exist only in baseline (removed)
+  const removed = matchResult.unmatched.baseline || [];
+  
+  logger.debug('Comparison results', {
+    total1: normalizedReport1.data.elements.length,
+    total2: normalizedReport2.data.elements.length,
+    matched: matchResult.matches.length,
+    added: added.length,
+    removed: removed.length,
+    modified: modified.length,
+    matchingMode: matchMode
+  });
+  
+  return { 
+    added, 
+    removed, 
+    modified,
+    matchStats: matchResult.stats,
+    matchMode: matchMode
+  };
 }
 
 //Normalize entire report (add normalized CSS to each element)
@@ -509,7 +526,7 @@ function findElementDifferences(el1, el2) {
   return differences;
 }
 
-//Compare two normalized CSS objects
+//Compare two normalized CSS objects with tolerances
 function compareStyles(styles1, styles2) {
   const differences = [];
   
@@ -519,22 +536,107 @@ function compareStyles(styles1, styles2) {
     ...Object.keys(styles2 || {})
   ]);
   
+  const colorTolerance = config.get('normalization.colorTolerance', 5);
+  const sizeTolerance = config.get('normalization.sizeTolerance', 3);
+  const colorProps = config.get('normalization.colorProperties', []);
+  const sizeProps = config.get('normalization.sizeProperties', []);
+  
   for (const prop of allProps) {
     const val1 = styles1?.[prop];
     const val2 = styles2?.[prop];
     
-    // Compare normalized values (should now handle "red" vs "#FF0000" correctly)
-    if (val1 !== val2) {
+    // Both values must exist to compare
+    if (!val1 || !val2) {
+      if (val1 !== val2) {
+        differences.push({
+          property: prop,
+          oldValue: val1 || 'not set',
+          newValue: val2 || 'not set',
+          type: 'style'
+        });
+      }
+      continue;
+    }
+    
+    // Apply tolerance based on property type
+    let valuesMatch = false;
+    
+    if (colorProps.includes(prop)) {
+      valuesMatch = colorsMatch(val1, val2, colorTolerance);
+    } else if (sizeProps.includes(prop)) {
+      valuesMatch = sizesMatch(val1, val2, sizeTolerance);
+    } else {
+      // Exact match for other properties
+      valuesMatch = val1 === val2;
+    }
+    
+    if (!valuesMatch) {
       differences.push({
         property: prop,
-        oldValue: val1 || 'not set',
-        newValue: val2 || 'not set',
+        oldValue: val1,
+        newValue: val2,
         type: 'style'
       });
     }
   }
   
   return differences;
+}
+
+//Helper: Compare colors with tolerance
+function colorsMatch(color1, color2, tolerance) {
+  // Both should be in rgba() format after normalization
+  const rgba1 = parseRGBA(color1);
+  const rgba2 = parseRGBA(color2);
+  
+  if (!rgba1 || !rgba2) {
+    // If parsing fails, fallback to exact match
+    return color1 === color2;
+  }
+  
+  // Calculate Euclidean distance in RGB space
+  const distance = Math.sqrt(
+    Math.pow(rgba1.r - rgba2.r, 2) +
+    Math.pow(rgba1.g - rgba2.g, 2) +
+    Math.pow(rgba1.b - rgba2.b, 2)
+  );
+  
+  // Max distance = sqrt(255^2 * 3) = 441.67
+  const maxDistance = 441.67;
+  const percentage = (distance / maxDistance) * 100;
+  
+  return percentage <= tolerance;
+}
+
+//Helper: Compare sizes with tolerance
+function sizesMatch(size1, size2, tolerance) {
+  // Both should be in px format after normalization
+  const px1 = parseFloat(size1);
+  const px2 = parseFloat(size2);
+  
+  if (isNaN(px1) || isNaN(px2)) {
+    // If parsing fails, fallback to exact match
+    return size1 === size2;
+  }
+  
+  const diff = Math.abs(px1 - px2);
+  
+  return diff <= tolerance;
+}
+
+//Helper: Parse rgba string
+function parseRGBA(rgba) {
+  if (!rgba || typeof rgba !== 'string') return null;
+  
+  const match = rgba.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+  if (!match) return null;
+  
+  return {
+    r: parseInt(match[1]),
+    g: parseInt(match[2]),
+    b: parseInt(match[3]),
+    a: parseFloat(match[4] || '1')
+  };
 }
 
 //Display comparison results
@@ -544,6 +646,14 @@ function displayComparisonResults(comparison, report1, report2) {
   const summaryHTML = `
     <div class="comparison-summary">
       <h3>Comparison Summary</h3>
+      <div class="summary-item">
+        <span class="summary-label">Matching Mode:</span>
+        <span class="summary-value">${comparison.matchMode || 'static'}</span>
+      </div>
+      <div class="summary-item">
+        <span class="summary-label">Match Rate:</span>
+        <span class="summary-value">${comparison.matchStats?.matchRate || 'N/A'}</span>
+      </div>
       <div class="summary-item">
         <span class="summary-label">Report 1 (Baseline):</span>
         <span class="summary-value">${report1.url}</span>

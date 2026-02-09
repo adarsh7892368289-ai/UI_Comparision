@@ -58,6 +58,26 @@
           </select>
         </div>
 
+        <div class="mode-selection">
+          <label>
+            <strong>Matching Mode:</strong>
+          </label>
+          <div class="radio-group">
+            <label>
+              <input type="radio" name="match-mode" value="static" checked>
+              Static (exact selectors)
+            </label>
+            <label>
+              <input type="radio" name="match-mode" value="dynamic">
+              Dynamic (CSS-only, handles shuffling)
+            </label>
+            <label>
+              <input type="radio" name="match-mode" value="hybrid">
+              Hybrid (best of both)
+            </label>
+          </div>
+        </div>
+
         <button id="compare-btn" class="primary-btn">Compare Reports</button>
         
         <div id="compare-status" class="status"></div>
@@ -68,6 +88,6 @@
   </div>
 
   <script src="libs/xlsx.full.min.js"></script>
-  <script src="popup.js"></script>
+  <script type="module" src="popup.js"></script>
 </body>
 </html>

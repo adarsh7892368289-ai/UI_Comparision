@@ -153,7 +153,7 @@ class Logger {
 			level,
 			message,
 			...this.context,
-			...data,
+      ...meta,
 		}
 
 		// Add stack trace for errors if enabled

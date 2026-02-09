@@ -37,6 +37,39 @@ const defaults = {
     ]
   },
 
+  // Matching Engine
+  matching: {
+    defaultMode: 'static',          // 'static' | 'dynamic' | 'hybrid'
+    minConfidence: 0.50,            // Minimum match confidence (0-1)
+    positionTolerance: 50,          // Position match tolerance (pixels)
+    templateThreshold: 0.90,        // CSS similarity for template mode (0-1)
+    enableFallback: true,           // Enable position fallback
+    
+    // Strategy confidence scores (used by matchers)
+    strategyConfidence: {
+      'data-testid': 0.98,
+      'stable-id': 0.95,
+      'css-selector': 0.90,
+      'xpath': 0.85,
+      'position': 0.70,
+      'text-content': 0.60,
+      'template': 0.85,
+      'position-within-type': 0.75
+    },
+    
+    // Selector quality thresholds
+    selectorQuality: {
+      minRobustness: 70,            // Minimum robustness score for matching
+      maxTier: 10,                  // Maximum tier for high-quality selectors
+      preferredStrategies: [        // Preferred strategies (in order)
+        'exact-text',
+        'test-attr',
+        'stable-id',
+        'table-row-attr-class'
+      ]
+    }
+  },
+
   // Selector Generation
   selectors: {
     xpath: {
@@ -182,6 +215,16 @@ function validateConfig(config) {
   check('comparison.similarityThreshold', config.comparison?.similarityThreshold,
     v => typeof v === 'number' && v >= 0 && v <= 1, 'must be 0-1');
 
+  // Matching validation
+  check('matching.defaultMode', config.matching?.defaultMode,
+    v => ['static', 'dynamic', 'hybrid'].includes(v), 'must be static|dynamic|hybrid');
+  check('matching.minConfidence', config.matching?.minConfidence,
+    v => typeof v === 'number' && v >= 0 && v <= 1, 'must be 0-1');
+  check('matching.positionTolerance', config.matching?.positionTolerance,
+    v => typeof v === 'number' && v >= 0, 'must be >= 0');
+  check('matching.templateThreshold', config.matching?.templateThreshold,
+    v => typeof v === 'number' && v >= 0 && v <= 1, 'must be 0-1');
+
   // Logging validation
   check('logging.level', config.logging?.level,
     v => ['debug', 'info', 'warn', 'error'].includes(v), 'must be debug|info|warn|error');
@@ -252,7 +295,10 @@ class Config {
     const result = { ...target };
 
     for (const key in source) {
-      if (source[key] instanceof Object && !Array.isArray(source[key])) {
+      if (Array.isArray(source[key]) && Array.isArray(target[key])) {
+        // For arrays: replace (don't concat to avoid duplicates)
+        result[key] = source[key];
+      } else if (source[key] instanceof Object && !Array.isArray(source[key])) {
         result[key] = this._deepMerge(target[key] || {}, source[key]);
       } else {
         result[key] = source[key];
