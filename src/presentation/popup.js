@@ -4,6 +4,7 @@
 import config from '../infrastructure/config.js';
 import logger from '../infrastructure/logger.js';
 import errorTracker, { ErrorCodes } from '../infrastructure/error-tracker.js';
+import { NormalizerEngine } from '../domain/engines/normalizer-engine.js';
 
 let reports = [];
 
@@ -13,6 +14,10 @@ logger.init();
 errorTracker.init();
 
 logger.setContext({ script: 'popup' });
+
+// Initialize normalizer engine
+const normalizerEngine = new NormalizerEngine();
+logger.info('Normalizer engine initialized');
 
 document.addEventListener('DOMContentLoaded', async () => {
   logger.info('Popup opened');
@@ -89,7 +94,7 @@ async function extractElements() {
     try {
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        files: ['src/scripts/content.js']
+        files: ['content.js'] // Fixed: webpack outputs to root of dist/
       });
     } catch (injectionError) {
       logger.debug('Content script injection', { error: injectionError.message });
@@ -373,8 +378,14 @@ function compareReports() {
   statusDiv.textContent = 'Comparison completed successfully!';
 }
 
-//Perform the actual comparison
+//Perform the actual comparison with CSS normalization
 function performComparison(report1, report2) {
+  logger.debug('Normalizing reports before comparison');
+  
+  // Normalize both reports
+  const normalizedReport1 = normalizeReport(report1);
+  const normalizedReport2 = normalizeReport(report2);
+  
   const matchStrategy = config.get('comparison.matchStrategy', 'xpath');
   
   const keyExtractor = matchStrategy === 'css' 
@@ -382,13 +393,13 @@ function performComparison(report1, report2) {
     : (el) => el.xpath;
   
   const elements1 = new Map(
-    report1.data.elements
+    normalizedReport1.data.elements
       .filter(el => keyExtractor(el))
       .map(el => [keyExtractor(el), el])
   );
   
   const elements2 = new Map(
-    report2.data.elements
+    normalizedReport2.data.elements
       .filter(el => keyExtractor(el))
       .map(el => [keyExtractor(el), el])
   );
@@ -397,6 +408,7 @@ function performComparison(report1, report2) {
   const removed = [];
   const modified = [];
   
+  // Find added and modified elements
   for (const [key, el2] of elements2) {
     if (!elements1.has(key)) {
       added.push(el2);
@@ -404,23 +416,77 @@ function performComparison(report1, report2) {
       const el1 = elements1.get(key);
       const differences = findElementDifferences(el1, el2);
       if (differences.length > 0) {
-        modified.push({ element: el2, differences });
+        modified.push({ 
+          element: el2, 
+          baseline: el1,
+          differences 
+        });
       }
     }
   }
   
+  // Find removed elements
   for (const [key, el1] of elements1) {
     if (!elements2.has(key)) {
       removed.push(el1);
     }
   }
   
+  logger.debug('Comparison results', {
+    total1: elements1.size,
+    total2: elements2.size,
+    added: added.length,
+    removed: removed.length,
+    modified: modified.length
+  });
+  
   return { added, removed, modified };
 }
 
-//Find differences between two elements
+//Normalize entire report (add normalized CSS to each element)
+function normalizeReport(report) {
+  logger.debug('Normalizing report', { reportId: report.id });
+  
+  return {
+    ...report,
+    data: {
+      ...report.data,
+      elements: report.data.elements.map(element => {
+        // If element has computed styles, normalize them
+        if (element.styles && typeof element.styles === 'object') {
+          try {
+            const normalizedStyles = normalizerEngine.normalize(element.styles);
+            
+            return {
+              ...element,
+              originalStyles: element.styles, // Keep original for reference
+              normalizedStyles: normalizedStyles // Add normalized version
+            };
+          } catch (error) {
+            logger.warn('Failed to normalize styles for element', { 
+              xpath: element.xpath,
+              error: error.message 
+            });
+            
+            return {
+              ...element,
+              originalStyles: element.styles,
+              normalizedStyles: element.styles // Fallback to original
+            };
+          }
+        }
+        
+        return element;
+      })
+    }
+  };
+}
+
+//Find differences between two elements (including CSS)
 function findElementDifferences(el1, el2) {
   const differences = [];
+  
+  // Compare basic attributes
   const keysToCompare = ['tagName', 'id', 'className', 'textContent', 'visible', 'dimensions'];
   
   for (const key of keysToCompare) {
@@ -428,7 +494,42 @@ function findElementDifferences(el1, el2) {
       differences.push({
         property: key,
         oldValue: el1[key],
-        newValue: el2[key]
+        newValue: el2[key],
+        type: 'attribute'
+      });
+    }
+  }
+  
+  // Compare normalized CSS properties
+  if (el1.normalizedStyles && el2.normalizedStyles) {
+    const cssDifferences = compareStyles(el1.normalizedStyles, el2.normalizedStyles);
+    differences.push(...cssDifferences);
+  }
+  
+  return differences;
+}
+
+//Compare two normalized CSS objects
+function compareStyles(styles1, styles2) {
+  const differences = [];
+  
+  // Get union of all properties
+  const allProps = new Set([
+    ...Object.keys(styles1 || {}),
+    ...Object.keys(styles2 || {})
+  ]);
+  
+  for (const prop of allProps) {
+    const val1 = styles1?.[prop];
+    const val2 = styles2?.[prop];
+    
+    // Compare normalized values (should now handle "red" vs "#FF0000" correctly)
+    if (val1 !== val2) {
+      differences.push({
+        property: prop,
+        oldValue: val1 || 'not set',
+        newValue: val2 || 'not set',
+        type: 'style'
       });
     }
   }
@@ -444,36 +545,40 @@ function displayComparisonResults(comparison, report1, report2) {
     <div class="comparison-summary">
       <h3>Comparison Summary</h3>
       <div class="summary-item">
-        <span class="summary-label">Report 1:</span>
+        <span class="summary-label">Report 1 (Baseline):</span>
         <span class="summary-value">${report1.url}</span>
       </div>
       <div class="summary-item">
-        <span class="summary-label">Report 2:</span>
+        <span class="summary-label">Report 2 (Compare):</span>
         <span class="summary-value">${report2.url}</span>
       </div>
       <div class="summary-item">
         <span class="summary-label">Elements Added:</span>
-        <span class="summary-value">${comparison.added.length}</span>
+        <span class="summary-value added-count">${comparison.added.length}</span>
       </div>
       <div class="summary-item">
         <span class="summary-label">Elements Removed:</span>
-        <span class="summary-value">${comparison.removed.length}</span>
+        <span class="summary-value removed-count">${comparison.removed.length}</span>
       </div>
       <div class="summary-item">
         <span class="summary-label">Elements Modified:</span>
-        <span class="summary-value">${comparison.modified.length}</span>
+        <span class="summary-value modified-count">${comparison.modified.length}</span>
       </div>
     </div>
   `;
   
   let differencesHTML = '<div class="differences"><h3>Differences</h3>';
   
+  // Display added elements
   if (comparison.added.length > 0) {
+    differencesHTML += '<h4 style="margin-top: 15px; color: #4CAF50;">Added Elements</h4>';
     comparison.added.slice(0, 20).forEach(el => {
       differencesHTML += `
         <div class="difference-item added">
-          <div class="difference-label">Added: ${el.tagName}${el.id ? '#' + el.id : ''}</div>
-          <div class="difference-detail">XPath: ${el.xpath}</div>
+          <div class="difference-label">
+            <strong>${el.tagName}</strong>${el.id ? '#' + el.id : ''}${el.className ? '.' + el.className.split(' ')[0] : ''}
+          </div>
+          <div class="difference-detail">XPath: ${el.xpath || 'N/A'}</div>
         </div>
       `;
     });
@@ -482,12 +587,16 @@ function displayComparisonResults(comparison, report1, report2) {
     }
   }
   
+  // Display removed elements
   if (comparison.removed.length > 0) {
+    differencesHTML += '<h4 style="margin-top: 15px; color: #f44336;">Removed Elements</h4>';
     comparison.removed.slice(0, 20).forEach(el => {
       differencesHTML += `
         <div class="difference-item removed">
-          <div class="difference-label">Removed: ${el.tagName}${el.id ? '#' + el.id : ''}</div>
-          <div class="difference-detail">XPath: ${el.xpath}</div>
+          <div class="difference-label">
+            <strong>${el.tagName}</strong>${el.id ? '#' + el.id : ''}${el.className ? '.' + el.className.split(' ')[0] : ''}
+          </div>
+          <div class="difference-detail">XPath: ${el.xpath || 'N/A'}</div>
         </div>
       `;
     });
@@ -496,17 +605,49 @@ function displayComparisonResults(comparison, report1, report2) {
     }
   }
   
+  // Display modified elements (with CSS differences)
   if (comparison.modified.length > 0) {
+    differencesHTML += '<h4 style="margin-top: 15px; color: #FF9800;">Modified Elements</h4>';
     comparison.modified.slice(0, 20).forEach(item => {
       const el = item.element;
-      const diffs = item.differences.map(d => 
-        `${d.property}: "${d.oldValue}" → "${d.newValue}"`
-      ).join(', ');
+      
+      // Separate attribute and style differences
+      const attrDiffs = item.differences.filter(d => d.type === 'attribute');
+      const styleDiffs = item.differences.filter(d => d.type === 'style');
+      
+      let diffDetails = '';
+      
+      if (attrDiffs.length > 0) {
+        diffDetails += '<div style="margin-top: 5px;"><em>Attributes:</em></div>';
+        diffDetails += '<ul style="margin: 5px 0; padding-left: 20px; font-size: 11px;">';
+        attrDiffs.slice(0, 5).forEach(d => {
+          diffDetails += `<li><strong>${d.property}:</strong> "${d.oldValue}" → "${d.newValue}"</li>`;
+        });
+        if (attrDiffs.length > 5) {
+          diffDetails += `<li>... and ${attrDiffs.length - 5} more</li>`;
+        }
+        diffDetails += '</ul>';
+      }
+      
+      if (styleDiffs.length > 0) {
+        diffDetails += '<div style="margin-top: 5px;"><em>Styles:</em></div>';
+        diffDetails += '<ul style="margin: 5px 0; padding-left: 20px; font-size: 11px;">';
+        styleDiffs.slice(0, 5).forEach(d => {
+          diffDetails += `<li><strong>${d.property}:</strong> "${d.oldValue}" → "${d.newValue}"</li>`;
+        });
+        if (styleDiffs.length > 5) {
+          diffDetails += `<li>... and ${styleDiffs.length - 5} more</li>`;
+        }
+        diffDetails += '</ul>';
+      }
       
       differencesHTML += `
         <div class="difference-item modified">
-          <div class="difference-label">Modified: ${el.tagName}${el.id ? '#' + el.id : ''}</div>
-          <div class="difference-detail">${diffs}</div>
+          <div class="difference-label">
+            <strong>${el.tagName}</strong>${el.id ? '#' + el.id : ''}${el.className ? '.' + el.className.split(' ')[0] : ''}
+            <span style="font-size: 10px; color: #666; margin-left: 10px;">(${item.differences.length} changes)</span>
+          </div>
+          <div class="difference-detail">${diffDetails}</div>
         </div>
       `;
     });
@@ -516,7 +657,7 @@ function displayComparisonResults(comparison, report1, report2) {
   }
   
   if (comparison.added.length === 0 && comparison.removed.length === 0 && comparison.modified.length === 0) {
-    differencesHTML += '<p style="color: #666; padding: 10px;">No differences found between the reports.</p>';
+    differencesHTML += '<p style="color: #4CAF50; padding: 10px; font-weight: bold;">✓ No differences found! Pages are identical.</p>';
   }
   
   differencesHTML += '</div>';

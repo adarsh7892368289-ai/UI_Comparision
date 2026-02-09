@@ -2,10 +2,11 @@ UI_Comparison Project Structure
 ================================
 
 UI_Comparison/
+├── .eslintrc.json                # ESLint configuration
 ├── .gitignore                    # Git ignore file
+├── .prettierrc                   # Prettier configuration
 ├── manifest.json                 # Chrome extension manifest
 ├── package.json                  # NPM package configuration
-├── popup.html                    # Extension popup HTML
 ├── PROJECT_STRUCTURE.txt         # Project structure documentation
 ├── SYSTEM_REFERENCE.md           # System reference documentation
 ├── webpack.config.js             # Webpack configuration
@@ -21,12 +22,23 @@ UI_Comparison/
 │
 └── src/                          # Source code directory
     │
-    ├── generators/               # Code generation modules
-    │   ├── css-generator.js      # CSS generator for UI comparison
-    │   └── xpath-generator.js    # XPath generator for element selection
+    ├── application/              # Application layer (currently empty)
     │
-    ├── helpers/                  # Utility helper modules
-    │   └── common-utils.js       # Common utility functions
+    ├── domain/                   # Domain layer
+    │   ├── engines/              # Engine modules
+    │   │   └── normalizer-engine.js # Normalizer engine
+    │   │
+    │   ├── selectors/            # Selector generation modules
+    │   │   ├── css-generator.js  # CSS generator for UI comparison
+    │   │   └── xpath-generator.js # XPath generator for element selection
+    │   │
+    │   └── strategies/           # Strategy modules
+    │       └── normalization/    # Normalization strategies
+    │           ├── color-normalizer.js  # Color normalization
+    │           ├── font-normalizer.js   # Font normalization
+    │           ├── named-colors.js      # Named colors reference
+    │           ├── shorthand-expander.js # Shorthand expansion
+    │           └── unit-normalizer.js   # Unit normalization
     │
     ├── infrastructure/           # Infrastructure modules
     │   ├── config.js            # Configuration management
@@ -35,9 +47,11 @@ UI_Comparison/
     │   ├── logger.js            # Logging utilities
     │   └── safe-execute.js      # Safe execution wrapper
     │
-    ├── scripts/                  # Main extension scripts
+    ├── presentation/             # Presentation layer
     │   ├── content.js            # Content script (runs in page context)
+    │   ├── popup.css             # Popup styling
+    │   ├── popup.html            # Extension popup HTML
     │   └── popup.js              # Popup script (runs in extension context)
     │
-    └── styles/                   # Stylesheets
-        └── popup.css             # Popup styling
+    └── shared/                   # Shared utilities
+        └── dom-utils.js          # DOM utility functions
