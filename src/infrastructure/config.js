@@ -14,6 +14,29 @@ const defaults = {
     maxDepth: 100, // max DOM traversal depth
   },
 
+  // Normalization Engine
+  normalization: {
+    colorTolerance: 5,        // % - RGB distance threshold (0-100)
+    sizeTolerance: 3,         // px - size difference threshold
+    enableCaching: true,      // cache normalized values
+    cacheMaxSize: 1000,       // max cached entries
+    
+    // Which properties to normalize
+    colorProperties: [
+      'color', 'background-color', 'border-color', 
+      'outline-color', 'text-decoration-color'
+    ],
+    sizeProperties: [
+      'width', 'height', 'font-size', 'line-height',
+      'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+      'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+      'border-width', 'border-radius',
+      'top', 'right', 'bottom', 'left',
+      'gap', 'row-gap', 'column-gap',
+      'min-width', 'max-width', 'min-height', 'max-height'
+    ]
+  },
+
   // Selector Generation
   selectors: {
     xpath: {
@@ -136,6 +159,14 @@ function validateConfig(config) {
     v => typeof v === 'number' && v > 0, 'must be positive number');
   check('extraction.batchSize', config.extraction?.batchSize,
     v => typeof v === 'number' && v >= 1 && v <= 100, 'must be 1-100');
+
+  // Normalization validation
+  check('normalization.colorTolerance', config.normalization?.colorTolerance,
+    v => typeof v === 'number' && v >= 0 && v <= 100, 'must be 0-100');
+  check('normalization.sizeTolerance', config.normalization?.sizeTolerance,
+    v => typeof v === 'number' && v >= 0, 'must be >= 0');
+  check('normalization.cacheMaxSize', config.normalization?.cacheMaxSize,
+    v => typeof v === 'number' && v > 0, 'must be positive');
 
   // Selectors validation
   check('selectors.xpath.earlyExitAfter', config.selectors?.xpath?.earlyExitAfter,

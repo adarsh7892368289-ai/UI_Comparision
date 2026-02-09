@@ -1,212 +1,397 @@
-# System Reference
+# SYSTEM_REFERENCE.md
 
-This document serves as a high-fidelity technical blueprint of the UI Comparison project.
+This document serves as the high-fidelity technical blueprint for the UI_Comparison extension.
 
-## Critical Issues
+## 1. Overall Architecture
 
-*   **Missing Dependency:** The file `src/helpers/common-utils.js` is imported by both `src/domain/selectors/css-generator.js` and `src/domain/selectors/xpath-generator.js`, but it does not exist in the project structure. This is a fatal error that will prevent the core functionality of the extension (element extraction) from working.
+The project follows a layered architecture pattern, separating concerns into distinct logical components:
 
-## Sequence of Operations
+- **Presentation Layer (`src/presentation`):** Handles all user interaction. This includes the extension's popup (`popup.html`, `popup.js`, `popup.css`) and the content script (`content.js`) that interacts with the web page.
+- **Application Layer (`src/application`):** Orchestrates the core application logic. (Currently empty, suggesting logic might be in other layers).
+- **Domain Layer (`src/domain`):** Contains the business logic for generating selectors (`css-generator.js`, `xpath-generator.js`). This is the core of the element identification process.
+- **Infrastructure Layer (`src/infrastructure`):** Provides cross-cutting technical services like configuration (`config.js`), dependency injection (`di-container.js`), logging (`logger.js`), error handling (`error-tracker.js`), and safe execution contexts (`safe-execute.js`).
+- **Shared Utilities (`src/shared`):** Contains common utilities, such as DOM manipulation functions (`dom-utils.js`), used across different layers.
 
-## Sequence of Operations
+## 2. File-by-File Analysis
 
-1.  **User opens the extension popup:** `popup.html` is displayed.
-2.  **`popup.js` initializes:**
-    *   It loads any previously saved reports from `chrome.storage.local`.
-    *   It queries the current tab's URL and displays it.
-    *   It sets up event listeners for the "Extract Elements" and "Compare Reports" buttons, as well as the tab switching functionality.
-3.  **User clicks "Extract Elements":**
-    *   The `extractElements` function is called.
-    *   A message `{ action: 'extractElements' }` is sent to the content script (`content.js`) running on the active tab.
-    *   The content script traverses the DOM, gathers element data, and sends it back to `popup.js`.
-    *   A new report is created, assigned a timestamp, and saved to `chrome.storage.local`.
-    *   The UI is updated to display the new report.
-4.  **User clicks "Compare Reports":**
-    *   The `compareReports` function is called.
-    *   It retrieves the two selected reports from the in-memory `reports` array.
-    *   The `performComparison` function is called to identify added, removed, and modified elements based on their XPath.
-    *   The `displayComparisonResults` function renders the comparison summary and differences in the UI.
-
-## File-by-File Analysis
+This section details the technical specifications of each file in the system.
 
 ### `manifest.json`
 
-*   **Architecture Layer:** Configuration
-*   **State Ownership:** None. This file is purely declarative.
-*   **Interface Contract:** None. It defines the extension's properties and capabilities.
-*   **Message Schema:** None.
-*   **Coupling & Dependencies:**
-    *   `popup.html`: Declares the main UI for the extension's action.
-    *   `content.js`: Declares the content script to be injected into web pages.
-    *   `Images/icon16.png`, `Images/icon48.png`, `Images/icon128.png`: Declares the icons for the extension.
-    *   **Permissions**:
-        *   `activeTab`: Allows the extension to interact with the currently active tab.
-        *   `storage`: Allows the extension to use `chrome.storage`.
-        *   `scripting`: Allows the extension to execute scripts in the context of web pages.
-    *   **Host Permissions**:
-        *   `<all_urls>`: Allows the content script to run on all URLs.
+- **Architecture Layer:** Configuration
+- **State Ownership:** None.
+- **Interface Contract:** Not applicable (declarative JSON).
+- **Message Schema:** Not applicable.
+- **Coupling & Dependencies:**
+    - **Defines Entry Points:**
+        - **Popup:** `popup.html` is the entry point for user interaction via the extension's toolbar action.
+        - **Content Script:** Injects `content.js` into all web pages (`<all_urls>`).
+    - **Permissions:**
+        - `activeTab`: Allows the extension to interact with the currently active tab.
+        - `storage`: Grants access to the `chrome.storage` API for data persistence.
+        - `scripting`: Required to execute scripts in different contexts.
+    - **Icons:** Specifies the paths to the extension's icons.
 
 ### `src/presentation/popup.html`
 
-*   **Architecture Layer:** UI
-*   **State Ownership:** None. This file defines the static structure of the popup.
-*   **Interface Contract:** This file defines the user interface for the extension. It includes:
-    *   **Tabs:** "Extract Elements" and "Compare Reports".
-    *   **Buttons:** "Extract Elements" and "Compare Reports".
-    *   **Inputs:** A text input for the page URL (readonly), and two dropdowns to select reports for comparison.
-    *   **Containers:**  `extract-status`, `reports-container`, `compare-status`, and `comparison-results` to display dynamic content.
-*   **Message Schema:** None.
-*   **Coupling & Dependencies:**
-    *   `styles/popup.css`: Defines the styling for the popup.
-    *   `libs/xlsx.full.min.js`: Includes the xlsx library for spreadsheet operations.
-    *   `popup.js`: Contains the logic for the popup UI.
+-   **Architecture Layer:** Presentation
+-   **State Ownership:** None. This file defines the static DOM structure.
+-   **Interface Contract:** Not applicable (HTML document). The file provides the UI structure for the extension's popup, including two main tabs: "Extract Elements" and "Compare Reports". It defines the buttons, input fields, and containers that `popup.js` will interact with.
+-   **Message Schema:** Not applicable.
+-   **Coupling & Dependencies:**
+    -   **CSS:** Links to `popup.css` for all styling information.
+    
+-   **JavaScript:**
+        -   Includes `libs/xlsx.full.min.js`, making the XLSX library available in the popup's global scope for Excel file generation.
+        -   Includes `popup.js`, which contains all the logic for handling user interactions within the popup.
 
 ### `src/presentation/popup.js`
 
-*   **Architecture Layer:** UI Logic, State Management
-*   **State Ownership:**
-    *   `reports` (in-memory): An array of report objects loaded from and saved to `chrome.storage.local`.
-    *   `chrome.storage.local`: Persists the `reports` array.
-*   **Interface Contract:**
-    *   `loadCurrentPageUrl()`:
-        *   **Signature:** `async function loadCurrentPageUrl()`
-        *   **Purpose:** Gets the URL of the active tab and displays it in the `page-url` input field.
-        *   **Input/Output:** None.
-        *   **Side Effects:** Modifies the DOM.
-    *   `setupTabs()`:
-        *   **Signature:** `function setupTabs()`
-        *   **Purpose:** Sets up the tab switching functionality.
-        *   **Input/Output:** None.
-        *   **Side Effects:** Modifies the DOM.
-    *   `extractElements()`:
-        *   **Signature:** `async function extractElements()`
-        *   **Purpose:** Initiates the element extraction process.
-        *   **Input/Output:** None.
-        *   **Side Effects:** Modifies the DOM, sends a message to the content script, and saves a new report to `chrome.storage.local`.
-    *   `loadReports()`:
-        *   **Signature:** `async function loadReports()`
-        *   **Purpose:** Loads reports from `chrome.storage.local` into the in-memory `reports` array.
-        *   **Input/Output:** None.
-        *   **Side Effects:** Modifies the in-memory `reports` array and the DOM.
-    *   `saveReports()`:
-        *   **Signature:** `async function saveReports()`
-        *   **Purpose:** Saves the in-memory `reports` array to `chrome.storage.local`.
-        *   **Input/Output:** None.
-        *   **Side Effects:** Writes to `chrome.storage.local`.
-    *   `displayReports()`:
-        *   **Signature:** `function displayReports()`
-        *   **Purpose:** Renders the list of saved reports in the UI.
-        *   **Input/Output:** None.
-        *   **Side Effects:** Modifies the DOM.
-    *   `downloadReport(reportId)`:
-        *   **Signature:** `function downloadReport(reportId)`
-        *   **Purpose:** Downloads a report as an Excel file.
-        *   **Input/Output:** `reportId` (string).
-        *   **Side Effects:** Triggers a file download.
-    *   `deleteReport(reportId)`:
-        *   **Signature:** `async function deleteReport(reportId)`
-        *   **Purpose:** Deletes a report from the in-memory `reports` array and `chrome.storage.local`.
-        *   **Input/Output:** `reportId` (string).
-        *   **Side Effects:** Modifies the in-memory `reports` array, writes to `chrome.storage.local`, and modifies the DOM.
-    *   `populateReportSelectors()`:
-        *   **Signature:** `function populateReportSelectors()`
-        *   **Purpose:** Populates the report selection dropdowns.
-        *   **Input/Output:** None.
-        *   **Side Effects:** Modifies the DOM.
-    *   `compareReports()`:
-        *   **Signature:** `function compareReports()`
-        *   **Purpose:** Initiates the report comparison process.
-        *   **Input/Output:** None.
-        *   **Side Effects:** Modifies the DOM.
-    *   `performComparison(report1, report2)`:
-        *   **Signature:** `function performComparison(report1, report2)`
-        *   **Purpose:** Compares two reports and identifies differences.
-        *   **Input/Output:** `report1` (object), `report2` (object). Returns an object with `added`, `removed`, and `modified` arrays.
-        *   **Side Effects:** None.
-    *   `findElementDifferences(el1, el2)`:
-        *   **Signature:** `function findElementDifferences(el1, el2)`
-        *   **Purpose:** Compares two element objects and identifies differences.
-        *   **Input/Output:** `el1` (object), `el2` (object). Returns an array of difference objects.
-        *   **Side Effects:** None.
-    *   `displayComparisonResults(comparison, report1, report2)`:
-        *   **Signature:** `function displayComparisonResults(comparison, report1, report2)`
-        *   **Purpose:** Renders the comparison results in the UI.
-        *   **Input/Output:** `comparison` (object), `report1` (object), `report2` (object).
-        *   **Side Effects:** Modifies the DOM.
-*   **Message Schema:**
-    *   **Sent to `content.js`:** `{ action: 'extractElements' }`
-*   **Coupling & Dependencies:**
-    *   `chrome.tabs`: To query for the active tab.
-    *   `chrome.scripting`: To execute the content script.
-    *   `chrome.storage`: To persist reports.
-    *   `chrome.runtime`: To send messages to the content script.
-    *   `content.js`: Expects `content.js` to be available to respond to the `extractElements` message.
-    *   `libs/xlsx.full.min.js`: For downloading reports as Excel files.
+-   **Architecture Layer:** Presentation (UI Controller)
+-   **State Ownership:**
+    -   **In-Memory:** `let reports = [];` holds the array of all loaded/captured element reports.
+    -   **`chrome.storage.local`:** Persists the `reports` array under a key defined in the configuration (defaults to `page_comparator_reports`).
+-   **Interface Contract:**
+    -   **`DOMContentLoaded` Event Listener:**
+        -   **Signature:** `document.addEventListener('DOMContentLoaded', async () => { ... })`
+        -   **Purpose:** Initializes the popup, loads reports from storage, gets the current page URL, and sets up all UI event listeners.
+        -   **Side Effects:** Calls `loadReports()`, `loadCurrentPageUrl()`, `setupTabs()`. Attaches click handlers to buttons.
+    -   **`extractElements()`**
+        -   **Signature:** `async function extractElements()`
+        -   **Purpose:** Orchestrates the entire element extraction process.
+        -   **Side Effects:** Mutates the DOM to show loading states. Injects `content.js` via `chrome.scripting.executeScript`. Sends a message to the content script and awaits a response. On success, it creates a new report object, saves it to storage via `saveReports()`, and updates the UI via `displayReports()` and `populateReportSelectors()`.
+    -   **`loadReports()`**
+        -   **Signature:** `async function loadReports()`
+        -   **Purpose:** Fetches the report array from `chrome.storage.local`.
+        -   **Side Effects:** Populates the in-memory `reports` array and calls `displayReports()` to render them.
+    -   **`saveReports()`**
+        -   **Signature:** `async function saveReports()`
+        -   **Purpose:** Saves the in-memory `reports` array to `chrome.storage.local`, enforcing the `maxReports` limit from configuration.
+        -   **Side Effects:** Writes data to `chrome.storage.local`.
+    -   **`downloadReport(reportId)`**
+        -   **Signature:** `function downloadReport(reportId)`
+        -   **Purpose:** Generates an `.xlsx` file from the selected report's data.
+        -   **Side Effects:** Triggers a browser file download.
+        -   **Dependencies:** Relies on the `XLSX` library being available in the global scope.
+    -   **`compareReports()`**
+        -   **Signature:** `function compareReports()`
+        -   **Purpose:** Manages the comparison process between two user-selected reports.
+        -   **Side Effects:** Reads selected values from the DOM, calls `performComparison()`, and renders the output by calling `displayComparisonResults()`.
+    -   **`performComparison(report1, report2)`**
+        -   **Signature:** `function performComparison(report1, report2)`
+        -   **Purpose:** Contains the core logic for diffing two reports. It uses a keying strategy (XPath or CSS selector) to create a `Map` of elements for efficient lookup.
+        -   **Input/Output:** Takes two report objects; returns an object `{ added: [], removed: [], modified: [] }`.
+        -   **Complexity:** The use of `Map` makes this an efficient O(N + M) operation, where N and M are the element counts of the two reports.
+-   **Message Schema:**
+    -   **Outgoing (to `content.js`):**
+        ```json
+        {
+          "action": "extractElements"
+        }
+        ```
+-   **Coupling & Dependencies:**
+    -   **DOM:** Tightly coupled to the element IDs and classes in `popup.html`.
+    -   **Infrastructure:** Imports and uses `config.js`, `logger.js`, and `error-tracker.js`.
+    -   **Chrome APIs:** `chrome.tabs`, `chrome.storage`, `chrome.scripting`.
+    
+-   **Libraries:** Expects `XLSX` from `libs/xlsx.full.min.js` to be in the global scope.
 
 ### `src/presentation/content.js`
 
-*   **Architecture Layer:** Data Extraction
-*   **State Ownership:** None. This script is stateless and executes on demand.
-*   **Interface Contract:**
-    *   **Listens for Messages:**
-        *   `{ action: 'extractElements' }`: Triggers the element extraction process.
-        *   `{ action: 'ping' }`: Responds with `{ success: true }` to indicate the script is loaded.
-    *   `extractAllElements()`:
-        *   **Signature:** `function extractAllElements()`
-        *   **Purpose:** Traverses the entire DOM, extracts data from each element, and returns a comprehensive report object.
-        *   **Input/Output:** None. Returns a report object containing the URL, title, timestamp, total number of elements, and an array of element data.
-        *   **Side Effects:** Reads from the DOM.
-*   **Message Schema:**
-    *   **Received from `popup.js`:** `{ action: 'extractElements' }`
-    *   **Sent to `popup.js` (Success):** `{ success: true, data: <reportObject> }`
-    *   **Sent to `popup.js` (Error):** `{ success: false, error: <errorMessage> }`
-*   **Coupling & Dependencies:**
-    *   `../domain/selectors/css-generator.js`: To generate CSS selectors for elements.
-    *   `../domain/selectors/xpath-generator.js`: To generate XPath selectors for elements.
-    *   `chrome.runtime`: To listen for and respond to messages from `popup.js`.
-    *   **DOM:** Heavily coupled to the structure and properties of the web page it's running on.
-
-### `src/domain/selectors/css-generator.js`
-
-*   **Architecture Layer:** Domain Logic (Selector Generation)
-*   **State Ownership:** None. This is a pure utility module with no internal state.
-*   **Interface Contract:**
-    *   `generateBestCSS(element)`:
-        *   **Signature:** `function generateBestCSS(element)`
-        *   **Purpose:** To generate the most stable and unique CSS selector for a given DOM element by trying a cascade of 10 different strategies.
-        *   **Input/Output:** `element` (DOM element). Returns a string containing the best CSS selector, or `null` if no unique selector can be found.
-        *   **Side Effects:** Reads from the DOM to validate selector uniqueness.
-*   **Message Schema:** None.
-*   **Coupling & Dependencies:**
-    *   `../../helpers/common-utils.js`: Imports utility functions `isStableId` and `walkUpTree`.
-    *   **DOM:** Interacts heavily with the DOM to check for selector uniqueness using `document.querySelectorAll`.
+-   **Architecture Layer:** Presentation (DOM Interaction)
+-   **State Ownership:** Stateless. The script executes, gathers data, and responds within a single message lifecycle.
+-   **Interface Contract:**
+    -   **`chrome.runtime.onMessage` Listener:** The primary entry point.
+        -   **Purpose:** Listens for requests from the extension's popup.
+        -   **Trigger:** Fires when `chrome.runtime.sendMessage` is called from another extension context.
+        -   **Action:** If `request.action === 'extractElements'`, it initiates the element scraping process by calling `extractAllElements()`. It uses `sendResponse` to return the data asynchronously.
+    -   **`extractAllElements()`**
+        -   **Signature:** `async function extractAllElements()`
+        -   **Purpose:** Iterates through every element on the page (`document.querySelectorAll('*')`), filters unwanted tags, and gathers detailed data for each valid element using `extractElementData`.
+        -   **Complexity:** This is an O(N) operation, where N is the total number of DOM elements on the page. Performance is directly proportional to page size.
+    -   **`extractElementDataUnsafe(element, index)`**
+        -   **Signature:** `function extractElementDataUnsafe(element, index)`
+        -   **Purpose:** Extracts all relevant properties from a single DOM element, including generating its XPath and CSS selectors by calling the respective generators. It also determines element visibility.
+-   **Message Schema:**
+    -   **Incoming (Request from `popup.js`):**
+        ```json
+        { "action": "extractElements" }
+        ```
+    -   **Outgoing (Response to `popup.js`):**
+        -   **Success:**
+            ```json
+            {
+              "success": true,
+              "data": {
+                "url": "...",
+                "title": "...",
+                "totalElements": 42,
+                "elements": [ { /* ...element data... */ } ]
+              }
+            }
+            ```
+        -   **Failure:**
+            ```json
+            { "success": false, "error": "Error message details." }
+            ```
+-   **Coupling & Dependencies:**
+    -   **DOM:** Tightly coupled to the live DOM of the web page it is injected into.
+    -   **Domain Logic:** Imports and uses `generateBestCSS` and `generateBestXPath` from the `src/domain/selectors/` directory.
+    -   **Infrastructure:** Imports and uses `config.js`, `logger.js`, `error-tracker.js`, and `safe-execute.js`.
+    -   **Chrome APIs:** `chrome.runtime.onMessage`.
 
 ### `src/domain/selectors/xpath-generator.js`
 
-*   **Architecture Layer:** Domain Logic (Selector Generation)
-*   **State Ownership:** None. This is a pure utility module with no internal state.
-*   **Interface Contract:**
-    *   `generateBestXPath(element)`:
-        *   **Signature:** `function generateBestXPath(element)`
-        *   **Purpose:** To generate the most stable and unique XPath for a given DOM element by running a "tournament" of 22 different strategies in a prioritized order.
-        *   **Input/Output:** `element` (DOM element). Returns a string containing the best XPath selector, or `null` if no unique selector can be found within a 100ms timeout.
-        *   **Side Effects:** Reads from the DOM extensively to validate XPath uniqueness and correctness.
-*   **Message Schema:** None.
-*   **Coupling & Dependencies:**
-    *   `../../helpers/common-utils.js`: Imports a large number of utility functions for attribute and text analysis.
-    *   **DOM:** Interacts heavily with the DOM to evaluate XPath expressions (`document.evaluate`) and analyze element properties.
+-   **Architecture Layer:** Domain
+-   **State Ownership:** Stateless. The functions are pure, operating only on the provided DOM element and the global `document` context.
+-   **Interface Contract:**
+    -   **`generateBestXPath(element)` (Exported):**
+        -   **Signature:** `export function generateBestXPath(element)`
+        -   **Purpose:** The main public entry point for the module. It orchestrates the entire XPath generation process for a single DOM element, returning the first valid, unique XPath found. It wraps the core logic in a `safeExecute` call to enforce a timeout.
+        -   **Input/Output:** Takes a DOM element; returns a string containing the generated XPath, or `null` if no valid XPath could be created.
+    -   **`generateBestXPathUnsafe(element)`:**
+        -   **Purpose:** Implements a "tournament" system that runs through 22+ different XPath generation strategies in a prioritized order. These strategies range from highly specific (e.g., using a `data-testid` attribute) to general fallbacks (e.g., a full path from the root). It validates each generated candidate for uniqueness and correctness.
+    -   **`XPathStrategies` Class:**
+        -   **Purpose:** A container for all the individual XPath generation methods (e.g., `strategyStableId`, `strategyVisibleTextNormalized`, `strategyPrecedingContext`), each representing a different "tier" in the tournament.
+    -   **`strictValidate(...)` & `ensureUniqueness(...)`:**
+        -   **Purpose:** Helper functions that are critical to the process. `strictValidate` confirms that an XPath resolves to exactly one element, which is the target element. `ensureUniqueness` attempts to refine a non-unique XPath by adding contextual information from its ancestors.
+-   **Message Schema:** Not applicable.
+-   **Coupling & Dependencies:**
+    -   **DOM:** Heavily coupled to the live DOM for evaluation and validation (`document.evaluate`).
+    -   **Shared Utilities:** Tightly coupled to `src/shared/dom-utils.js`, importing numerous helper functions (`getBestAttribute`, `isStableId`, `cleanText`, etc.).
+    
+-   **Infrastructure:** Imports and uses `config.js`, `logger.js`, `error-tracker.js`, and `safe-execute.js`.
 
-### `src/styles/popup.css`
+### `src/domain/selectors/css-generator.js`
 
-*   **Architecture Layer:** UI (Styling)
-*   **State Ownership:** None. This is a static asset.
-*   **Interface Contract:** None. This file provides styling for the `popup.html` UI.
-*   **Message Schema:** None.
-*   **Coupling & Dependencies:**
-    *   `popup.html`: This stylesheet is directly referenced by `popup.html` and provides all the visual styling for the extension's user interface.
+-   **Architecture Layer:** Domain
+-   **State Ownership:** Stateless.
+-   **Interface Contract:**
+    -   **`generateBestCSS(element)` (Exported):**
+        -   **Signature:** `export function generateBestCSS(element)`
+        -   **Purpose:** The main public entry point for the module. It orchestrates the CSS selector generation process for a single DOM element, returning the first valid, unique selector found from a prioritized cascade of strategies. It is wrapped in a `safeExecute` call to enforce a timeout.
+        -   **Input/Output:** Takes a DOM element; returns a string containing the generated CSS selector, or `null` if one could not be created.
+    -   **`generateBestCSSUnsafe(element)`:**
+        -   **Purpose:** Implements a "cascade" system that runs through 10 different CSS selector generation strategies in order. It tries each strategy (e.g., using ID, data attributes, classes, `:nth-child`) and returns the first selector that is successfully validated as unique.
+    -   **`isUnique(selector, element)`:**
+        -   **Purpose:** A critical validation function that ensures a generated selector is syntactically valid, matches exactly one element on the page, and that the matched element is the original target element.
+-   **Message Schema:** Not applicable.
+-   **Coupling & Dependencies:**
+    -   **DOM:** Tightly coupled to the live DOM for validation (`document.querySelectorAll`, `CSS.escape`).
+    -   **Shared Utilities:** Imports and uses `isStableId` and `walkUpTree` from `src/shared/dom-utils.js`.
+    -   **Infrastructure:** Imports and uses `config.js`, `logger.js`, `error-tracker.js`, and `safe-execute.js`.
 
-## Complexity Notes
+### `src/infrastructure/config.js`
 
-*   **`extractAllElements()` in `src/presentation/content.js`:** This function uses `document.querySelectorAll('*')` to select every element on the page. It then iterates over this collection. This is an O(n) operation where 'n' is the number of DOM elements. For very large and complex pages, this could lead to performance issues and a noticeable delay in the UI.
-*   **`performComparison()` in `src/presentation/popup.js`:** This function uses `Map` for efficient lookups (O(1) on average), which is good. However, it still involves multiple iterations over the element lists, making the overall complexity roughly O(n + m), where 'n' and 'm' are the number of elements in each report. This should be acceptable for most use cases.
-*   **`generateBestXPath()` in `src/domain/selectors/xpath-generator.js`:** This function is highly complex, employing a 22-tier "tournament" of strategies. Each strategy may involve DOM traversal and evaluation. The function has a built-in 100ms timeout to prevent excessive blocking, but it still represents a significant computational cost for each element processed by `extractAllElements()`. The total time for an extraction is `O(n * k)` where `n` is the number of elements and `k` is the average time per element for XPath generation. This is the most computationally intensive part of the application.
+-   **Architecture Layer:** Infrastructure
+-   **State Ownership:**
+    -   **In-Memory & Immutable:** The module exports a singleton `Config` instance that holds all application settings in a private `_config` object.
+    -   After the `init()` method is called once at startup, the internal configuration object is frozen with `Object.freeze()`, preventing any further modifications at runtime.
+-   **Interface Contract:**
+    -   **`init(overrides = {})`:**
+        -   **Purpose:** Merges the hardcoded default settings with any provided overrides, validates the final configuration against a set of rules, and freezes the result. Designed to be called once.
+        -   **Side Effects:** Throws an error on invalid configuration, preventing the application from starting in a bad state.
+    -   **`get(path, fallback = undefined)`:**
+        -   **Purpose:** The primary method used by other modules to retrieve configuration values using a dot-notation path (e.g., `comparison.matchStrategy`).
+-   **Message Schema:** Not applicable.
+-   **Coupling & Dependencies:**
+    -   **None.** This is a foundational, self-contained module with zero external dependencies. Other modules depend on it.
+
+### `src/infrastructure/logger.js`
+
+-   **Architecture Layer:** Infrastructure
+-   **State Ownership:**
+    -   The exported singleton `Logger` instance holds the current log `level` and a `context` object that is added to all subsequent log entries.
+    -   The internal `StorageTransport` class maintains an in-memory `buffer` of log entries.
+    -   **`chrome.storage.local`:** The `StorageTransport` periodically flushes its buffer to `chrome.storage.local` under a key defined in the configuration.
+-   **Interface Contract:**
+    -   **`init()`:**
+        -   **Purpose:** Initializes the logger based on settings from `config.js`. It sets the minimum log level to record and configures the transports (e.g., `ConsoleTransport`, `StorageTransport`).
+    -   **`setContext(context)`:**
+        -   **Purpose:** Attaches a metadata object to the logger instance, which is then automatically included in every log entry. This is used to tag logs with their origin (e.g., `{ script: 'popup' }`).
+    -   **`debug()`, `info()`, `warn()`, `error()`:**
+        -   **Purpose:** Standard logging methods for recording messages at different severity levels. The logger will discard messages below the configured level.
+    -   **`measure(label, fn)`:**
+        -   **Purpose:** A utility method that wraps a function call, automatically measures its execution time, and logs the result as a performance metric.
+-   **Message Schema:** Not applicable.
+-   **Coupling & Dependencies:**
+    -   **Infrastructure:** Tightly coupled to `config.js` for its settings.
+    -   **Chrome APIs:** The optional `StorageTransport` uses `chrome.storage.local.set` to persist logs.
+
+### `src/infrastructure/error-tracker.js`
+
+-   **Architecture Layer:** Infrastructure
+-   **State Ownership:**
+    -   **In-Memory & Stateful:** The exported singleton `ErrorTracker` instance maintains a `Map` of aggregated error data. It is a stateful service designed to collect and summarize errors over the application's lifecycle.
+    -   **Error Deduplication:** It generates a key for each error and, if an error is seen multiple times, it increments a counter instead of creating a new entry.
+    -   **LRU Eviction:** The `Map` is used to enforce a maximum number of unique errors, with the least recently used error being evicted when the limit is reached.
+-   **Interface Contract:**
+    -   **`ErrorCodes` (Exported Constant):**
+        -   **Purpose:** Provides a standardized, enumerable list of unique codes for all known error types, ensuring consistency in error tracking across the application.
+    -   **`logError(code, message, context = {})`:**
+        -   **Purpose:** The primary method for logging and tracking an error. It handles the deduplication and eviction logic.
+        -   **Side Effects:** Mutates the internal error `Map`. It also calls `logger.error()`, ensuring every tracked error is also passed to the standard logging system.
+    -   **`createError(...)`:**
+        -   **Purpose:** A convenience method that both logs an error via `logError()` and returns a new `TrackedError` instance to be thrown or handled.
+    -   **Diagnostic Methods (`getErrors`, `exportErrors`, etc.):**
+        -   **Purpose:** A suite of methods that provide an API to query the tracker's state, allowing for diagnostics, debugging, and health checks.
+-   **Message Schema:** Not applicable.
+-   **Coupling & Dependencies:**
+    -   **Infrastructure:** Tightly coupled to `config.js` for its settings and `logger.js` for routing all tracked errors to the logging output.
+
+### `src/infrastructure/safe-execute.js`
+
+-   **Architecture Layer:** Infrastructure
+-   **State Ownership:**
+    -   **In-Memory & Stateful:** This module is stateful due to its maintenance of a global, in-memory `Map` of `CircuitBreaker` instances. Each circuit breaker tracks the failure history for a specific operation and can prevent future executions of that operation to avoid cascading failures.
+-   **Interface Contract:**
+    -   **`safeExecute(fn, options)`:**
+        -   **Purpose:** Provides a simple **Timeout** pattern. Wraps a function in a `Promise.race` against a `setTimeout` to ensure it completes within a specified duration.
+    -   **`safeExecuteWithRetry(fn, options)`:**
+        -   **Purpose:** Provides a robust set of resilience patterns: **Timeout**, **Retry with Exponential Backoff**, and **Circuit Breaker**. It automatically retries operations that fail with "transient" errors and can "trip" a circuit breaker to fail fast if an operation fails too frequently.
+    -   **`safeExecuteAll(functions, options)`:**
+        -   **Purpose:** Provides a **Bulkhead** pattern. It executes an array of functions in parallel but wraps each one in its own `safeExecute` call. This ensures that the failure or timeout of one function does not prevent the others in the batch from completing.
+    -   **Diagnostic Methods (`getCircuitBreakerStates`, `resetCircuitBreakers`):**
+        -   **Purpose:** Provides an API to inspect and reset the state of the circuit breakers, primarily for debugging and testing.
+-   **Message Schema:** Not applicable.
+-   **Coupling & Dependencies:**
+    -   **Infrastructure:** As a high-level infrastructure service, it is tightly coupled to the other infrastructure modules: `config.js` (for default settings like timeouts and retries), `logger.js` (for logging state changes and failures), and `error-tracker.js` (for reporting permanent failures).
+
+### `src/infrastructure/di-container.js`
+
+-   **Architecture Layer:** Infrastructure
+-   **Status:** **Unused.** This file defines a Dependency Injection (DI) container, but it is not currently used anywhere in the application. All modules resolve their dependencies via direct ES6 `import` statements. This component represents either legacy code or an aspirational architectural pattern that was not implemented.
+-   **State Ownership:**
+    -   **In-Memory & Stateful:** The singleton `DIContainer` instance holds maps for service factories, cached singleton instances, and a set for detecting circular dependencies during resolution.
+-   **Interface Contract (Intended):**
+    -   **`register(name, factory)`:**
+        -   **Purpose:** To register a service factory function with the container.
+    -   **`resolve(name)`:**
+        -   **Purpose:** To get an instance of a service. It was designed to handle lazy initialization, singleton caching, and circular dependency detection.
+    -   **`bootstrapServices(container)`:**
+        -   **Purpose:** Intended as the single entry point to register all application services. It is currently empty.
+-   **Message Schema:** Not applicable.
+-   **Coupling & Dependencies:**
+    -   **Infrastructure:** Depends only on `logger.js` for internal logging.
+
+### `src/shared/dom-utils.js`
+
+-   **Architecture Layer:** Shared
+-   **State Ownership:** Stateless. This module is a collection of pure, exported functions that operate on the DOM elements passed to them.
+-   **Interface Contract:**
+    -   **Purpose:** Provides a library of low-level, reusable functions for querying and analyzing the DOM. This module is the foundation upon which the more complex selector generators are built.
+    -   **Key Responsibilities:**
+        -   **Stability Analysis:** A critical function of this module is to determine if parts of the DOM are "stable" or dynamically generated. This includes `isStableId`, `isStableClass`, `isStableValue`, and `isStaticText`. These functions contain the business logic for identifying patterns associated with frameworks like React, MUI, etc.
+        -   **Attribute Collection:** Functions like `collectStableAttributes` and `getBestAttribute` provide a prioritized way to find the most reliable attributes on an element for use in selectors.
+        -   **DOM Traversal & Analysis:** Helpers like `walkUpTree`, `findBestSemanticAncestor`, and `findNearbyTextElements` provide advanced ways to understand an element's context within the DOM tree.
+-   **Message Schema:** Not applicable.
+-   **Coupling & Dependencies:**
+    -   **DOM:** Heavily coupled to the live DOM, as its purpose is to inspect DOM properties and structure.
+    -   **Infrastructure:** Has a one-way dependency on `logger.js` to warn about non-critical errors during DOM inspection without crashing the calling function.
+    -   It is a foundational module with **no dependencies** on the `presentation` or `domain` layers.
+
+---
+
+## 3. Sequence of Operations
+
+This section details the step-by-step execution flow for key operations.
+
+### 1. Element Extraction
+
+This sequence describes the flow from a user clicking the "Extract Elements" button to the final report being saved and displayed.
+
+1.  **User Action (in `popup.html`):**
+    *   The user clicks the "Extract Elements" button (`#extract-btn`).
+
+2.  **UI Controller (`popup.js`):**
+    *   The `click` event listener for `#extract-btn` invokes the `extractElements()` async function.
+    *   The UI is updated to a "loading" state.
+    *   `chrome.tabs.query({ active: true, currentWindow: true })` is called to get the currently active tab.
+    *   `chrome.scripting.executeScript()` is called to ensure `content.js` is injected into the target tab.
+    *   A message is sent to the content script in the target tab via `chrome.tabs.sendMessage()` with the payload `{ action: 'extractElements' }`. The script then `await`s a response.
+
+3.  **Content Script (`content.js`):**
+    *   The `chrome.runtime.onMessage` listener fires, receiving the message from `popup.js`.
+    - It verifies `request.action === 'extractElements'`.
+    *   The `extractAllElements()` function is called.
+    *   The function gets a flat list of all DOM nodes via `document.querySelectorAll('*')`.
+    *   It iterates through this list. For each element:
+        *   It calls `extractElementData()`, which wraps the core logic in a `safeExecute` timeout.
+        *   Inside the wrapper, `extractElementDataUnsafe()` is called.
+        *   `generateBestXPath()` and `generateBestCSS()` (from the Domain Layer) are invoked to create stable selectors for the element.
+        *   Visibility, attributes, and other metadata are collected.
+    *   Once the iteration is complete, the script assembles a final `data` object containing all the collected element information.
+    *   This `data` object is returned to the popup via the `sendResponse` callback.
+
+4.  **UI Controller (`popup.js`):**
+    *   The `await` for the `sendMessage` call resolves, providing the `response` object from `content.js`.
+    *   The script checks for `response.success === true`.
+    *   A new `report` object is created with a unique ID, timestamp, and the data received from the content script.
+    *   This report is added to the in-memory `reports` array.
+    *   `saveReports()` is called, which writes the entire `reports` array to `chrome.storage.local`.
+    *   `displayReports()` is called to re-render the list of saved reports in the UI.
+    *   `populateReportSelectors()` is called to update the comparison dropdowns with the new report.
+    *   The UI is updated to show a success message.
+
+---
+
+## 4. Complexity Notes
+
+-   **`O(N)` DOM Traversal (`content.js`):** The `extractAllElements` function performs a full DOM scan using `document.querySelectorAll('*')`. This is a linear operation where `N` is the number of elements on the page. On pages with a very large number of nodes, this operation can be slow and may cause the page to become unresponsive during the extraction process. The use of `safeExecute` with a timeout for individual element processing (`extractElementData`) helps prevent a single problematic element from blocking the entire process indefinitely, but it does not mitigate the cost of the main traversal itself.
+
+-   **`O(N + M)` Comparison (`popup.js`):** The `performComparison` function is implemented efficiently. Instead of a nested loop (`O(N*M)`), it converts each report's element list into a `Map` where the selector is the key. It then iterates through the second map (`M` operations) and the first map (`N` operations) to find additions, removals, and modifications. This results in a much more performant `O(N + M)` time complexity.
+
+-   **Redundant Script Injection (`popup.js` & `manifest.json`):**
+    -   `manifest.json` declares that `content.js` should be injected into all pages at `document_idle`.
+    -   `popup.js` also programmatically injects `content.js` via `chrome.scripting.executeScript` immediately before sending a message.
+    -   This creates a logical redundancy. While Chrome may handle this gracefully, it introduces a potential race condition on slow-loading pages where the programmatic injection might complete and receive a message before the declarative injection has finished. The programmatic injection acts as a safeguard to ensure the content script is ready, but it's an important architectural detail to note.
+
+---
+
+
+UI_Comparison Project Structure
+================================
+
+UI_Comparison/
+├── .eslintrc.json                # ESLint configuration
+├── .gitignore                    # Git ignore file
+├── .prettierrc                   # Prettier configuration
+├── manifest.json                 # Chrome extension manifest
+├── package.json                  # NPM package configuration
+├── PROJECT_STRUCTURE.txt         # Project structure documentation
+├── SYSTEM_REFERENCE.md           # System reference documentation
+├── webpack.config.js             # Webpack configuration
+│
+├── Images/                       # Extension icons
+│   ├── icon16.png               # 16x16 icon
+│   ├── icon48.png               # 48x48 icon
+│   └── icon128.png              # 128x128 icon
+│
+├── libs/                         # External libraries
+│   ├── DOWNLOAD_XLSX_LIBRARY.txt # Notes on XLSX library
+│   └── xlsx.full.min.js         # XLSX library for Excel operations
+│
+└── src/                          # Source code directory
+    │
+    ├── application/              # Application layer (currently empty)
+    │
+    ├── domain/                   # Domain layer
+    │   └── selectors/            # Selector generation modules
+    │       ├── css-generator.js  # CSS generator for UI comparison
+    │       └── xpath-generator.js # XPath generator for element selection
+    │
+    ├── infrastructure/           # Infrastructure modules
+    │   ├── config.js            # Configuration management
+    │   ├── di-container.js      # Dependency injection container
+    │   ├── error-tracker.js     # Error tracking utilities
+    │   ├── logger.js            # Logging utilities
+    │   └── safe-execute.js      # Safe execution wrapper
+    │
+    ├── presentation/             # Presentation layer
+    │   ├── content.js            # Content script (runs in page context)
+    │   ├── popup.css             # Popup styling
+    │   ├── popup.html            # Extension popup HTML
+    │   └── popup.js              # Popup script (runs in extension context)
+    │
+    └── shared/                   # Shared utilities
+        └── dom-utils.js          # DOM utility functions

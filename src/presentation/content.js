@@ -149,6 +149,9 @@ function extractElementDataUnsafe(element, index) {
     return null;
   }
 
+  // Extract computed CSS styles
+  const styles = extractComputedStyles(element);
+
   return {
     index,
     tagName: element.tagName,
@@ -168,7 +171,8 @@ function extractElementDataUnsafe(element, index) {
     attributes: getAttributesString(element),
     visible: isVisible,
     position: `${Math.round(rect.top)},${Math.round(rect.left)}`,
-    dimensions: `${Math.round(rect.width)}x${Math.round(rect.height)}`
+    dimensions: `${Math.round(rect.width)}x${Math.round(rect.height)}`,
+    styles: styles
   };
 }
 
@@ -198,4 +202,50 @@ function getAttributesString(element) {
   }
   
   return attrs.join(' ');
+}
+
+//Extract relevant computed CSS properties
+function extractComputedStyles(element) {
+  try {
+    const computed = window.getComputedStyle(element);
+    
+    // Extract only relevant properties (not all 500+)
+    const relevantProperties = [
+      // Typography
+      'font-family', 'font-size', 'font-weight', 'line-height',
+      'letter-spacing', 'text-align', 'color',
+      
+      // Colors
+      'background-color', 'border-color',
+      
+      // Spacing
+      'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+      'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+      
+      // Layout
+      'display', 'position', 'width', 'height',
+      'flex-direction', 'justify-content', 'align-items',
+      
+      // Borders
+      'border-width', 'border-style', 'border-radius'
+    ];
+    
+    const styles = {};
+    
+    for (const prop of relevantProperties) {
+      const value = computed.getPropertyValue(prop);
+      if (value) {
+        styles[prop] = value;
+      }
+    }
+    
+    return styles;
+    
+  } catch (error) {
+    logger.warn('Failed to extract computed styles', { 
+      tagName: element.tagName,
+      error: error.message 
+    });
+    return {};
+  }
 }
