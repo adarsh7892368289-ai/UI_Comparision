@@ -9,10 +9,7 @@ import { isStableClass } from '../../shared/dom-utils.js';
 
 export class DetectorEngine {
   
-  /**
-   * Detect component type for single element
-   * @returns {Object} { type, confidence, strategy, instances }
-   */
+  //Detect component type for single element
   detectComponentType(element) {
     // Try detection strategies in order of confidence
     

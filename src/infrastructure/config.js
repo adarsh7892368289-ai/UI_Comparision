@@ -1,9 +1,5 @@
 // Configuration System
-// Single source of truth for all settings
-// Validates config on startup (fail fast)
-// Prevents accidental mutations (frozen)
 
-// DEFAULT CONFIGURATION
 const defaults = {
   // Extraction Pipeline
   extraction: {
@@ -76,12 +72,13 @@ const defaults = {
       maxStrategies: 22, // total strategies (tiers 0-22)
       earlyExitAfter: 1, // stop after N valid candidates
       strategyTimeout: 100, // ms per strategy
-      totalTimeout: 2000, // overall XPath generation limit
+      totalTimeout: 500, // overall XPath generation limit
     },
     css: {
       maxStrategies: 10,
-      strategyTimeout: 50,
-      totalTimeout: 500,
+      strategyTimeout: 200, 
+      earlyExitAfter: 1,
+      totalTimeout: 300,   
     },
     minRobustnessScore: 50, // reject selectors below this score
   },
@@ -144,7 +141,7 @@ const defaults = {
 
   // Logging
   logging: {
-    level: 'info', // 'debug' | 'info' | 'warn' | 'error'
+    level: 'debug', // 'debug' | 'info' | 'warn' | 'error'
     persistLogs: false, // save to storage for export
     maxEntries: 1000, // circular buffer size
     includeStackTraces: true,

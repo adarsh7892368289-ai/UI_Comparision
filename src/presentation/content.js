@@ -1,5 +1,4 @@
 // Content script to extract web elements from the page
-
 import { generateBestCSS } from '../domain/selectors/css-generator.js';
 import { generateBestXPath } from '../domain/selectors/xpath-generator.js';
 import config from '../infrastructure/config.js';
@@ -174,20 +173,29 @@ async function extractElementData(element, index) {
   return data;
 }
 
-//Extract element data without timeout protection 
-function extractElementDataUnsafe(element, index) {
-  // Generators return metadata objects: { xpath, strategy, robustness }
-  const xpathResult = generateBestXPath(element);
-  const cssResult = generateBestCSS(element);
+//Extract element data without timeout protection
+async function extractElementDataUnsafe(element, index) {
+  const [xpathResult, cssResult] = await Promise.all([
+    generateBestXPath(element),
+    generateBestCSS(element)
+  ]);
   
   // Extract selector strings from results
-  const xpathStr = xpathResult?.xpath || null;
-  const cssStr = cssResult?.selector || cssResult?.cssSelector || null;
+  let xpathStr = xpathResult?.xpath || null;
+  let cssStr = cssResult?.cssSelector || null;
   
+  //Fallback selectors if advanced generation fails
+  if (!xpathStr) {
+    xpathStr = getXPath(element);
+  }
+  if (!cssStr) {
+    cssStr = getCssSelector(element);
+  }
+
   if (!xpathStr && !cssStr) {
-    logger.debug('Skipping element without selectors', { 
+    logger.debug('Skipping element without selectors', {
       index,
-      tagName: element.tagName 
+      tagName: element.tagName
     });
     return null;
   }
@@ -238,7 +246,7 @@ function extractElementDataUnsafe(element, index) {
     xpathMeta: xpathResult ? {
       strategy: xpathResult.strategy || 'unknown',
       robustness: xpathResult.robustness || 0,
-      tier: inferTierFromStrategy(xpathResult.strategy) // Helper function below
+      tier: inferTierFromStrategy(xpathResult.strategy) 
     } : null,
     
     cssMeta: cssResult ? {
@@ -322,44 +330,84 @@ function getAttributesString(element) {
 function extractComputedStyles(element) {
   try {
     const computed = window.getComputedStyle(element);
-    
+
     // Extract only relevant properties (not all 500+)
     const relevantProperties = [
       // Typography
       'font-family', 'font-size', 'font-weight', 'line-height',
       'letter-spacing', 'text-align', 'color',
-      
+
       // Colors
       'background-color', 'border-color',
-      
+
       // Spacing
       'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
       'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
-      
+
       // Layout
       'display', 'position', 'width', 'height',
       'flex-direction', 'justify-content', 'align-items',
-      
+
       // Borders
       'border-width', 'border-style', 'border-radius'
     ];
-    
+
     const styles = {};
-    
+
     for (const prop of relevantProperties) {
       const value = computed.getPropertyValue(prop);
       if (value) {
         styles[prop] = value;
       }
     }
-    
+
     return styles;
-    
+
   } catch (error) {
-    logger.warn('Failed to extract computed styles', { 
+    logger.warn('Failed to extract computed styles', {
       tagName: element.tagName,
-      error: error.message 
+      error: error.message
     });
     return {};
   }
+}
+
+// Fallback XPath generator
+function getXPath(element) {
+  if (element.id !== '') {
+    return `//*[@id="${element.id}"]`;
+  }
+
+  if (element === document.body) {
+    return '/html/body';
+  }
+
+  let ix = 0;
+  const siblings = element.parentNode ? element.parentNode.childNodes : [];
+
+  for (let i = 0; i < siblings.length; i++) {
+    const sibling = siblings[i];
+    if (sibling === element) {
+      return getXPath(element.parentNode) + '/' + element.tagName.toLowerCase() + '[' + (ix + 1) + ']';
+    }
+    if (sibling.nodeType === 1 && sibling.tagName === element.tagName) {
+      ix++;
+    }
+  }
+}
+
+// Fallback CSS selector generator
+function getCssSelector(element) {
+  if (element.id) {
+    return '#' + element.id;
+  }
+
+  if (element.className) {
+    const classes = element.className.split(' ').filter(c => c.trim()).join('.');
+    if (classes) {
+      return element.tagName.toLowerCase() + '.' + classes;
+    }
+  }
+
+  return element.tagName.toLowerCase();
 }

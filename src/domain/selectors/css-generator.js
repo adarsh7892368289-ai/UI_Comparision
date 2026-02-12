@@ -1,5 +1,5 @@
-// CSS Generator: Production 10-Strategy Cascade (Single Selector Output)
-// Returns: Single best CSS selector string (null if generation fails)
+// CSS Generator: 10-Strategy Cascade with Early Exit
+// Returns first unique CSS selector found
 
 import config from '../../infrastructure/config.js';
 import errorTracker, { ErrorCodes } from '../../infrastructure/error-tracker.js';
@@ -13,7 +13,7 @@ export function generateBestCSS(element) {
     return null;
   }
 
-  const timeout = config.get('selectors.css.strategyTimeout', 50);
+  const timeout = config.get('selectors.css.totalTimeout', 50);
   
   return safeExecute(
     () => generateBestCSSUnsafe(element),
@@ -25,116 +25,97 @@ function generateBestCSSUnsafe(element) {
   const startTime = performance.now();
   const tag = element.tagName.toLowerCase();
 
+  // Strategy cascade with early exit
   let result = null;
   
-  result = tryStrategy(element, tag, strategy1Id);
-  if (result) {
-    logSuccess(element, performance.now() - startTime);
-    return result;
-  }
+  result = tryStrategy(element, tag, 1, strategy1Id);
+  if (result) return buildResult(result, startTime);
   
-  result = tryStrategy(element, tag, strategy2DataAttrs);
-  if (result) {
-    logSuccess(element, performance.now() - startTime);
-    return result;
-  }
+  result = tryStrategy(element, tag, 2, strategy2DataAttrs);
+  if (result) return buildResult(result, startTime);
   
-  result = tryStrategy(element, tag, strategy3CombinedData);
-  if (result) {
-    logSuccess(element, performance.now() - startTime);
-    return result;
-  }
+  result = tryStrategy(element, tag, 3, strategy3CombinedData);
+  if (result) return buildResult(result, startTime);
   
-  result = tryStrategy(element, tag, strategy4TypeName);
-  if (result) {
-    logSuccess(element, performance.now() - startTime);
-    return result;
-  }
+  result = tryStrategy(element, tag, 4, strategy4TypeName);
+  if (result) return buildResult(result, startTime);
   
-  result = tryStrategy(element, tag, strategy5ClassAttr);
-  if (result) {
-    logSuccess(element, performance.now() - startTime);
-    return result;
-  }
+  result = tryStrategy(element, tag, 5, strategy5ClassAttr);
+  if (result) return buildResult(result, startTime);
   
-  result = tryStrategy(element, tag, strategy6ParentChild);
-  if (result) {
-    logSuccess(element, performance.now() - startTime);
-    return result;
-  }
+  result = tryStrategy(element, tag, 6, strategy6ParentChild);
+  if (result) return buildResult(result, startTime);
   
-  result = tryStrategy(element, tag, strategy7Descendant);
-  if (result) {
-    logSuccess(element, performance.now() - startTime);
-    return result;
-  }
+  result = tryStrategy(element, tag, 7, strategy7Descendant);
+  if (result) return buildResult(result, startTime);
   
-  result = tryStrategy(element, tag, strategy8Pseudo);
-  if (result) {
-    logSuccess(element, performance.now() - startTime);
-    return result;
-  }
+  result = tryStrategy(element, tag, 8, strategy8Pseudo);
+  if (result) return buildResult(result, startTime);
   
-  result = tryStrategy(element, tag, strategy9NthChild);
-  if (result) {
-    logSuccess(element, performance.now() - startTime);
-    return result;
-  }
+  result = tryStrategy(element, tag, 9, strategy9NthChild);
+  if (result) return buildResult(result, startTime);
   
-  result = tryStrategy(element, tag, strategy10NthType);
-  if (result) {
-    logSuccess(element, performance.now() - startTime);
-    return result;
-  }
+  result = tryStrategy(element, tag, 10, strategy10NthType);
+  if (result) return buildResult(result, startTime);
   
-  errorTracker.logError(
-    ErrorCodes.CSS_GENERATION_FAILED,
-    'No valid CSS selector found',
-    { element: element.tagName, id: element.id }
-  );
+  errorTracker.logError(ErrorCodes.CSS_GENERATION_FAILED, 'No valid CSS selector found', {
+    element: element.tagName, id: element.id
+  });
   
   return null;
 }
 
-function logSuccess(element, duration) {
+function buildResult(strategyResult, startTime) {
+  const duration = performance.now() - startTime;
+  const robustness = calculateRobustness(strategyResult.tier);
+  
   logger.debug('CSS selector generated', { 
-    element: element.tagName,
-    duration: Math.round(duration)
+    selector: strategyResult.selector, strategy: strategyResult.strategy, 
+    tier: strategyResult.tier, duration: Math.round(duration)
   });
+  
+  return {
+    cssSelector: strategyResult.selector,
+    strategy: strategyResult.strategy,
+    tier: strategyResult.tier,
+    robustness: robustness
+  };
 }
 
-// ==================== STRATEGY FUNCTIONS ====================
+function calculateRobustness(tier) {
+  return Math.max(10, 100 - (tier * 9));
+}
 
-function tryStrategy(element, tag, strategyFunc) {
+// Returns first unique selector from strategy candidates
+function tryStrategy(element, tag, tier, strategyFunc) {
   try {
-    const selectors = strategyFunc(element, tag);
+    const candidates = strategyFunc(element, tag);
     
-    for (const selector of selectors) {
-      if (isUnique(selector, element)) {
-        return selector;
+    for (const candidate of candidates) {
+      if (isUnique(candidate.selector, element)) {
+        return { selector: candidate.selector, strategy: candidate.strategy, tier };
       }
     }
   } catch (error) {
-    logger.warn('CSS strategy failed', { 
-      error: error.message,
-      element: element.tagName 
-    });
+    logger.warn('CSS strategy failed', { error: error.message, element: element.tagName });
   }
   
   return null;
 }
 
+// Strategy 1: ID selector
 function strategy1Id(element, tag) {
   const selectors = [];
   
   if (element.id && isStableId(element.id)) {
-    selectors.push(`#${escapeCss(element.id)}`);
-    selectors.push(`${tag}#${escapeCss(element.id)}`);
+    selectors.push({ selector: `#${escapeCss(element.id)}`, strategy: 'id' });
+    selectors.push({ selector: `${tag}#${escapeCss(element.id)}`, strategy: 'id-with-tag' });
   }
   
   return selectors;
 }
 
+// Strategy 2: Test automation data attributes
 function strategy2DataAttrs(element, tag) {
   const selectors = [];
   const testAttrs = ['data-testid', 'data-test', 'data-qa', 'data-cy'];
@@ -142,14 +123,15 @@ function strategy2DataAttrs(element, tag) {
   for (const attr of testAttrs) {
     const value = element.getAttribute(attr);
     if (value) {
-      selectors.push(`[${attr}="${escapeCss(value)}"]`);
-      selectors.push(`${tag}[${attr}="${escapeCss(value)}"]`);
+      selectors.push({ selector: `[${attr}="${escapeCss(value)}"]`, strategy: 'data-attribute' });
+      break; // Return first match
     }
   }
   
   return selectors;
 }
 
+// Strategy 3: Combined data attributes
 function strategy3CombinedData(element, tag) {
   const selectors = [];
   
@@ -158,30 +140,35 @@ function strategy3CombinedData(element, tag) {
     .slice(0, 2);
   
   if (dataAttrs.length >= 2) {
-    const attrStr = dataAttrs
-      .map(a => `[${a.name}="${escapeCss(a.value)}"]`)
-      .join('');
-    
-    selectors.push(`${tag}${attrStr}`);
+    const attrStr = dataAttrs.map(a => `[${a.name}="${escapeCss(a.value)}"]`).join('');
+    selectors.push({ selector: `${tag}${attrStr}`, strategy: 'combined-data-attributes' });
   }
   
   return selectors;
 }
 
+// Strategy 4: Type and name combination
 function strategy4TypeName(element, tag) {
   const selectors = [];
   
   if (element.type && element.name) {
-    selectors.push(`${tag}[type="${escapeCss(element.type)}"][name="${escapeCss(element.name)}"]`);
+    selectors.push({
+      selector: `${tag}[type="${escapeCss(element.type)}"][name="${escapeCss(element.name)}"]`,
+      strategy: 'type-name'
+    });
   }
   
   if (element.type) {
-    selectors.push(`${tag}[type="${escapeCss(element.type)}"]`);
+    selectors.push({
+      selector: `${tag}[type="${escapeCss(element.type)}"]`,
+      strategy: 'type-only'
+    });
   }
   
   return selectors;
 }
 
+// Strategy 5: Class attributes
 function strategy5ClassAttr(element, tag) {
   const selectors = [];
   const classes = getMeaningfulClasses(element);
@@ -189,16 +176,20 @@ function strategy5ClassAttr(element, tag) {
   if (classes.length > 0) {
     const classStr = classes.slice(0, 2).map(c => `.${escapeCss(c)}`).join('');
     
-    selectors.push(`${tag}${classStr}`);
+    selectors.push({ selector: `${tag}${classStr}`, strategy: 'class-attribute' });
     
     if (element.type) {
-      selectors.push(`${tag}${classStr}[type="${escapeCss(element.type)}"]`);
+      selectors.push({
+        selector: `${tag}${classStr}[type="${escapeCss(element.type)}"]`,
+        strategy: 'class-with-type'
+      });
     }
   }
   
   return selectors;
 }
 
+// Strategy 6: Parent > child combinator
 function strategy6ParentChild(element, tag) {
   const selectors = [];
   const parent = findStableParent(element);
@@ -208,11 +199,15 @@ function strategy6ParentChild(element, tag) {
   const parentSelector = getParentSelector(parent);
   const childSelector = getChildSelector(element);
   
-  selectors.push(`${parentSelector} > ${childSelector}`);
+  selectors.push({
+    selector: `${parentSelector} > ${childSelector}`,
+    strategy: 'parent-child'
+  });
   
   return selectors;
 }
 
+// Strategy 7: Descendant combinator
 function strategy7Descendant(element, tag) {
   const selectors = [];
   const parent = findStableParent(element);
@@ -222,29 +217,34 @@ function strategy7Descendant(element, tag) {
   const parentSelector = getParentSelector(parent);
   const childSelector = getChildSelector(element);
   
-  selectors.push(`${parentSelector} ${childSelector}`);
+  selectors.push({
+    selector: `${parentSelector} ${childSelector}`,
+    strategy: 'complex-descendant'
+  });
   
   return selectors;
 }
 
+// Strategy 8: Pseudo-classes
 function strategy8Pseudo(element, tag) {
   const selectors = [];
   
   if (element.disabled) {
-    selectors.push(`${tag}:disabled`);
+    selectors.push({ selector: `${tag}:disabled`, strategy: 'pseudo-disabled' });
   }
   
   if (element.required) {
-    selectors.push(`${tag}:required`);
+    selectors.push({ selector: `${tag}:required`, strategy: 'pseudo-required' });
   }
   
   if (element.checked !== undefined) {
-    selectors.push(`${tag}:checked`);
+    selectors.push({ selector: `${tag}:checked`, strategy: 'pseudo-checked' });
   }
   
   return selectors;
 }
 
+// Strategy 9: nth-child positional selector
 function strategy9NthChild(element, tag) {
   const selectors = [];
   const parent = element.parentElement;
@@ -258,29 +258,34 @@ function strategy9NthChild(element, tag) {
   
   const parentSelector = getParentSelector(parent);
   
-  selectors.push(`${parentSelector} > ${tag}:nth-child(${index})`);
+  selectors.push({
+    selector: `${parentSelector} > ${tag}:nth-child(${index})`,
+    strategy: 'nth-child'
+  });
   
   return selectors;
 }
 
+// Strategy 10: nth-of-type positional selector
 function strategy10NthType(element, tag) {
   const parent = element.parentElement;
   
   if (!parent) {
-    return [tag];
+    return [{ selector: tag, strategy: 'tag-only' }];
   }
   
-  const siblings = Array.from(parent.children)
-    .filter(e => e.tagName === element.tagName);
+  const siblings = Array.from(parent.children).filter(e => e.tagName === element.tagName);
   const index = siblings.indexOf(element) + 1;
   
   const parentSelector = getParentSelector(parent);
   
-  return [`${parentSelector} > ${tag}:nth-of-type(${index})`];
+  return [{
+    selector: `${parentSelector} > ${tag}:nth-of-type(${index})`,
+    strategy: 'nth-of-type'
+  }];
 }
 
-// ==================== HELPER FUNCTIONS ====================
-
+// Finds first stable parent within 5 levels
 function findStableParent(element) {
   const parents = walkUpTree(element, 5);
   
@@ -299,6 +304,7 @@ function findStableParent(element) {
   return parents[0] || null;
 }
 
+// Builds selector for parent element
 function getParentSelector(parent) {
   if (!parent) return 'body';
   
@@ -321,6 +327,7 @@ function getParentSelector(parent) {
   return tag;
 }
 
+// Builds selector for child element
 function getChildSelector(element) {
   const tag = element.tagName.toLowerCase();
   
@@ -341,12 +348,14 @@ function getChildSelector(element) {
   return tag;
 }
 
+// Finds first data-* attribute
 function getFirstDataAttr(element) {
   const attrs = Array.from(element.attributes);
   const dataAttr = attrs.find(a => a.name.startsWith('data-') && a.value);
   return dataAttr || null;
 }
 
+// Filters element classes to remove generated/utility classes
 function getMeaningfulClasses(element) {
   if (!element.className || typeof element.className !== 'string') {
     return [];
@@ -360,8 +369,7 @@ function getMeaningfulClasses(element) {
     .filter(c => !['active', 'selected', 'hover', 'focus'].includes(c));
 }
 
-// ==================== CSS VALIDATION UTILITIES ====================
-
+// CSS validation utilities
 function escapeCss(value) {
   if (typeof value !== 'string') return '';
   return CSS.escape(value);

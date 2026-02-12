@@ -5,7 +5,7 @@
 
 import config from './config.js';
 
-//// LOG TRANSPORTS (Where logs are written)
+// LOG TRANSPORTS (Where logs are written)
 class ConsoleTransport {
   write(logEntry) {
     const { level, message, timestamp, ...meta } = logEntry;
@@ -95,9 +95,9 @@ class Logger {
 	}
 
     //Set global context for all logs 
-    setContext(context) {
-        this.context = { ...this.context, ...context };
-    }
+  setContext(context) {
+    this.context = { ...this.context, ...context };
+  }
 
     //Clear global context
     clearContext() {
