@@ -1,34 +1,42 @@
 {
   "manifest_version": 3,
-  "name": "Web Page Element Comparator",
+  "name": "UI Comparison",
   "version": "1.0.0",
-  "description": "Extract and compare web page elements across different versions",
+  "description": "Compare UI elements between web pages with intelligent matching and normalization",
   "permissions": [
-    "activeTab",
     "storage",
-    "scripting"
+    "activeTab",
+    "tabs"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
-  "action": {
-    "default_popup": "popup.html",
-    "default_icon": {
-      "16": "Images/icon16.png",
-      "48": "Images/icon48.png",
-      "128": "Images/icon128.png"
-    }
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
   },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
   "icons": {
-    "16": "Images/icon16.png",
-    "48": "Images/icon48.png",
-    "128": "Images/icon128.png"
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
   }
 }

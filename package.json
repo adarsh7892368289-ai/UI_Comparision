@@ -3,8 +3,7 @@
   "version": "1.0.0",
   "description": "Chrome extension for extracting and comparing web page elements",
   "scripts": {
-    "setup": "npm install && npm run copy-xlsx",
-    "copy-xlsx": "cp node_modules/xlsx/dist/xlsx.full.min.js libs/xlsx.full.min.js",
+    "setup": "npm install",
     "clean": "rm -rf node_modules package-lock.json",
     "build": "webpack"
   },

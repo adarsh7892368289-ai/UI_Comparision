@@ -6,7 +6,8 @@ module.exports = {
   
   entry: {
     popup: './src/presentation/popup.js',
-    content: './src/presentation/content.js'
+    content: './src/presentation/content.js',
+    background: './src/application/background.js'
   },
 
   output: {
@@ -20,7 +21,7 @@ module.exports = {
       patterns: [
         { from: "manifest.json", to: "." },
         { from: "src/presentation/popup.html", to: "." },
-        { from: "Images", to: "Images" },
+        { from: "icons", to: "icons" },
         { from: "src/presentation/popup.css", to: "popup.css" },
         { from: "libs", to: "libs" }
       ],

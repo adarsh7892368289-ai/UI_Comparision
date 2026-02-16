@@ -1,309 +1,167 @@
-//Safe Execute - Resilience Wrapper
-// Wraps functions with timeout protection
-// Retries transient failures with exponential backoff
-// Circuit breaker pattern to prevent cascading failures
-
-import config from './config.js';
 import logger from './logger.js';
-import errorTracker, { ErrorCodes } from './error-tracker.js';
+import errorTracker from './error-tracker.js';
 
-// ERROR CLASSIFICATION
+class CircuitBreaker {
+  constructor(name, options = {}) {
+    this.name = name;
+    this.failureThreshold = options.failureThreshold || 5;
+    this.resetTimeout = options.resetTimeout || 30000;
+    this.cooldownPeriod = options.cooldownPeriod || 5000;
+    
+    this.state = 'CLOSED';
+    this.failures = 0;
+    this.successes = 0;
+    this.lastFailureTime = null;
+    this.nextAttemptTime = null;
+  }
 
-//Classify errors as transient (retry) or permanent (fail fast)
+  async execute(fn) {
+    if (this.state === 'OPEN') {
+      if (Date.now() >= this.nextAttemptTime) {
+        this.state = 'HALF_OPEN';
+        logger.info(`Circuit breaker ${this.name}: HALF_OPEN`);
+      } else {
+        throw new Error(`Circuit breaker ${this.name} is OPEN`);
+      }
+    }
+
+    try {
+      const result = await fn();
+      this.onSuccess();
+      return result;
+    } catch (error) {
+      this.onFailure();
+      throw error;
+    }
+  }
+
+  onSuccess() {
+    this.failures = 0;
+    
+    if (this.state === 'HALF_OPEN') {
+      this.state = 'CLOSED';
+      logger.info(`Circuit breaker ${this.name}: CLOSED (recovered)`);
+    }
+  }
+
+  onFailure() {
+    this.failures++;
+    this.lastFailureTime = Date.now();
+
+    if (this.failures >= this.failureThreshold) {
+      this.state = 'OPEN';
+      this.nextAttemptTime = Date.now() + this.cooldownPeriod;
+      logger.warn(`Circuit breaker ${this.name}: OPEN (${this.failures} failures)`);
+    }
+  }
+
+  reset() {
+    this.state = 'CLOSED';
+    this.failures = 0;
+    this.successes = 0;
+    this.lastFailureTime = null;
+    this.nextAttemptTime = null;
+  }
+}
+
+const circuitBreakers = new Map();
+
+function getCircuitBreaker(operation) {
+  if (!circuitBreakers.has(operation)) {
+    circuitBreakers.set(operation, new CircuitBreaker(operation));
+  }
+  return circuitBreakers.get(operation);
+}
+
 function isTransientError(error) {
   const transientPatterns = [
     /timeout/i,
     /network/i,
     /quota.*exceeded/i,
     /temporary/i,
-    /try.*again/i,
+    /unavailable/i
   ];
 
   const errorMessage = error.message || error.toString();
   return transientPatterns.some(pattern => pattern.test(errorMessage));
 }
 
-// CIRCUIT BREAKER
+async function safeExecute(fn, options = {}) {
+  const timeout = options.timeout || 5000;
+  const operation = options.operation || 'anonymous';
+  const fallback = options.fallback;
 
-// States:
-//  CLOSED: Normal operation
-//  OPEN: Too many failures, reject immediately
-//  HALF_OPEN: After cooldown, try once to test recovery
-class CircuitBreaker {
-  constructor(name) {
-    this.name = name;
-    this.state = 'CLOSED';
-    this.failures = [];
-    this.failureThreshold = 5;
-    this.failureWindow = 30000; 
-    this.cooldownPeriod = 5000; 
-    this.openedAt = null;
-  }
-
-  //Check if operation should be allowed
-  canExecute() {
-    if (this.state === 'CLOSED') {
-      return true;
-    }
-
-    if (this.state === 'OPEN') {
-      const now = Date.now();
-      if (now - this.openedAt >= this.cooldownPeriod) {
-        this.state = 'HALF_OPEN';
-        logger.info(`Circuit breaker ${this.name} entering HALF_OPEN`);
-        return true;
-      }
-      return false;
-    }
-
-    if (this.state === 'HALF_OPEN') {
-      return true;
-    }
-
-    return false;
-  }
-
-  //Record successful execution
-  recordSuccess() {
-    if (this.state === 'HALF_OPEN') {
-      this.state = 'CLOSED';
-      this.failures = [];
-      logger.info(`Circuit breaker ${this.name} recovered to CLOSED`);
-    }
-  }
-
-  //Record failed execution
-  recordFailure() {
-    const now = Date.now();
-    this.failures.push(now);
-
-    // Remove failures outside window
-    this.failures = this.failures.filter(
-      timestamp => now - timestamp < this.failureWindow
-    );
-
-    // Check if threshold exceeded
-    if (this.failures.length >= this.failureThreshold && this.state === 'CLOSED') {
-      this.state = 'OPEN';
-      this.openedAt = now;
-      logger.warn(`Circuit breaker ${this.name} tripped to OPEN`, {
-        failures: this.failures.length,
-        threshold: this.failureThreshold,
-      });
-    }
-
-    // If half-open and still failing, go back to open
-    if (this.state === 'HALF_OPEN') {
-      this.state = 'OPEN';
-      this.openedAt = now;
-      logger.warn(`Circuit breaker ${this.name} failed in HALF_OPEN, back to OPEN`);
-    }
-  }
-
-  //Get current state
-  getState() {
-    return {
-      state: this.state,
-      failureCount: this.failures.length,
-      openedAt: this.openedAt,
-    };
-  }
-
-  //Reset circuit breaker
-  reset() {
-    this.state = 'CLOSED';
-    this.failures = [];
-    this.openedAt = null;
-  }
-}
-
-// Global circuit breakers 
-const circuitBreakers = new Map();
-
-function getCircuitBreaker(name) {
-  if (!circuitBreakers.has(name)) {
-    circuitBreakers.set(name, new CircuitBreaker(name));
-  }
-  return circuitBreakers.get(name);
-}
-
-// EXPONENTIAL BACKOFF
-
-//Calculate backoff delay with jitter
-//Formula: delay = baseDelay × 2^attempt × (1 + random jitter)
-function calculateBackoff(attempt, baseDelay = 100, maxDelay = 5000) {
-  const exponentialDelay = baseDelay * Math.pow(2, attempt);
-  const jitter = Math.random() * 0.3; 
-  const delay = exponentialDelay * (1 + jitter);
-  
-  return Math.min(delay, maxDelay);
-}
-
-//Sleep for specified duration
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// SAFE EXECUTE FUNCTIONS
-
-//Execute function with timeout protection
-export async function safeExecute(fn, options = {}) {
-  const {
-    timeout = config.get('extraction.timeout', 150),
-    fallback = null,
-    operation = 'unknown',
-  } = options;
+  const circuitBreaker = getCircuitBreaker(operation);
 
   try {
-    const result = await Promise.race([
-      fn(),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`Timeout after ${timeout}ms`)), timeout)
-      ),
-    ]);
-
-    return result;
-  } catch (error) {
-    logger.warn(`safeExecute failed: ${operation}`, {
-      error: error.message,
-      timeout,
+    const result = await circuitBreaker.execute(async () => {
+      return await Promise.race([
+        fn(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error(`Timeout after ${timeout}ms`)), timeout)
+        )
+      ]);
     });
 
-    return fallback;
+    return { success: true, data: result };
+  } catch (error) {
+    logger.error(`Operation ${operation} failed`, { 
+      error: error.message,
+      stack: error.stack 
+    });
+
+    errorTracker.track({
+      code: 'EXECUTION_FAILED',
+      message: error.message,
+      context: { operation }
+    });
+
+    if (fallback !== undefined) {
+      return { success: false, data: fallback, error: error.message };
+    }
+
+    return { success: false, error: error.message };
   }
 }
 
-//Execute with retry on transient failures
-export async function safeExecuteWithRetry(fn, options = {}) {
-  const {
-    timeout = config.get('extraction.timeout', 150),
-    fallback = null,
-    retries = config.get('extraction.maxRetries', 3),
-    operation = 'unknown',
-    enableCircuitBreaker = true,
-  } = options;
-
-  const breaker = enableCircuitBreaker ? getCircuitBreaker(operation) : null;
-  if (breaker && !breaker.canExecute()) {
-    logger.warn(`Circuit breaker ${operation} is OPEN, skipping execution`);
-    return fallback;
-  }
+async function safeExecuteWithRetry(fn, options = {}) {
+  const maxRetries = options.maxRetries || 3;
+  const timeout = options.timeout || 5000;
+  const operation = options.operation || 'anonymous';
+  const baseDelay = options.baseDelay || 100;
+  const maxDelay = options.maxDelay || 5000;
 
   let lastError;
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const result = await Promise.race([
-        fn(),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error(`Timeout after ${timeout}ms`)), timeout)
-        ),
-      ]);
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (attempt > 0) {
+      const jitter = Math.random() * 0.3;
+      const delay = Math.min(
+        baseDelay * Math.pow(2, attempt - 1) * (1 + jitter),
+        maxDelay
+      );
+      await new Promise(resolve => setTimeout(resolve, delay));
+      logger.debug(`Retry attempt ${attempt} for ${operation} after ${delay}ms`);
+    }
 
-      if (breaker) {
-        breaker.recordSuccess();
+    const result = await safeExecute(fn, { timeout, operation });
+
+    if (result.success) {
+      if (attempt > 0) {
+        logger.info(`Operation ${operation} succeeded after ${attempt} retries`);
       }
-
       return result;
+    }
 
-    } catch (error) {
-      lastError = error;
+    lastError = result.error;
 
-      const transient = isTransientError(error);
-
-      if (!transient || attempt === retries) {
-        logger.error(`${operation} failed permanently`, {
-          error: error.message,
-          attempt: attempt + 1,
-          transient,
-        });
-
-        if (breaker) {
-          breaker.recordFailure();
-        }
-
-        errorTracker.logError(
-          ErrorCodes.UNKNOWN_ERROR,
-          `${operation} failed: ${error.message}`,
-          { attempt, transient }
-        );
-
-        return fallback;
-      }
-
-      const backoffDelay = calculateBackoff(attempt);
-      logger.debug(`${operation} failed (transient), retrying in ${backoffDelay}ms`, {
-        error: error.message,
-        attempt: attempt + 1,
-      });
-
-      await sleep(backoffDelay);
+    if (!isTransientError({ message: lastError })) {
+      logger.warn(`Non-transient error for ${operation}, stopping retries`);
+      break;
     }
   }
 
-  return fallback;
+  return { success: false, error: lastError };
 }
 
-//Execute multiple functions in parallel with individual error handling
-export async function safeExecuteAll(functions, options = {}) {
-  const {
-    timeout = config.get('extraction.timeout', 150),
-    operation = 'batch',
-  } = options;
-
-  const promises = functions.map((fn, index) =>
-    safeExecute(fn, {
-      timeout,
-      fallback: null,
-      operation: `${operation}[${index}]`,
-    })
-  );
-
-  const results = await Promise.allSettled(promises);
-
-  return results.map((result, index) => {
-    if (result.status === 'fulfilled') {
-      return result.value;
-    } else {
-      logger.warn(`${operation}[${index}] rejected`, {
-        reason: result.reason?.message,
-      });
-      return null;
-    }
-  });
-}
-
-//Measure execution time of a function
-export async function measurePerformance(fn, label) {
-  const start = performance.now();
-
-  try {
-    const result = await fn();
-    const duration = performance.now() - start;
-
-    // Log via logger's perf method
-    logger.perf(label, duration);
-
-    return { result, duration };
-  } catch (error) {
-    const duration = performance.now() - start;
-    logger.error(`${label} failed`, { duration, error: error.message });
-    throw error;
-  }
-}
-
-// UTILITY EXPORTS
-
-//Reset all circuit breakers 
-export function resetCircuitBreakers() {
-  circuitBreakers.clear();
-}
-
-//Get circuit breaker state
-export function getCircuitBreakerStates() {
-  const states = {};
-  for (const [name, breaker] of circuitBreakers.entries()) {
-    states[name] = breaker.getState();
-  }
-  return states;
-}
+export { safeExecute, safeExecuteWithRetry, CircuitBreaker, getCircuitBreaker };

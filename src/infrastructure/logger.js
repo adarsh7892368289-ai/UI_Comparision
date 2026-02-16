@@ -1,29 +1,24 @@
-//Structured Logger
-// Logs messages with severity levels (debug < info < warn < error)
-// Outputs to console AND persists to chrome.storage
-// Adds metadata automatically (timestamp, context)
+import { get } from '../config/defaults.js';
 
-import config from './config.js';
-
-// LOG TRANSPORTS (Where logs are written)
 class ConsoleTransport {
   write(logEntry) {
     const { level, message, timestamp, ...meta } = logEntry;
-    
-    // Use appropriate console method
     const consoleFn = console[level] || console.log;
-    
-    // Format: [timestamp] LEVEL: message { metadata }
     const prefix = `[${timestamp}] ${level.toUpperCase()}:`;
-    consoleFn(prefix, message, meta);
+    
+    const hasMetadata = Object.keys(meta).length > 0;
+    if (hasMetadata) {
+      consoleFn(prefix, message, meta);
+    } else {
+      consoleFn(prefix, message);
+    }
   }
 }
 
-//Storage Transport - Persists logs for export
 class StorageTransport {
   constructor() {
     this.buffer = [];
-    this.maxEntries = 1000;
+    this.maxEntries = get('logging.maxEntries', 1000);
     this.flushBatchSize = 10;
   }
 
@@ -41,7 +36,7 @@ class StorageTransport {
 
   async _flush() {
     try {
-      const storageKey = config.get('storage.keys.logs', 'page_comparator_logs');
+      const storageKey = get('storage.logsKey', 'page_comparator_logs');
       await chrome.storage.local.set({ [storageKey]: this.buffer });
     } catch (error) {
       console.error('[Logger] Failed to persist logs:', error);
@@ -63,127 +58,103 @@ class StorageTransport {
   }
 }
 
-
-// LOGGER CLASS
 class Logger {
-	constructor() {
-		this.transports = [];
-		this.level = 'info';
-		this.context = {};
-		this.initialized = false;
-	}
+  constructor() {
+    this.transports = [];
+    this.level = 'info';
+    this.context = {};
+    this.initialized = false;
+  }
 
-	init(){
-		if (this.initialized) return this;
+  init() {
+    if (this.initialized) return this;
 
-		this.level = config.get('logging.level', 'info');
+    this.level = get('logging.level', 'info');
+    this.transports.push(new ConsoleTransport());
+    
+    if (get('logging.persistLogs', true)) {
+      const storageTransport = new StorageTransport();
+      this.transports.push(storageTransport);
+      this.storageTransport = storageTransport;
+    }
 
-		// Always add console transport
-		this.transports.push(new ConsoleTransport());
-		
-		// Add storage transport if enabled
-		if (config.get('logging.persistLogs', true)) {
-			const storageTransport = new StorageTransport();
-			this.transports.push(storageTransport);
-			
-			// Store reference for export/clear operations
-			this.storageTransport = storageTransport;
-		}
+    this.initialized = true;
+    return this;
+  }
 
-		this.initialized = true;
-		return this;
-	}
-
-    //Set global context for all logs 
   setContext(context) {
     this.context = { ...this.context, ...context };
   }
 
-    //Clear global context
-    clearContext() {
-        this.context = {};
+  clearContext() {
+    this.context = {};
+  }
+
+  debug(message, meta = {}) {
+    this._log('debug', message, meta);
+  }
+
+  info(message, meta = {}) {
+    this._log('info', message, meta);
+  }
+
+  warn(message, meta = {}) {
+    this._log('warn', message, meta);
+  }
+
+  error(message, meta = {}) {
+    this._log('error', message, meta);
+  }
+
+  perf(operation, durationMs, data = {}) {
+    const threshold = 500;
+
+    if (durationMs > threshold) {
+      this.warn(`Slow operation: ${operation}`, {
+        duration: durationMs,
+        threshold,
+        ...data,
+      });
+    } else {
+      this.debug(`Performance: ${operation}`, {
+        duration: durationMs,
+        ...data,
+      });
+    }
+  }
+
+  _log(level, message, meta) {
+    if (this._shouldSkip(level)) return;
+
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      level,
+      message,
+      ...this.context,
+      ...meta,
+    };
+
+    if (level === 'error') {
+      logEntry.stack = new Error().stack;
     }
 
-    //Debug logs
-    debug(message, meta = {}) {
-        this._log('debug', message, meta);
-    }
-
-    //Info logs
-    info(message, meta = {}) {
-        this._log('info', message, meta);
-    }
-
-    //Warn logs
-    warn(message, meta = {}) {
-        this._log('warn', message, meta);
-    }
-
-    //Error logs
-    error(message, meta = {}) {
-        this._log('error', message, meta);
-    }
-
-    //Performance logs
-    perf(operation, durationMs, data = {}) {
-      const threshold = config.get('performance.slowOperationThreshold', 500);
-
-      if (durationMs > threshold) {
-        this.warn(`Slow operation: ${operation}`, {
-          duration: durationMs,
-          threshold,
-          ...data,
-        });
-      } else {
-        this.debug(`Performance: ${operation}`, {
-          duration: durationMs,
-          ...data,
-        });
+    for (const transport of this.transports) {
+      try {
+        transport.write(logEntry);
+      } catch (error) {
+        console.error('[Logger] Transport failed:', error);
       }
     }
+  }
 
-	// INTERNAL METHODS
+  _shouldSkip(level) {
+    const levels = ['debug', 'info', 'warn', 'error'];
+    const configuredIndex = levels.indexOf(this.level);
+    const messageIndex = levels.indexOf(level);
+    
+    return messageIndex < configuredIndex;
+  }
 
-	//Core logging logic
-	_log(level, message, meta) {
-		if(this._shouldSkip(level)) return;
-
-		const logEntry = {
-			timestamp: new Date().toISOString(),
-			level,
-			message,
-			...this.context,
-      ...meta,
-		}
-
-		// Add stack trace for errors if enabled
-		if (level === 'error' && config.get('logging.includeStackTraces', true)) {
-			logEntry.stack = new Error().stack;
-		}
-
-		// Write to all transports
-		for (const transport of this.transports) {
-			try {
-				transport.write(logEntry);
-			} catch (error) {
-				console.error('[Logger] Transport failed:', error);
-			}
-		}
-	}
-
-	//Check if log should be skipped based on level
-	_shouldSkip(level) {
-		const levels = ['debug', 'info', 'warn', 'error'];
-		const configuredIndex = levels.indexOf(this.level);
-		const messageIndex = levels.indexOf(level);
-		
-		return messageIndex < configuredIndex;
-	}
-
-
-  // UTILITY METHODS
-
-  //Export logs for diagnostics
   exportLogs() {
     if (!this.storageTransport) {
       return [];
@@ -191,21 +162,18 @@ class Logger {
     return this.storageTransport.getLogs();
   }
 
-  //Clear all logs
   clearLogs() {
     if (this.storageTransport) {
       this.storageTransport.clear();
     }
   }
 
-  //Force flush pending logs
   async flush() {
     if (this.storageTransport) {
       await this.storageTransport.forceFlush();
     }
   }
 
-  //Measure function execution time
   async measure(label, fn) {
     const start = performance.now();
     
@@ -222,4 +190,5 @@ class Logger {
   }
 }
 
-export default new Logger();
+const logger = new Logger();
+export default logger;
