@@ -19,19 +19,10 @@ class Storage {
       return { success: true };
     } catch (error) {
       if (error.message.includes('QUOTA_BYTES')) {
-        errorTracker.track({
-          code: ERROR_CODES.STORAGE_QUOTA_EXCEEDED,
-          message: 'Storage quota exceeded',
-          context: { key }
-        });
+        errorTracker.track({ code: ERROR_CODES.STORAGE_QUOTA_EXCEEDED, message: 'Quota exceeded', context: { key } });
         return { success: false, error: 'QUOTA_EXCEEDED' };
       }
-
-      errorTracker.track({
-        code: ERROR_CODES.STORAGE_WRITE_FAILED,
-        message: error.message,
-        context: { key }
-      });
+      errorTracker.track({ code: ERROR_CODES.STORAGE_WRITE_FAILED, message: error.message, context: { key } });
       return { success: false, error: error.message };
     }
   }
@@ -39,13 +30,9 @@ class Storage {
   async load(key) {
     try {
       const result = await chrome.storage.local.get(key);
-      return result[key] || null;
+      return result[key] ?? null;
     } catch (error) {
-      errorTracker.track({
-        code: ERROR_CODES.STORAGE_READ_FAILED,
-        message: error.message,
-        context: { key }
-      });
+      errorTracker.track({ code: ERROR_CODES.STORAGE_READ_FAILED, message: error.message, context: { key } });
       return null;
     }
   }
@@ -71,27 +58,33 @@ class Storage {
   }
 
   async saveReport(report) {
-    const reportKey = get('storage.reportKey', 'page_comparator_reports');
-    const maxReports = get('storage.maxReports', 50);
+    const baseKey    = get('storage.reportKey');
+    const metaKey    = `${baseKey}_meta`;
+    const elKey      = `${baseKey}_el_${report.id}`;
+    const maxReports = get('storage.maxReports');
 
     try {
-      const existingReports = await this.load(reportKey) || [];
-      const reports = [report, ...existingReports];
+      const { elements, ...meta } = report;
+      const existing = await this.load(metaKey) ?? [];
+      const updated  = [meta, ...existing];
 
-      if (reports.length > maxReports) {
-        reports.splice(maxReports);
-        logger.warn('Report limit reached, removing oldest reports', {
-          removed: reports.length - maxReports
-        });
+      if (updated.length > maxReports) {
+        const evicted = updated.splice(maxReports);
+        await Promise.all(
+          evicted.map(r => chrome.storage.local.remove(`${baseKey}_el_${r.id}`))
+        );
+        logger.warn('Evicted old reports', { count: evicted.length });
       }
 
-      const result = await this.save(reportKey, reports);
-      
-      if (result.success) {
-        return { success: true, id: report.id };
-      }
+      const [metaResult, elResult] = await Promise.all([
+        this.save(metaKey, updated),
+        elements?.length ? this.save(elKey, elements) : Promise.resolve({ success: true })
+      ]);
 
-      return result;
+      if (!metaResult.success) return metaResult;
+      if (!elResult.success)   return elResult;
+
+      return { success: true, id: report.id };
     } catch (error) {
       logger.error('Failed to save report', { error: error.message });
       return { success: false, error: error.message };
@@ -99,23 +92,32 @@ class Storage {
   }
 
   async loadReports() {
-    const reportKey = get('storage.reportKey', 'page_comparator_reports');
-    const reports = await this.load(reportKey);
-    return reports || [];
+    const baseKey = get('storage.reportKey');
+    return await this.load(`${baseKey}_meta`) ?? [];
+  }
+
+  async loadReportElements(reportId) {
+    const baseKey = get('storage.reportKey');
+    return await this.load(`${baseKey}_el_${reportId}`) ?? [];
   }
 
   async deleteReport(id) {
-    const reportKey = get('storage.reportKey', 'page_comparator_reports');
-    
+    const baseKey = get('storage.reportKey');
+    const metaKey = `${baseKey}_meta`;
+
     try {
-      const reports = await this.loadReports();
-      const filtered = reports.filter(r => r.id !== id);
-      
-      if (filtered.length === reports.length) {
+      const existing = await this.load(metaKey) ?? [];
+      const filtered = existing.filter(r => r.id !== id);
+
+      if (filtered.length === existing.length) {
         return { success: false, error: 'Report not found' };
       }
 
-      await this.save(reportKey, filtered);
+      await Promise.all([
+        this.save(metaKey, filtered),
+        chrome.storage.local.remove(`${baseKey}_el_${id}`)
+      ]);
+
       return { success: true };
     } catch (error) {
       logger.error('Failed to delete report', { id, error: error.message });
@@ -125,24 +127,15 @@ class Storage {
 
   async checkQuota() {
     try {
-      const bytesInUse = await chrome.storage.local.getBytesInUse();
-      const quota = chrome.storage.local.QUOTA_BYTES || 10485760;
+      const bytesInUse  = await chrome.storage.local.getBytesInUse();
+      const quota       = chrome.storage.local.QUOTA_BYTES || 10485760;
       const percentUsed = (bytesInUse / quota) * 100;
 
       if (percentUsed > 80) {
-        logger.warn('Storage quota warning', {
-          bytesInUse,
-          quota,
-          percentUsed: percentUsed.toFixed(2)
-        });
+        logger.warn('Storage quota warning', { bytesInUse, quota, percentUsed: percentUsed.toFixed(1) });
       }
 
-      return {
-        bytesInUse,
-        quota,
-        percentUsed,
-        available: quota - bytesInUse
-      };
+      return { bytesInUse, quota, percentUsed, available: quota - bytesInUse };
     } catch (error) {
       logger.error('Failed to check quota', { error: error.message });
       return null;

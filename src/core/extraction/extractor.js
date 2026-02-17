@@ -3,199 +3,135 @@ import logger from '../../infrastructure/logger.js';
 import { safeExecute } from '../../infrastructure/safe-execute.js';
 import { generateSelectors } from '../selectors/selector-engine.js';
 import { collectAttributes } from './attribute-collector.js';
-import { shouldSkipElement } from './filters/filter-engine.js';
+import { shouldSkipElement } from './element-filters.js';
 import { calculatePosition, getVisibilityData } from './position-calculator.js';
 import { collectStyles } from './style-collector.js';
 
 async function extract(filters = null) {
   const startTime = performance.now();
-  
-  logger.info('Starting extraction', { 
-    url: window.location.href,
-    filters 
-  });
+  logger.info('Starting extraction', { url: window.location.href, filters });
 
   try {
-    let processElements;
+    let elements = filters && (filters.class || filters.id || filters.tag)
+      ? _findFilteredElements(filters)
+      : Array.from(document.querySelectorAll('*'));
 
-    if (filters && (filters.class || filters.id || filters.tag)) {
-      processElements = findFilteredElements(filters);
-      logger.debug(`${processElements.length} elements matched filters (including descendants)`);
-    } else {
-      const allElements = Array.from(document.querySelectorAll('*'));
-      logger.debug(`Found ${allElements.length} total DOM elements`);
-      processElements = allElements;
+    logger.debug(`${elements.length} raw elements`);
+
+    elements = elements.filter(el => !shouldSkipElement(el));
+
+    if (get('extraction.skipInvisible')) {
+      elements = elements.filter(el => getVisibilityData(el).isVisible);
     }
 
-    processElements = processElements.filter(el => !shouldSkipElement(el));
-    logger.debug(`${processElements.length} elements after filtering irrelevant tags`);
-
-    const skipInvisible = get('extraction.skipInvisible', true);
-    if (skipInvisible) {
-      processElements = processElements.filter(el => {
-        const visibility = getVisibilityData(el);
-        return visibility.isVisible;
-      });
-      logger.debug(`${processElements.length} visible elements`);
+    const max = get('extraction.maxElements');
+    if (elements.length > max) {
+      logger.warn(`Truncating to ${max} elements`);
+      elements = elements.slice(0, max);
     }
 
-    const maxElements = get('extraction.maxElements', 10000);
-    if (processElements.length > maxElements) {
-      logger.warn(`Truncating to ${maxElements} elements`);
-      processElements = processElements.slice(0, maxElements);
-    }
+    logger.debug(`${elements.length} elements queued for extraction`);
 
-    const elements = await extractElementsData(processElements);
+    const extracted = await _extractBatched(elements);
+    const duration  = Math.round(performance.now() - startTime);
 
-    const duration = performance.now() - startTime;
-    logger.info('Extraction complete', { 
-      totalElements: elements.length,
-      duration: Math.round(duration)
-    });
+    logger.info('Extraction complete', { totalElements: extracted.length, duration });
 
     return {
-      url: window.location.href,
-      title: document.title,
-      timestamp: new Date().toISOString(),
-      totalElements: elements.length,
-      duration: Math.round(duration),
-      filters: filters || null,
-      elements
+      url:           window.location.href,
+      title:         document.title,
+      timestamp:     new Date().toISOString(),
+      totalElements: extracted.length,
+      duration,
+      filters:       filters || null,
+      elements:      extracted
     };
-
   } catch (error) {
     logger.error('Extraction failed', { error: error.message });
     throw error;
   }
 }
 
-function findFilteredElements(filters) {
-  const matchedElements = new Set();
-  const { class: classFilter, id: idFilter, tag: tagFilter } = filters;
+function _findFilteredElements(filters) {
+  const matched = new Set();
 
-  if (classFilter) {
-    const classes = classFilter.split(',').map(c => c.trim()).filter(c => c);
-    for (const className of classes) {
-      const selector = className.startsWith('.') ? className : `.${className}`;
-      try {
-        const matches = document.querySelectorAll(selector);
-        for (const match of matches) {
-          matchedElements.add(match);
-          const descendants = match.querySelectorAll('*');
-          for (const desc of descendants) {
-            matchedElements.add(desc);
-          }
-        }
-      } catch (error) {
-        logger.warn('Invalid class selector', { className, error: error.message });
-      }
+  const addWithDescendants = el => {
+    matched.add(el);
+    for (const desc of el.querySelectorAll('*')) matched.add(desc);
+  };
+
+  if (filters.class) {
+    for (const cls of filters.class.split(',').map(c => c.trim()).filter(Boolean)) {
+      const sel = cls.startsWith('.') ? cls : `.${cls}`;
+      try { for (const el of document.querySelectorAll(sel)) addWithDescendants(el); }
+      catch (e) { logger.warn('Invalid class selector', { cls, error: e.message }); }
     }
   }
 
-  if (idFilter) {
-    const ids = idFilter.split(',').map(i => i.trim()).filter(i => i);
-    for (const id of ids) {
-      const selector = id.startsWith('#') ? id : `#${id}`;
-      try {
-        const match = document.querySelector(selector);
-        if (match) {
-          matchedElements.add(match);
-          const descendants = match.querySelectorAll('*');
-          for (const desc of descendants) {
-            matchedElements.add(desc);
-          }
-        }
-      } catch (error) {
-        logger.warn('Invalid ID selector', { id, error: error.message });
-      }
+  if (filters.id) {
+    for (const id of filters.id.split(',').map(i => i.trim()).filter(Boolean)) {
+      const sel = id.startsWith('#') ? id : `#${id}`;
+      try { const el = document.querySelector(sel); if (el) addWithDescendants(el); }
+      catch (e) { logger.warn('Invalid id selector', { id, error: e.message }); }
     }
   }
 
-  if (tagFilter) {
-    const tags = tagFilter.split(',').map(t => t.trim()).filter(t => t);
-    for (const tag of tags) {
-      try {
-        const matches = document.querySelectorAll(tag);
-        for (const match of matches) {
-          matchedElements.add(match);
-          const descendants = match.querySelectorAll('*');
-          for (const desc of descendants) {
-            matchedElements.add(desc);
-          }
-        }
-      } catch (error) {
-        logger.warn('Invalid tag selector', { tag, error: error.message });
-      }
+  if (filters.tag) {
+    for (const tag of filters.tag.split(',').map(t => t.trim()).filter(Boolean)) {
+      try { for (const el of document.querySelectorAll(tag)) addWithDescendants(el); }
+      catch (e) { logger.warn('Invalid tag selector', { tag, error: e.message }); }
     }
   }
 
-  return Array.from(matchedElements);
+  return Array.from(matched);
 }
 
-async function extractElementsData(elements) {
-  const batchSize = get('extraction.batchSize', 10);
-  const perElementTimeout = get('extraction.perElementTimeout', 150);
-  const results = [];
+async function _extractBatched(elements) {
+  const batchSize      = get('extraction.batchSize');
+  const perElementTimeout = get('extraction.perElementTimeout');
+  const results        = [];
 
   for (let i = 0; i < elements.length; i += batchSize) {
     const batch = elements.slice(i, i + batchSize);
-    
-    const batchPromises = batch.map((element, batchIndex) => 
-      extractElementData(element, i + batchIndex, perElementTimeout)
+
+    const settled = await Promise.allSettled(
+      batch.map((el, j) => _extractOne(el, i + j, perElementTimeout))
     );
 
-    const batchResults = await Promise.allSettled(batchPromises);
-    
-    for (const result of batchResults) {
-      if (result.status === 'fulfilled' && result.value) {
-        results.push(result.value);
-      }
+    for (const s of settled) {
+      if (s.status === 'fulfilled' && s.value) results.push(s.value);
     }
 
-    if ((i + batchSize) % 100 === 0) {
-      await new Promise(resolve => setTimeout(resolve, 0));
+    if (i > 0 && i % 100 === 0) {
+      await new Promise(r => setTimeout(r, 0));
     }
   }
 
   return results;
 }
 
-async function extractElementData(element, index, timeout) {
+async function _extractOne(element, index, timeout) {
   const result = await safeExecute(
-    () => extractElementDataUnsafe(element, index),
+    () => _extractData(element, index),
     { timeout, operation: 'element-extraction' }
   );
-
-  if (result.success) {
-    return result.data;
-  }
-
-  return null;
+  return result.success ? result.data : null;
 }
 
-async function extractElementDataUnsafe(element, index) {
-  const tagName = element.tagName;
-  const elementId = element.id || null;
-  const className = element.className || '';
-  
-  let textContent = '';
-  if (element.textContent) {
-    textContent = element.textContent.trim().substring(0, 500);
-  }
-
-  const styles = collectStyles(element);
+async function _extractData(element, index) {
+  const selectors  = await generateSelectors(element);
+  const styles     = collectStyles(element);
   const attributes = collectAttributes(element);
-  const position = calculatePosition(element);
+  const position   = calculatePosition(element);
   const visibility = getVisibilityData(element);
-  const selectors = await generateSelectors(element);
 
   return {
-    id: `el-${index}`,
+    id:          `el-${index}`,
     index,
-    tagName,
-    elementId,
-    className,
-    textContent,
+    tagName:     element.tagName,
+    elementId:   element.id || null,
+    className:   element.className || '',
+    textContent: (element.textContent || '').trim().substring(0, 500),
     selectors,
     styles,
     attributes,

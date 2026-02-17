@@ -14,7 +14,7 @@
         <small id="current-url"></small>
       </div>
     </header>
-    
+
     <nav class="tabs">
       <button class="tab-button active" data-tab="extract">Extract</button>
       <button class="tab-button" data-tab="compare">Compare</button>
@@ -23,7 +23,7 @@
     <div id="extract-tab" class="tab-content active">
       <section class="section">
         <h2>Extract Elements</h2>
-        
+
         <div class="filters">
           <input type="text" id="filter-class" placeholder="Filter by class (e.g., btn, card)">
           <input type="text" id="filter-id" placeholder="Filter by ID (e.g., header, nav)">
@@ -31,21 +31,27 @@
         </div>
 
         <button id="extract-btn" class="primary-btn">Extract Elements</button>
-        
+
         <div id="extract-status" class="status"></div>
-        
+
         <div class="reports-section">
           <div class="reports-header">
             <h3>Saved Reports</h3>
             <div class="reports-actions">
               <input type="text" id="search-reports" placeholder="Search reports..." class="search-input">
-              <button id="export-all-btn" class="btn-secondary" title="Export all reports">Export All</button>
+              <div class="export-picker-row">
+                <select id="export-all-format" class="select-input" aria-label="Export format">
+                  <option value="csv">CSV</option>
+                  <option value="json">JSON</option>
+                </select>
+                <button id="export-all-btn" class="btn-secondary" title="Export all reports">Export All</button>
+              </div>
               <button id="delete-all-btn" class="btn-danger" title="Delete all reports">Delete All</button>
             </div>
           </div>
-          
+
           <div id="storage-stats" class="storage-stats"></div>
-          
+
           <div id="reports-list"></div>
         </div>
       </section>
@@ -54,7 +60,7 @@
     <div id="compare-tab" class="tab-content">
       <section class="section">
         <h2>Compare Reports</h2>
-        
+
         <div class="form-group">
           <label for="baseline-report">Baseline Report:</label>
           <select id="baseline-report" class="select-input">
@@ -84,15 +90,15 @@
         </div>
 
         <button id="compare-btn" class="primary-btn">Compare Reports</button>
-        
+
         <div id="compare-status" class="status"></div>
-        
+
         <div id="compare-results" class="results"></div>
       </section>
     </div>
   </div>
 
-  <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+  <script src="libs/xlsx.full.min.js"></script>
   <script type="module" src="popup.js"></script>
 </body>
 </html>

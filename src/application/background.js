@@ -3,128 +3,141 @@ import storage from '../infrastructure/storage.js';
 import { get } from '../config/defaults.js';
 import { validateConfig } from '../config/validator.js';
 
-// ─── STARTUP SEQUENCE ────────────────────────────────────────────────────────
-// Order matters: logger first (init uses config), then config validation,
-// then storage. Fail loudly on config errors so regressions surface immediately.
-
 logger.init();
 
 try {
   validateConfig({ throwOnError: true });
   logger.info('Config validation passed ✓');
 } catch (err) {
-  // Log the full error — this is a developer-facing failure
   logger.error('STARTUP FAILED: Config validation error', { error: err.message });
-  // Re-throw so the service worker crashes visibly (better than silent bad state)
   throw err;
 }
 
 storage.init();
 
-const activeOperations = new Map();
+const PROGRESS_STAGES = {
+  INITIATED:          { stage: 'initiated',           progress: 0    },
+  EXTRACTING_BASE:    { stage: 'extracting-baseline', progress: 0.15 },
+  BASE_LOADED:        { stage: 'baseline-tab-loaded', progress: 0.25 },
+  BASE_COMPLETE:      { stage: 'baseline-complete',   progress: 0.5  },
+  EXTRACTING_COMPARE: { stage: 'extracting-compare',  progress: 0.65 },
+  COMPARE_LOADED:     { stage: 'compare-tab-loaded',  progress: 0.75 },
+  COMPARE_COMPLETE:   { stage: 'compare-complete',    progress: 1.0  },
+};
 
-async function saveOperationState(operationId, state) {
-  const stateKey = get('storage.stateKey', 'page_comparator_state');
-  await storage.save(`${stateKey}_${operationId}`, state);
+function operationKey(operationId) {
+  return `${get('storage.stateKey')}_${operationId}`;
 }
 
-async function loadOperationState(operationId) {
-  const stateKey = get('storage.stateKey', 'page_comparator_state');
-  return await storage.load(`${stateKey}_${operationId}`);
+async function writeProgress(operationId, progressStage, extra = {}) {
+  await storage.save(operationKey(operationId), {
+    status: 'in-progress',
+    ...progressStage,
+    ...extra,
+    operationId,
+    updatedAt: Date.now()
+  });
 }
 
-async function clearOperationState(operationId) {
-  const stateKey = get('storage.stateKey', 'page_comparator_state');
-  await storage.delete(`${stateKey}_${operationId}`);
+async function writeComplete(operationId, results) {
+  await storage.save(operationKey(operationId), {
+    status: 'complete',
+    results,
+    operationId,
+    updatedAt: Date.now()
+  });
+  scheduleOperationCleanup(operationId);
+}
+
+async function writeError(operationId, errorMessage) {
+  await storage.save(operationKey(operationId), {
+    status: 'error',
+    error: errorMessage,
+    operationId,
+    updatedAt: Date.now()
+  });
+  scheduleOperationCleanup(operationId);
+}
+
+function scheduleOperationCleanup(operationId) {
+  setTimeout(async () => {
+    await storage.delete(operationKey(operationId));
+    logger.debug('Operation state cleaned up', { operationId });
+  }, 10000);
 }
 
 async function handleStartComparison(message, sender, sendResponse) {
   const { baselineUrl, compareUrl, options } = message;
-  const operationId = Date.now().toString();
+  const operationId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
-  logger.info('Starting comparison workflow', { 
-    operationId, 
-    baselineUrl, 
-    compareUrl 
-  });
+  logger.info('Starting URL comparison workflow', { operationId, baselineUrl, compareUrl });
+
+  sendResponse({ status: 'started', operationId });
+
+  let baselineTabId = null;
+  let compareTabId = null;
 
   try {
-    await saveOperationState(operationId, {
-      stage: 'initiated',
-      baselineUrl,
-      compareUrl,
-      options,
-      timestamp: new Date().toISOString()
-    });
+    await writeProgress(operationId, PROGRESS_STAGES.INITIATED);
 
-    sendResponse({ status: 'progress', stage: 'extracting-baseline', progress: 0 });
+    await writeProgress(operationId, PROGRESS_STAGES.EXTRACTING_BASE);
+    baselineTabId = await createTabForExtraction(baselineUrl);
 
-    const baselineTab = await createTabForExtraction(baselineUrl);
-    await saveOperationState(operationId, { stage: 'baseline-tab-created', baselineTabId: baselineTab.id });
+    await writeProgress(operationId, PROGRESS_STAGES.BASE_LOADED);
+    const baselineData = await extractFromTab(baselineTabId, options?.filters);
+    await closeTab(baselineTabId);
+    baselineTabId = null;
 
-    const baselineReport = await extractFromTab(baselineTab.id, options?.filters);
-    await chrome.tabs.remove(baselineTab.id);
+    await writeProgress(operationId, PROGRESS_STAGES.BASE_COMPLETE);
 
-    await saveOperationState(operationId, { 
-      stage: 'baseline-complete', 
-      baselineReport: baselineReport.id 
-    });
+    await writeProgress(operationId, PROGRESS_STAGES.EXTRACTING_COMPARE);
+    compareTabId = await createTabForExtraction(compareUrl);
 
-    sendResponse({ status: 'progress', stage: 'extracting-compare', progress: 0.5 });
+    await writeProgress(operationId, PROGRESS_STAGES.COMPARE_LOADED);
+    const compareData = await extractFromTab(compareTabId, options?.filters);
+    await closeTab(compareTabId);
+    compareTabId = null;
 
-    const compareTab = await createTabForExtraction(compareUrl);
-    await saveOperationState(operationId, { stage: 'compare-tab-created', compareTabId: compareTab.id });
+    await writeProgress(operationId, PROGRESS_STAGES.COMPARE_COMPLETE);
+    await writeComplete(operationId, { baseline: baselineData, compare: compareData });
 
-    const compareReport = await extractFromTab(compareTab.id, options?.filters);
-    await chrome.tabs.remove(compareTab.id);
-
-    await clearOperationState(operationId);
-
-    sendResponse({ 
-      status: 'complete', 
-      results: {
-        baseline: baselineReport,
-        compare: compareReport
-      }
-    });
-
-    logger.info('Comparison workflow completed', { operationId });
-
+    logger.info('URL comparison workflow completed', { operationId });
   } catch (error) {
-    logger.error('Comparison workflow failed', { 
-      operationId, 
-      error: error.message 
-    });
-
-    await clearOperationState(operationId);
-
-    sendResponse({ 
-      status: 'error', 
-      error: error.message 
-    });
+    logger.error('URL comparison workflow failed', { operationId, error: error.message });
+    await closeTab(baselineTabId);
+    await closeTab(compareTabId);
+    await writeError(operationId, error.message);
   }
-
-  return true;
 }
 
-async function createTabForExtraction(url) {
+async function closeTab(tabId) {
+  if (tabId === null) return;
+  try {
+    await chrome.tabs.remove(tabId);
+  } catch (err) {
+    logger.warn('Failed to close tab during cleanup', { tabId, error: err.message });
+  }
+}
+
+function createTabForExtraction(url) {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error('Tab creation timeout'));
-    }, get('infrastructure.timeout.tabLoad'));
+    const timeoutMs = get('infrastructure.timeout.tabLoad');
+    const timer = setTimeout(
+      () => reject(new Error(`Tab load timeout after ${timeoutMs}ms: ${url}`)),
+      timeoutMs
+    );
 
     chrome.tabs.create({ url, active: false }, (tab) => {
       const tabId = tab.id;
 
-      const listener = (updatedTabId, changeInfo) => {
-        if (updatedTabId === tabId && changeInfo.status === 'complete') {
-          clearTimeout(timeout);
-          chrome.tabs.onUpdated.removeListener(listener);
-          resolve(tab);
-        }
+      const onUpdated = (updatedTabId, changeInfo) => {
+        if (updatedTabId !== tabId || changeInfo.status !== 'complete') return;
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        resolve(tabId);
       };
 
-      chrome.tabs.onUpdated.addListener(listener);
+      chrome.tabs.onUpdated.addListener(onUpdated);
     });
   });
 }
@@ -136,65 +149,60 @@ async function extractFromTab(tabId, filters) {
       files: ['content.js']
     });
   } catch (error) {
-    if (!error.message.includes('already')) {
+    if (!error.message.toLowerCase().includes('already')) {
       throw error;
     }
   }
 
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error('Extraction timeout'));
-    }, get('infrastructure.timeout.contentScript'));
-
-    chrome.tabs.sendMessage(
-      tabId,
-      { action: 'extractElements', filters },
-      (response) => {
-        clearTimeout(timeout);
-
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-
-        if (response.success) {
-          resolve(response.data);
-        } else {
-          reject(new Error(response.error || 'Extraction failed'));
-        }
-      }
+    const timeoutMs = get('infrastructure.timeout.contentScript');
+    const timer = setTimeout(
+      () => reject(new Error(`Content script extraction timeout after ${timeoutMs}ms`)),
+      timeoutMs
     );
+
+    chrome.tabs.sendMessage(tabId, { action: 'extractElements', filters }, (response) => {
+      clearTimeout(timer);
+
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+
+      if (!response) {
+        reject(new Error('No response from content script'));
+        return;
+      }
+
+      if (response.success) {
+        resolve(response.data);
+      } else {
+        reject(new Error(response.error || 'Extraction failed'));
+      }
+    });
   });
 }
 
 async function handleExtractFromTab(message, sender, sendResponse) {
   const { tabId, filters } = message;
-
   try {
     const report = await extractFromTab(tabId, filters);
     sendResponse({ success: true, data: report });
   } catch (error) {
-    logger.error('Extract from tab failed', { 
-      tabId, 
-      error: error.message 
-    });
+    logger.error('Extract from tab failed', { tabId, error: error.message });
     sendResponse({ success: false, error: error.message });
   }
-
   return true;
 }
 
 async function handleSaveReport(message, sender, sendResponse) {
-  const { report } = message;
-
   try {
-    const result = await storage.saveReport(report);
+    const result = await storage.saveReport(message.report);
     sendResponse(result);
   } catch (error) {
     logger.error('Save report failed', { error: error.message });
     sendResponse({ success: false, error: error.message });
   }
-
   return true;
 }
 
@@ -206,21 +214,17 @@ async function handleLoadReports(message, sender, sendResponse) {
     logger.error('Load reports failed', { error: error.message });
     sendResponse({ success: false, error: error.message });
   }
-
   return true;
 }
 
 async function handleDeleteReport(message, sender, sendResponse) {
-  const { id } = message;
-
   try {
-    const result = await storage.deleteReport(id);
+    const result = await storage.deleteReport(message.id);
     sendResponse(result);
   } catch (error) {
-    logger.error('Delete report failed', { id, error: error.message });
+    logger.error('Delete report failed', { id: message.id, error: error.message });
     sendResponse({ success: false, error: error.message });
   }
-
   return true;
 }
 
@@ -229,7 +233,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   switch (message.action) {
     case 'startComparison':
-      return handleStartComparison(message, sender, sendResponse);
+      handleStartComparison(message, sender, sendResponse);
+      return true;
     case 'extractFromTab':
       return handleExtractFromTab(message, sender, sendResponse);
     case 'saveReport':
@@ -239,7 +244,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'deleteReport':
       return handleDeleteReport(message, sender, sendResponse);
     default:
-      sendResponse({ success: false, error: 'Unknown action' });
+      sendResponse({ success: false, error: `Unknown action: ${message.action}` });
       return false;
   }
 });

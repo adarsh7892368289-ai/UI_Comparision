@@ -1,42 +1,18 @@
 import { get } from '../../../config/defaults.js';
 import logger from '../../../infrastructure/logger.js';
-import { getUniversalTag } from '../../../shared/dom-utils.js';
+import { getUniversalTag, isStableId } from '../../../shared/dom-utils.js';
 import { getAllStrategies, TIER_ROBUSTNESS } from './strategies.js';
-import {
-  countXPathMatches,
-  ensureUniqueness,
-  isUniqueXPath
-} from './validator.js';
+import { countXPathMatches, ensureUniqueness, isUniqueXPath, escapeXPath } from './validator.js';
 
-/**
- * Generate the best XPath for an element.
- *
- * Architecture: Tiered sequential execution.
- *
- *   Group 1 (tiers 0-5):  Best quality — text, IDs, test attrs, data attrs
- *   Group 2 (tiers 6-10): Context — ancestors, siblings, form inputs
- *   Group 3 (tiers 11-15): Structural — aria, partial text, classes, paths
- *   Group 4 (tiers 16-21): Position — role, href, nth-child, absolute path
- *   Fallback:              Guaranteed position path (never returns null)
- *
- * Tier 22 (global index — (//*)[N]) is EXCLUDED from all groups.
- * It is replaced by _buildPositionPath which gives /tag[N]/tag[N] style paths
- * that survive DOM shuffles better.
- *
- * Validation order fix:
- *   OLD (BROKEN): xpathPointsToElement FIRST → skips non-first matches of non-unique selectors
- *   NEW (FIXED):  countMatches FIRST → if count > 1 call ensureUniqueness → then validate
- */
+const TEST_ATTRS = ['data-testid', 'data-test', 'data-qa', 'data-cy', 'data-automation-id'];
+
 async function generateXPath(element) {
-  if (!element || !element.tagName) {
-    return _buildFallback(element);
-  }
+  if (!element || !element.tagName) return _buildFallback(element);
 
   const tag = getUniversalTag(element);
   const perStrategyTimeout = get('selectors.xpath.perStrategyTimeout', 80);
   const strategies = getAllStrategies();
 
-  // Tier groups — processed sequentially, strategies within a group run in parallel
   const tierGroups = [
     strategies.filter(s => s.tier <= 5),
     strategies.filter(s => s.tier >= 6  && s.tier <= 10),
@@ -61,19 +37,12 @@ async function generateXPath(element) {
     }
   }
 
-  logger.debug('XPath: semantic strategies exhausted, using positional fallback', {
+  logger.debug('XPath: all semantic strategies exhausted, using positional fallback', {
     tag: element.tagName
   });
   return _buildFallback(element);
 }
 
-/**
- * Run all strategies in a group concurrently.
- * Collect every successful candidate, then return the one with lowest tier number.
- *
- * Using Promise.allSettled (NOT Promise.race) so we see all results and pick
- * the best-quality one, not whichever resolved first.
- */
 async function _tryGroup(element, tag, strategies, perStrategyTimeout) {
   const settled = await Promise.allSettled(
     strategies.map(({ tier, fn, name }) =>
@@ -86,22 +55,10 @@ async function _tryGroup(element, tag, strategies, perStrategyTimeout) {
     .map(s => s.value);
 
   if (successes.length === 0) return null;
-
-  // Return best quality (lowest tier = highest priority)
   successes.sort((a, b) => a.tier - b.tier);
   return successes[0];
 }
 
-/**
- * Execute one strategy, validate its candidates, return first valid unique xpath or null.
- *
- * Validation order (FIXED):
- *   1. Get candidates from strategy
- *   2. Count document matches for each candidate
- *   3a. If count === 1 → verify it IS our element, done
- *   3b. If count  >  1 → call ensureUniqueness to add [N] predicate → verify unique
- *   4. If count === 0 → xpath is broken, skip
- */
 function _runStrategy(element, tag, tier, fn, name, timeout) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(null), timeout);
@@ -119,47 +76,89 @@ function _runStrategy(element, tag, tier, fn, name, timeout) {
         if (!candidate || !candidate.xpath) continue;
 
         const matchCount = countXPathMatches(candidate.xpath);
-
-        // XPath is syntactically broken or matches nothing
         if (matchCount === 0) continue;
 
-        let finalXPath = candidate.xpath;
-
         if (matchCount === 1) {
-          // Unique — just confirm it is our element
-          // Use countXPathMatches + snapshot check via isUniqueXPath
-          if (!isUniqueXPath(finalXPath, element)) continue;
-        } else {
-          // Multiple matches — disambiguate by adding [N] positional predicate
-          finalXPath = ensureUniqueness(candidate.xpath, element);
-          // Verify the result is now unique and points to the right element
-          if (!isUniqueXPath(finalXPath, element)) continue;
+          if (!isUniqueXPath(candidate.xpath, element)) continue;
+          clearTimeout(timer);
+          resolve({ xpath: candidate.xpath, strategy: name, tier, robustness: TIER_ROBUSTNESS[tier] || 50 });
+          return;
         }
 
-        clearTimeout(timer);
-        resolve({
-          xpath:     finalXPath,
-          strategy:  name,
-          tier,
-          robustness: TIER_ROBUSTNESS[tier] || 50
-        });
-        return;
+        const narrowed = _narrowByAncestor(candidate.xpath, element);
+        if (narrowed) {
+          const narrowedCount = countXPathMatches(narrowed);
+          if (narrowedCount === 1 && isUniqueXPath(narrowed, element)) {
+            clearTimeout(timer);
+            resolve({ xpath: narrowed, strategy: `${name}+ancestor`, tier, robustness: TIER_ROBUSTNESS[tier] || 50 });
+            return;
+          }
+
+          if (narrowedCount > 1) {
+            const disambiguated = ensureUniqueness(narrowed, element);
+            if (isUniqueXPath(disambiguated, element)) {
+              clearTimeout(timer);
+              resolve({ xpath: disambiguated, strategy: `${name}+ancestor+pos`, tier, robustness: TIER_ROBUSTNESS[tier] || 50 });
+              return;
+            }
+          }
+        }
+
+        const disambiguated = ensureUniqueness(candidate.xpath, element);
+        if (isUniqueXPath(disambiguated, element)) {
+          clearTimeout(timer);
+          resolve({ xpath: disambiguated, strategy: `${name}+pos`, tier, robustness: TIER_ROBUSTNESS[tier] || 50 });
+          return;
+        }
       }
 
       clearTimeout(timer);
       resolve(null);
-    } catch (err) {
+    } catch (_) {
       clearTimeout(timer);
       resolve(null);
     }
   });
 }
 
-/**
- * Guaranteed positional fallback — builds /html/body/div[2]/span[1] paths.
- * Uses same-tag sibling count so the XPath semantics are correct.
- * NEVER returns null.
- */
+function _narrowByAncestor(xpath, element) {
+  const elementTag = getUniversalTag(element);
+  const predicate = _extractPredicate(xpath);
+  if (predicate === null) return null;
+
+  let ancestor = element.parentElement;
+  let depth = 0;
+
+  while (ancestor && depth < 6) {
+    const ancTag = getUniversalTag(ancestor);
+
+    if (ancestor.id && isStableId(ancestor.id)) {
+      return `//${ancTag}[@id=${escapeXPath(ancestor.id)}]//${elementTag}${predicate}`;
+    }
+
+    for (const attr of TEST_ATTRS) {
+      const val = ancestor.getAttribute(attr);
+      if (val) {
+        return `//${ancTag}[@${attr}=${escapeXPath(val)}]//${elementTag}${predicate}`;
+      }
+    }
+
+    ancestor = ancestor.parentElement;
+    depth++;
+  }
+
+  return null;
+}
+
+function _extractPredicate(xpath) {
+  const match = xpath.match(/\/\/[a-zA-Z*][a-zA-Z0-9_:-]*(\[[\s\S]*\])?$/);
+  if (!match) return null;
+  const segment = match[0];
+  const tagMatch = segment.match(/^\/\/[a-zA-Z*][a-zA-Z0-9_:-]*/);
+  if (!tagMatch) return null;
+  return segment.slice(tagMatch[0].length);
+}
+
 function _buildFallback(element) {
   return {
     xpath:      _buildPositionPath(element),
@@ -183,9 +182,12 @@ function _buildPositionPath(element) {
       break;
     }
 
-    // XPath position() predicates count only same-tag siblings
-    const sameTag = Array.from(parent.children).filter(c => c.tagName === current.tagName);
+    if (current.id && isStableId(current.id)) {
+      path.unshift(`${currTag}[@id=${escapeXPath(current.id)}]`);
+      break;
+    }
 
+    const sameTag = Array.from(parent.children).filter(c => c.tagName === current.tagName);
     if (sameTag.length === 1) {
       path.unshift(currTag);
     } else {

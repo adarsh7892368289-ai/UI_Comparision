@@ -9,160 +9,170 @@ const MATCH_STRATEGIES = {
   POSITION:       'position'
 };
 
+const CONFIDENCE = {
+  TEST_ATTR: 1.00,
+  ID:        0.95,
+  CSS:       0.85,
+  XPATH:     0.80,
+  POSITION:  0.30
+};
+
 class ElementMatcher {
   constructor() {
-    // All thresholds read from config — no CONFIDENCE_THRESHOLDS object
-    this.minConfidence   = get('comparison.confidence.min');
-    this.highThreshold   = get('comparison.confidence.high');
+    this.minConfidence     = get('comparison.confidence.min');
+    this.highThreshold     = get('comparison.confidence.high');
     this.positionTolerance = get('comparison.matching.positionTolerance');
-    this.priorityAttrs   = get('attributes.priority');
-    this.strategies      = this._initStrategies();
-  }
-
-  _initStrategies() {
-    return [
-      { name: MATCH_STRATEGIES.TEST_ATTRIBUTE, weight: 1.0,  fn: this._matchByTestAttribute.bind(this) },
-      { name: MATCH_STRATEGIES.ID,             weight: 0.95, fn: this._matchById.bind(this) },
-      { name: MATCH_STRATEGIES.CSS_SELECTOR,   weight: 0.85, fn: this._matchByCssSelector.bind(this) },
-      { name: MATCH_STRATEGIES.XPATH,          weight: 0.80, fn: this._matchByXPath.bind(this) },
-      { name: MATCH_STRATEGIES.POSITION,       weight: 0.30, fn: this._matchByPosition.bind(this) }
-    ];
+    this.priorityAttrs     = get('attributes.priority').slice(0, 4);
   }
 
   matchElements(baselineElements, compareElements) {
-    const matches           = [];
-    const unmatchedBaseline = new Set(baselineElements.map((_, i) => i));
-    const unmatchedCompare  = new Set(compareElements.map((_, i) => i));
-
-    logger.info('Starting element matching', {
+    logger.info('Building lookup maps', {
       baseline: baselineElements.length,
       compare:  compareElements.length
     });
 
-    for (let baseIdx = 0; baseIdx < baselineElements.length; baseIdx++) {
-      const baseElement  = baselineElements[baseIdx];
-      let bestMatch      = null;
-      let bestConfidence = 0;
-      let bestStrategy   = null;
+    const maps = this._buildLookupMaps(compareElements);
 
-      for (const strategy of this.strategies) {
-        const match = strategy.fn(baseElement, compareElements, unmatchedCompare);
-        if (match && match.confidence > bestConfidence) {
-          bestMatch      = match;
-          bestConfidence = match.confidence;
-          bestStrategy   = strategy.name;
-        }
-        // Early exit when confidence is high enough — no need to try weaker strategies
-        if (bestConfidence >= this.highThreshold) break;
-      }
+    const matches           = [];
+    const unmatchedBaseline = [];
+    const usedCompare       = new Set();
 
-      if (bestMatch && bestConfidence >= this.minConfidence) {
+    for (let i = 0; i < baselineElements.length; i++) {
+      const base = baselineElements[i];
+      const hit  = this._lookupMatch(base, maps, usedCompare);
+
+      if (hit && hit.confidence >= this.minConfidence) {
+        usedCompare.add(hit.index);
         matches.push({
-          baselineIndex:    baseIdx,
-          compareIndex:     bestMatch.index,
-          confidence:       bestConfidence,
-          strategy:         bestStrategy,
-          baselineElement:  baseElement,
-          compareElement:   compareElements[bestMatch.index]
+          baselineIndex:   i,
+          compareIndex:    hit.index,
+          confidence:      hit.confidence,
+          strategy:        hit.strategy,
+          baselineElement: base,
+          compareElement:  compareElements[hit.index]
         });
-        unmatchedBaseline.delete(baseIdx);
-        unmatchedCompare.delete(bestMatch.index);
+      } else {
+        unmatchedBaseline.push(base);
       }
     }
+
+    const usedSet       = new Set(matches.map(m => m.compareIndex));
+    const unmatchedCompare = compareElements.filter((_, i) => !usedSet.has(i));
 
     logger.info('Matching complete', {
-      matched:           matches.length,
-      unmatchedBaseline: unmatchedBaseline.size,
-      unmatchedCompare:  unmatchedCompare.size
+      matched:          matches.length,
+      unmatchedBaseline: unmatchedBaseline.length,
+      unmatchedCompare:  unmatchedCompare.length
     });
 
-    return {
-      matches,
-      unmatchedBaseline: Array.from(unmatchedBaseline).map(i => baselineElements[i]),
-      unmatchedCompare:  Array.from(unmatchedCompare).map(i => compareElements[i])
-    };
+    return { matches, unmatchedBaseline, unmatchedCompare };
   }
 
-  _matchByTestAttribute(baseElement, compareElements, unmatchedIndices) {
-    // Use config-driven priority attribute list — not a hardcoded array
-    const testAttrs = this.priorityAttrs.slice(0, 4); // data-testid, data-test, data-qa, data-cy
-    for (const attr of testAttrs) {
-      const baseValue = baseElement.attributes?.[attr];
-      if (!baseValue) continue;
-      for (const idx of unmatchedIndices) {
-        if (compareElements[idx].attributes?.[attr] === baseValue) {
-          return { index: idx, confidence: 1.0 };
+  _buildLookupMaps(elements) {
+    const testAttr = new Map();
+    const byId     = new Map();
+    const byCss    = new Map();
+    const byXPath  = new Map();
+    const grid     = new Map();
+
+    const cellSize = this.positionTolerance;
+
+    for (let i = 0; i < elements.length; i++) {
+      const el = elements[i];
+
+      for (const attr of this.priorityAttrs) {
+        const v = el.attributes?.[attr];
+        if (v) { testAttr.set(`${attr}::${v}`, i); break; }
+      }
+
+      if (el.elementId) byId.set(el.elementId, i);
+      if (el.selectors?.css)   byCss.set(el.selectors.css, i);
+      if (el.selectors?.xpath) byXPath.set(el.selectors.xpath, i);
+
+      if (el.position?.x != null && el.position?.y != null) {
+        const key = this._gridKey(el.position.x, el.position.y, el.tagName, cellSize);
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key).push({ index: i, x: el.position.x, y: el.position.y });
+      }
+    }
+
+    return { testAttr, byId, byCss, byXPath, grid, cellSize };
+  }
+
+  _lookupMatch(base, { testAttr, byId, byCss, byXPath, grid, cellSize }, usedCompare) {
+    for (const attr of this.priorityAttrs) {
+      const v = base.attributes?.[attr];
+      if (!v) continue;
+      const idx = testAttr.get(`${attr}::${v}`);
+      if (idx != null && !usedCompare.has(idx)) {
+        return { index: idx, confidence: CONFIDENCE.TEST_ATTR, strategy: MATCH_STRATEGIES.TEST_ATTRIBUTE };
+      }
+    }
+
+    if (base.elementId) {
+      const idx = byId.get(base.elementId);
+      if (idx != null && !usedCompare.has(idx)) {
+        return { index: idx, confidence: CONFIDENCE.ID, strategy: MATCH_STRATEGIES.ID };
+      }
+    }
+
+    if (base.selectors?.css) {
+      const idx = byCss.get(base.selectors.css);
+      if (idx != null && !usedCompare.has(idx)) {
+        return { index: idx, confidence: CONFIDENCE.CSS, strategy: MATCH_STRATEGIES.CSS_SELECTOR };
+      }
+    }
+
+    if (base.selectors?.xpath) {
+      const idx = byXPath.get(base.selectors.xpath);
+      if (idx != null && !usedCompare.has(idx)) {
+        return { index: idx, confidence: CONFIDENCE.XPATH, strategy: MATCH_STRATEGIES.XPATH };
+      }
+    }
+
+    if (base.position?.x != null && base.position?.y != null) {
+      return this._positionFallback(base, grid, cellSize, usedCompare);
+    }
+
+    return null;
+  }
+
+  _positionFallback(base, grid, cellSize, usedCompare) {
+    const bx  = base.position.x;
+    const by  = base.position.y;
+    const tag = base.tagName;
+
+    let bestIdx  = null;
+    let bestDist = Infinity;
+
+    const cx = Math.floor(bx / cellSize);
+    const cy = Math.floor(by / cellSize);
+
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const key      = `${cx + dx}:${cy + dy}:${tag}`;
+        const bucket   = grid.get(key);
+        if (!bucket) continue;
+
+        for (const { index, x, y } of bucket) {
+          if (usedCompare.has(index)) continue;
+          const dist = Math.hypot(bx - x, by - y);
+          if (dist < this.positionTolerance && dist < bestDist) {
+            bestDist = dist;
+            bestIdx  = index;
+          }
         }
       }
     }
-    return null;
+
+    if (bestIdx === null) return null;
+
+    const confidence = Math.max(0.1, 1 - bestDist / this.positionTolerance) * CONFIDENCE.POSITION;
+    return { index: bestIdx, confidence, strategy: MATCH_STRATEGIES.POSITION };
   }
 
-  _matchById(baseElement, compareElements, unmatchedIndices) {
-    const baseId = baseElement.elementId;
-    if (!baseId) return null;
-    for (const idx of unmatchedIndices) {
-      if (compareElements[idx].elementId === baseId) {
-        return { index: idx, confidence: 0.95 };
-      }
-    }
-    return null;
-  }
-
-  _matchByCssSelector(baseElement, compareElements, unmatchedIndices) {
-    const baseCss = baseElement.selectors?.css;
-    if (!baseCss) return null;
-    const baseConf = (baseElement.selectors?.cssConfidence || 0) / 100;
-    for (const idx of unmatchedIndices) {
-      const el = compareElements[idx];
-      if (el.selectors?.css === baseCss) {
-        const compareConf = (el.selectors?.cssConfidence || 0) / 100;
-        return { index: idx, confidence: Math.max(0.85, (baseConf + compareConf) / 2) };
-      }
-    }
-    return null;
-  }
-
-  _matchByXPath(baseElement, compareElements, unmatchedIndices) {
-    const baseXPath = baseElement.selectors?.xpath;
-    if (!baseXPath) return null;
-    const baseConf = (baseElement.selectors?.xpathConfidence || 0) / 100;
-    for (const idx of unmatchedIndices) {
-      const el = compareElements[idx];
-      if (el.selectors?.xpath === baseXPath) {
-        const compareConf = (el.selectors?.xpathConfidence || 0) / 100;
-        return { index: idx, confidence: Math.max(0.80, (baseConf + compareConf) / 2) };
-      }
-    }
-    return null;
-  }
-
-  _matchByPosition(baseElement, compareElements, unmatchedIndices) {
-    const basePos = baseElement.position;
-    if (!basePos?.x || !basePos?.y) return null;
-
-    let closestIdx  = null;
-    let closestDist = Infinity;
-
-    for (const idx of unmatchedIndices) {
-      const el = compareElements[idx];
-      if (el.tagName !== baseElement.tagName) continue;
-      const pos = el.position;
-      if (!pos?.x || !pos?.y) continue;
-
-      const dist = Math.hypot(basePos.x - pos.x, basePos.y - pos.y);
-      if (dist < this.positionTolerance && dist < closestDist) {
-        closestDist = dist;
-        closestIdx  = idx;
-      }
-    }
-
-    if (closestIdx !== null) {
-      const confidence = Math.max(0.3, 1 - (closestDist / this.positionTolerance)) * 0.3;
-      return { index: closestIdx, confidence };
-    }
-
-    return null;
+  _gridKey(x, y, tag, cellSize) {
+    return `${Math.floor(x / cellSize)}:${Math.floor(y / cellSize)}:${tag}`;
   }
 }
 

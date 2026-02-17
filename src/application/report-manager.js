@@ -1,26 +1,20 @@
+import { get } from '../config/defaults.js';
 import logger from '../infrastructure/logger.js';
 import storage from '../infrastructure/storage.js';
-import { isValidReport, sanitizeReport } from '../shared/report-validator.js';
-
-// ─── REPORT CRUD ────────────────────────────────────────────────────────────
+import { isValidMeta, isValidReport, sanitizeReport } from '../shared/report-validator.js';
 
 async function loadAllReports() {
   try {
     const reports = await storage.loadReports();
-    logger.debug('Loaded reports', { count: reports.length });
+    logger.debug('Loaded report metadata', { count: reports.length });
 
-    const validReports = reports.filter(report => {
-      const validation = isValidReport(report);
-      if (!validation.valid) {
-        logger.warn('Invalid report detected', { id: report.id, errors: validation.errors });
-        return false;
-      }
-      return true;
-    });
-
-    return validReports.sort((a, b) =>
-      new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    );
+    return reports
+      .filter(report => {
+        const v = isValidMeta(report);
+        if (!v.valid) logger.warn('Invalid report metadata', { id: report.id, errors: v.errors });
+        return v.valid;
+      })
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   } catch (error) {
     logger.error('Failed to load reports', { error: error.message });
     return [];
@@ -35,7 +29,7 @@ async function saveReport(report) {
       return { success: false, error: 'Invalid report structure' };
     }
     const sanitized = sanitizeReport(report);
-    const result = await storage.saveReport(sanitized);
+    const result    = await storage.saveReport(sanitized);
     if (result.success) {
       logger.info('Report saved', { id: sanitized.id, totalElements: sanitized.totalElements });
     } else {
@@ -66,7 +60,10 @@ async function deleteReport(reportId) {
 async function getReportById(reportId) {
   try {
     const reports = await storage.loadReports();
-    return reports.find(r => r.id === reportId) || null;
+    const meta    = reports.find(r => r.id === reportId);
+    if (!meta) return null;
+    const elements = await storage.loadReportElements(reportId);
+    return { ...meta, elements };
   } catch (error) {
     logger.error('Failed to get report', { id: reportId, error: error.message });
     return null;
@@ -76,8 +73,14 @@ async function getReportById(reportId) {
 async function deleteAllReports() {
   try {
     const reports = await storage.loadReports();
-    const count = reports.length;
-    await storage.save('page_comparator_reports', []);
+    const baseKey = get('storage.reportKey');
+    const count   = reports.length;
+
+    await Promise.all([
+      storage.save(`${baseKey}_meta`, []),
+      ...reports.map(r => chrome.storage.local.remove(`${baseKey}_el_${r.id}`))
+    ]);
+
     logger.info('All reports deleted', { count });
     return { success: true, count };
   } catch (error) {
@@ -89,10 +92,10 @@ async function deleteAllReports() {
 async function searchReports(query) {
   try {
     const reports = await loadAllReports();
-    const q = query.toLowerCase();
+    const q       = query.toLowerCase();
     return reports.filter(r =>
-      r.title.toLowerCase().includes(q) ||
-      r.url.toLowerCase().includes(q) ||
+      (r.title || '').toLowerCase().includes(q) ||
+      (r.url   || '').toLowerCase().includes(q) ||
       r.id.includes(query)
     );
   } catch (error) {
@@ -103,10 +106,10 @@ async function searchReports(query) {
 
 async function getStorageStats() {
   try {
-    const quota = await storage.checkQuota();
-    const reports = await storage.loadReports();
-    const totalElements = reports.reduce((sum, r) => sum + r.totalElements, 0);
-    const avgElements = reports.length > 0 ? Math.round(totalElements / reports.length) : 0;
+    const quota          = await storage.checkQuota();
+    const reports        = await storage.loadReports();
+    const totalElements  = reports.reduce((sum, r) => sum + (r.totalElements || 0), 0);
+    const avgElements    = reports.length > 0 ? Math.round(totalElements / reports.length) : 0;
     return {
       reportsCount: reports.length,
       totalElements,
@@ -119,89 +122,66 @@ async function getStorageStats() {
   }
 }
 
-// ─── JSON EXPORT ─────────────────────────────────────────────────────────────
-
-function exportReportAsJson(report) {
-  _triggerDownload(
-    JSON.stringify(report, null, 2),
-    'application/json',
-    `report-${report.id}.json`
-  );
-  logger.info('Report exported as JSON', { id: report.id });
+async function exportReportAsJson(report) {
+  try {
+    const full = await getReportById(report.id);
+    const data = full || report;
+    _triggerDownload(JSON.stringify(data, null, 2), 'application/json', `report-${report.id}.json`);
+    logger.info('Report exported as JSON', { id: report.id, elements: data.elements?.length ?? 0 });
+  } catch (error) {
+    logger.error('JSON export failed', { id: report.id, error: error.message });
+    throw error;
+  }
 }
 
 async function exportAllReportsAsJson() {
   try {
-    const reports = await storage.loadReports();
-    _triggerDownload(
-      JSON.stringify(reports, null, 2),
-      'application/json',
-      `all-reports-${Date.now()}.json`
-    );
-    logger.info('All reports exported as JSON', { count: reports.length });
-    return { success: true, count: reports.length };
+    const metas = await storage.loadReports();
+    if (metas.length === 0) return { success: false, error: 'No reports to export' };
+    const full = await Promise.all(metas.map(m => getReportById(m.id)));
+    _triggerDownload(JSON.stringify(full, null, 2), 'application/json', `all-reports-${Date.now()}.json`);
+    logger.info('All reports exported as JSON', { count: full.length });
+    return { success: true, count: full.length };
   } catch (error) {
     logger.error('Failed to export all reports as JSON', { error: error.message });
     return { success: false, error: error.message };
   }
 }
 
-// ─── CSV EXPORT ──────────────────────────────────────────────────────────────
-
-/**
- * Export a single extraction report as CSV.
- *
- * Format:
- *   ## REPORT METADATA section
- *   ## FILTERS section (if filters were applied)
- *   ## ELEMENTS table (one row per element, all key fields as columns)
- *
- * Every value is CSV-escaped so the file opens cleanly in Excel / Google Sheets.
- */
-function exportReportAsCsv(report) {
+async function exportReportAsCsv(report) {
   try {
-    const csv = _buildReportCsv(report);
+    const full = await getReportById(report.id);
+    const data = full || report;
+    const csv      = _buildReportCsv(data);
     const filename = `report-${report.id}-${_safeTimestamp()}.csv`;
     _triggerDownload(csv, 'text/csv;charset=utf-8;', filename);
-    logger.info('Report exported as CSV', { id: report.id, elementCount: report.elements?.length });
+    logger.info('Report exported as CSV', { id: report.id, elementCount: data.elements?.length ?? 0 });
   } catch (error) {
     logger.error('CSV export failed', { id: report.id, error: error.message });
     throw error;
   }
 }
 
-/**
- * Export all stored reports concatenated into a single CSV file.
- * Each report is separated by a clearly labelled section header.
- */
 async function exportAllReportsAsCsv() {
   try {
-    const reports = await storage.loadReports();
-    if (reports.length === 0) {
-      return { success: false, error: 'No reports to export' };
-    }
-
-    const sections = reports.map((report, i) =>
-      `## ===== REPORT ${i + 1} of ${reports.length} =====\n` + _buildReportCsv(report)
+    const metas = await storage.loadReports();
+    if (metas.length === 0) return { success: false, error: 'No reports to export' };
+    const full = await Promise.all(metas.map(m => getReportById(m.id)));
+    const sections = full.map((report, i) =>
+      `## ===== REPORT ${i + 1} of ${full.length} =====\n` + _buildReportCsv(report)
     );
-
-    const csv = sections.join('\n\n');
-    const filename = `all-reports-${_safeTimestamp()}.csv`;
-    _triggerDownload(csv, 'text/csv;charset=utf-8;', filename);
-    logger.info('All reports exported as CSV', { count: reports.length });
-    return { success: true, count: reports.length };
+    _triggerDownload(sections.join('\n\n'), 'text/csv;charset=utf-8;', `all-reports-${_safeTimestamp()}.csv`);
+    logger.info('All reports exported as CSV', { count: full.length });
+    return { success: true, count: full.length };
   } catch (error) {
     logger.error('Failed to export all reports as CSV', { error: error.message });
     return { success: false, error: error.message };
   }
 }
 
-// ─── CSV INTERNALS ────────────────────────────────────────────────────────────
-
 function _buildReportCsv(report) {
   const rows = [];
 
-  // ── Metadata ──────────────────────────────────────────────────
   rows.push(['## REPORT METADATA']);
   rows.push(['Report ID',      report.id]);
   rows.push(['URL',            report.url]);
@@ -211,7 +191,6 @@ function _buildReportCsv(report) {
   rows.push(['Duration (ms)',  report.duration ?? 'N/A']);
   rows.push([]);
 
-  // ── Filters (optional) ────────────────────────────────────────
   if (report.filters && Object.values(report.filters).some(Boolean)) {
     rows.push(['## FILTERS APPLIED']);
     rows.push(['Class Filter', report.filters.class  || 'none']);
@@ -220,100 +199,47 @@ function _buildReportCsv(report) {
     rows.push([]);
   }
 
-  // ── Elements table ────────────────────────────────────────────
   rows.push(['## EXTRACTED ELEMENTS']);
   rows.push([
-    'Element ID',
-    'Index',
-    'Tag Name',
-    'id Attribute',
-    'Class Name',
+    'Element ID', 'Index', 'Tag Name', 'id Attribute', 'Class Name',
     'Text Content (first 120 chars)',
-    'XPath',
-    'XPath Confidence',
-    'XPath Strategy',
-    'CSS Selector',
-    'CSS Confidence',
-    'CSS Strategy',
-    'Position X',
-    'Position Y',
-    'Width',
-    'Height',
-    'Is Visible',
-    'Display',
-    'Visibility',
-    'Opacity'
+    'XPath', 'XPath Confidence', 'XPath Strategy',
+    'CSS Selector', 'CSS Confidence', 'CSS Strategy',
+    'Position X', 'Position Y', 'Width', 'Height',
+    'Is Visible', 'Display', 'Visibility', 'Opacity'
   ]);
 
   for (const el of (report.elements || [])) {
     rows.push([
-      el.id,
-      el.index,
-      el.tagName,
-      _csv(el.elementId),
-      _csv(el.className),
+      el.id, el.index, el.tagName,
+      _csv(el.elementId), _csv(el.className),
       _csv(el.textContent ? el.textContent.substring(0, 120) : ''),
-      _csv(el.selectors?.xpath),
-      el.selectors?.xpathConfidence ?? 0,
-      _csv(el.selectors?.xpathStrategy),
-      _csv(el.selectors?.css),
-      el.selectors?.cssConfidence ?? 0,
-      _csv(el.selectors?.cssStrategy),
-      el.position?.x  ?? 0,
-      el.position?.y  ?? 0,
-      el.position?.width  ?? 0,
-      el.position?.height ?? 0,
+      _csv(el.selectors?.xpath), el.selectors?.xpathConfidence ?? 0, _csv(el.selectors?.xpathStrategy),
+      _csv(el.selectors?.css),   el.selectors?.cssConfidence   ?? 0, _csv(el.selectors?.cssStrategy),
+      el.position?.x ?? 0, el.position?.y ?? 0, el.position?.width ?? 0, el.position?.height ?? 0,
       el.visibility?.isVisible ? 'Yes' : 'No',
-      _csv(el.visibility?.display),
-      _csv(el.visibility?.visibility),
-      el.visibility?.opacity ?? ''
+      _csv(el.visibility?.display), _csv(el.visibility?.visibility), el.visibility?.opacity ?? ''
     ]);
   }
 
-  return rows.map(_rowToCsv).join('\n');
+  return rows.map(row => row.map(_csv).join(',')).join('\n');
 }
 
-/**
- * Convert a row array to a CSV line.
- * Each cell is individually escaped.
- */
-function _rowToCsv(cells) {
-  return cells.map(cell => _csv(cell)).join(',');
-}
-
-/**
- * Escape a single CSV cell value.
- *
- * Rules:
- *   - null/undefined → empty string
- *   - Numbers and booleans → as-is (no quotes)
- *   - Strings: if they contain comma, double-quote, newline, or start with
- *     a special char (=, +, -, @) → wrap in double-quotes, escape inner quotes
- */
 function _csv(value) {
   if (value === null || value === undefined) return '';
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-
-  const str = String(value);
-
-  // Guard against CSV injection (=SUM(...), +cmd, etc.)
+  const str  = String(value);
   const safe = /^[=+\-@]/.test(str) ? `'${str}` : str;
-
   if (safe.includes(',') || safe.includes('"') || safe.includes('\n') || safe.includes('\r')) {
     return `"${safe.replace(/"/g, '""')}"`;
   }
-
   return safe;
 }
 
-// ─── HELPERS ─────────────────────────────────────────────────────────────────
-
 function _triggerDownload(content, mimeType, filename) {
   const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
+  const url  = URL.createObjectURL(blob);
+  const a    = Object.assign(document.createElement('a'), { href: url, download: filename });
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -324,20 +250,9 @@ function _safeTimestamp() {
   return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 }
 
-// ─── EXPORTS ─────────────────────────────────────────────────────────────────
-
 export {
-  loadAllReports,
-  saveReport,
-  deleteReport,
-  getReportById,
-  deleteAllReports,
-  searchReports,
-  getStorageStats,
-  // JSON
-  exportReportAsJson,
-  exportAllReportsAsJson,
-  // CSV
-  exportReportAsCsv,
-  exportAllReportsAsCsv
+  loadAllReports, saveReport, deleteReport, getReportById,
+  deleteAllReports, searchReports, getStorageStats,
+  exportReportAsJson, exportAllReportsAsJson,
+  exportReportAsCsv, exportAllReportsAsCsv
 };

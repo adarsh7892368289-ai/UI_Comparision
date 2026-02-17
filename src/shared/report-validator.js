@@ -127,6 +127,32 @@ function isValidTimestamp(timestamp) {
   return !isNaN(date.getTime());
 }
 
+function isValidMeta(meta) {
+  if (!meta || typeof meta !== 'object') {
+    return { valid: false, errors: ['Meta must be an object'] };
+  }
+
+  const errors = [];
+
+  if (!meta.id || typeof meta.id !== 'string') {
+    errors.push('Missing or invalid report ID');
+  }
+
+  if (!meta.url || typeof meta.url !== 'string') {
+    errors.push('Missing or invalid URL');
+  }
+
+  if (!meta.timestamp || !isValidTimestamp(meta.timestamp)) {
+    errors.push('Missing or invalid timestamp');
+  }
+
+  if (typeof meta.totalElements !== 'number' || meta.totalElements < 0) {
+    errors.push('Invalid totalElements count');
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
 function sanitizeReport(report) {
   return {
     id: String(report.id || Date.now()),
@@ -142,7 +168,8 @@ function sanitizeReport(report) {
 }
 
 export { 
-  isValidReport, 
+  isValidReport,
+  isValidMeta,
   isValidElement, 
   validateAllElements, 
   sanitizeReport 

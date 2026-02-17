@@ -153,6 +153,10 @@ const rawConfig = {
           'object-fit', 'object-position'
         ],
         compareTextContent: false,
+        structuralOnlyAttributes: [
+          'role', 'aria-label', 'aria-labelledby', 'aria-describedby',
+          'type', 'name', 'data-testid', 'data-test', 'data-qa', 'data-cy'
+        ],
         tolerances: { color: 8, size: 5, opacity: 0.05 }
       },
       static: {

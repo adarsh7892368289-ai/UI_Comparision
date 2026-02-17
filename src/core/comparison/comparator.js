@@ -1,7 +1,6 @@
 import logger from '../../infrastructure/logger.js';
 import { ElementMatcher } from './matcher.js';
-import { StaticComparisonMode } from './modes/static-mode.js';
-import { DynamicComparisonMode } from './modes/dynamic-mode.js';
+import { StaticComparisonMode, DynamicComparisonMode } from './comparison-modes.js';
 
 class Comparator {
   constructor() {

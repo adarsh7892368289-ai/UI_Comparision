@@ -2,9 +2,9 @@ import logger from '../infrastructure/logger.js';
 import { errorTracker } from '../infrastructure/error-tracker.js';
 import storage from '../infrastructure/storage.js';
 import { extractFromActiveTab } from '../application/extract-workflow.js';
-import { 
-  loadAllReports, 
-  deleteReport, 
+import {
+  loadAllReports,
+  deleteReport,
   exportReportAsJson,
   exportReportAsCsv,
   deleteAllReports,
@@ -28,11 +28,56 @@ const exportManager = new ExportManager();
 
 document.addEventListener('DOMContentLoaded', async () => {
   logger.info('Popup opened');
-  
   await initializeUI();
   setupEventListeners();
   await loadReports();
 });
+
+function sanitize(value) {
+  const el = document.createElement('span');
+  el.textContent = String(value ?? '');
+  return el.innerHTML;
+}
+
+function showStatus(element, type, message) {
+  if (!element) return;
+  element.className = `status ${type}`;
+  element.textContent = message;
+  element.style.display = 'block';
+}
+
+function setLoading(button, isLoading, text) {
+  if (!button) return;
+  button.disabled = isLoading;
+  if (isLoading) {
+    button.setAttribute('data-original-text', button.textContent);
+    const spinner = document.createElement('span');
+    spinner.className = 'spinner';
+    button.textContent = '';
+    button.appendChild(spinner);
+    button.appendChild(document.createTextNode(` ${text}`));
+  } else {
+    button.textContent = text || button.getAttribute('data-original-text') || 'Submit';
+    button.removeAttribute('data-original-text');
+  }
+}
+
+function armTwoStepConfirm(button, onConfirm) {
+  if (button.dataset.confirmArmed === 'true') {
+    clearTimeout(button._confirmTimer);
+    button.dataset.confirmArmed = 'false';
+    button.textContent = button.dataset.originalLabel;
+    onConfirm();
+    return;
+  }
+  button.dataset.originalLabel = button.textContent;
+  button.dataset.confirmArmed = 'true';
+  button.textContent = 'Confirm?';
+  button._confirmTimer = setTimeout(() => {
+    button.dataset.confirmArmed = 'false';
+    button.textContent = button.dataset.originalLabel;
+  }, 3000);
+}
 
 async function initializeUI() {
   setupTabs();
@@ -40,22 +85,13 @@ async function initializeUI() {
 }
 
 function setupTabs() {
-  const tabButtons = document.querySelectorAll('.tab-button');
-  
-  tabButtons.forEach(button => {
+  document.querySelectorAll('.tab-button').forEach(button => {
     button.addEventListener('click', () => {
-      document.querySelectorAll('.tab-button').forEach(btn => 
-        btn.classList.remove('active')
-      );
-      document.querySelectorAll('.tab-content').forEach(content => 
-        content.classList.remove('active')
-      );
-      
+      document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
       button.classList.add('active');
-      const tabName = button.dataset.tab;
-      document.getElementById(`${tabName}-tab`).classList.add('active');
-      
-      logger.debug('Tab switched', { tab: tabName });
+      document.getElementById(`${button.dataset.tab}-tab`).classList.add('active');
+      logger.debug('Tab switched', { tab: button.dataset.tab });
     });
   });
 }
@@ -65,9 +101,7 @@ async function loadCurrentPageInfo() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab) {
       const urlElement = document.getElementById('current-url');
-      if (urlElement) {
-        urlElement.textContent = tab.url;
-      }
+      if (urlElement) urlElement.textContent = tab.url;
     }
   } catch (error) {
     logger.error('Failed to get current tab info', { error: error.message });
@@ -75,35 +109,24 @@ async function loadCurrentPageInfo() {
 }
 
 function setupEventListeners() {
-  const extractBtn = document.getElementById('extract-btn');
-  const compareBtn = document.getElementById('compare-btn');
+  document.getElementById('extract-btn')?.addEventListener('click', handleExtraction);
+  document.getElementById('compare-btn')?.addEventListener('click', handleComparison);
+
   const deleteAllBtn = document.getElementById('delete-all-btn');
-  const exportAllBtn = document.getElementById('export-all-btn');
-  const searchInput = document.getElementById('search-reports');
-  
-  if (extractBtn) {
-    extractBtn.addEventListener('click', handleExtraction);
-  }
-  
-  if (compareBtn) {
-    compareBtn.addEventListener('click', handleComparison);
-  }
-  
   if (deleteAllBtn) {
-    deleteAllBtn.addEventListener('click', handleDeleteAll);
+    deleteAllBtn.addEventListener('click', () => {
+      armTwoStepConfirm(deleteAllBtn, handleDeleteAll);
+    });
   }
-  
-  if (exportAllBtn) {
-    exportAllBtn.addEventListener('click', handleExportAll);
-  }
-  
+
+  document.getElementById('export-all-btn')?.addEventListener('click', handleExportAll);
+
+  const searchInput = document.getElementById('search-reports');
   if (searchInput) {
-    let searchTimeout;
+    let debounceTimer;
     searchInput.addEventListener('input', (e) => {
-      clearTimeout(searchTimeout);
-      searchTimeout = setTimeout(() => {
-        handleSearch(e.target.value);
-      }, 300);
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => handleSearch(e.target.value), 300);
     });
   }
 }
@@ -111,29 +134,20 @@ function setupEventListeners() {
 async function handleExtraction() {
   const statusDiv = document.getElementById('extract-status');
   const extractBtn = document.getElementById('extract-btn');
-  
+
   try {
     setLoading(extractBtn, true, 'Extracting...');
     showStatus(statusDiv, 'info', 'Extracting elements from the page...');
-    
     logger.info('Starting extraction');
+
     const startTime = performance.now();
-    
     const filters = getFilters();
     const report = await extractFromActiveTab(filters);
-    
     const duration = performance.now() - startTime;
-    logger.info('Extraction completed', { 
-      totalElements: report.totalElements,
-      duration: Math.round(duration)
-    });
-    
+
+    logger.info('Extraction completed', { totalElements: report.totalElements, duration: Math.round(duration) });
     await loadReports();
-    
-    showStatus(statusDiv, 'success', 
-      `✓ Extracted ${report.totalElements} elements in ${Math.round(duration)}ms`
-    );
-    
+    showStatus(statusDiv, 'success', `✓ Extracted ${report.totalElements} elements in ${Math.round(duration)}ms`);
   } catch (error) {
     logger.error('Extraction failed', { error: error.message });
     showStatus(statusDiv, 'error', `✗ Extraction failed: ${error.message}`);
@@ -143,15 +157,13 @@ async function handleExtraction() {
 }
 
 function getFilters() {
-  const classFilter = document.getElementById('filter-class')?.value.trim();
-  const idFilter = document.getElementById('filter-id')?.value.trim();
-  const tagFilter = document.getElementById('filter-tag')?.value.trim();
-  
   const filters = {};
-  if (classFilter) filters.class = classFilter;
-  if (idFilter) filters.id = idFilter;
-  if (tagFilter) filters.tag = tagFilter;
-  
+  const classVal = document.getElementById('filter-class')?.value.trim();
+  const idVal = document.getElementById('filter-id')?.value.trim();
+  const tagVal = document.getElementById('filter-tag')?.value.trim();
+  if (classVal) filters.class = classVal;
+  if (idVal) filters.id = idVal;
+  if (tagVal) filters.tag = tagVal;
   return Object.keys(filters).length > 0 ? filters : null;
 }
 
@@ -169,112 +181,159 @@ async function loadReports() {
 function displayReports() {
   const container = document.getElementById('reports-list');
   if (!container) return;
-  
+
   if (reports.length === 0) {
-    container.innerHTML = '<p class="empty-state">No reports yet. Extract elements from a page to create your first report.</p>';
+    container.textContent = '';
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = 'No reports yet. Extract elements from a page to create your first report.';
+    container.appendChild(empty);
     return;
   }
-  
-  container.innerHTML = reports.map(report => `
-    <div class="report-item" data-id="${report.id}">
-      <div class="report-info">
-        <div class="report-title">${report.title || 'Untitled'}</div>
-        <div class="report-meta">
-          ${report.totalElements} elements • ${new Date(report.timestamp).toLocaleString()}
-        </div>
-        <div class="report-url">${report.url}</div>
-      </div>
-      <div class="report-actions">
-        <button class="btn-icon export-json-btn" data-id="${report.id}" title="Export as JSON">
-          📋
-        </button>
-        <button class="btn-icon export-csv-btn" data-id="${report.id}" title="Export as CSV">
-          📊
-        </button>
-        <button class="btn-icon delete-btn" data-id="${report.id}" title="Delete">
-          🗑️
-        </button>
-      </div>
-    </div>
-  `).join('');
-  
-  container.querySelectorAll('.export-json-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const reportId = e.currentTarget.dataset.id;
-      const report = reports.find(r => r.id === reportId);
-      if (report) exportReportAsJson(report);
-    });
-  });
 
-  container.querySelectorAll('.export-csv-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const reportId = e.currentTarget.dataset.id;
-      const report = reports.find(r => r.id === reportId);
-      if (report) {
-        try {
-          exportReportAsCsv(report);
-        } catch (err) {
-          alert(`CSV export failed: ${err.message}`);
-        }
+  container.textContent = '';
+
+  for (const report of reports) {
+    const item = document.createElement('div');
+    item.className = 'report-item';
+    item.dataset.id = report.id;
+
+    const info = document.createElement('div');
+    info.className = 'report-info';
+
+    const title = document.createElement('div');
+    title.className = 'report-title';
+    title.textContent = report.title || 'Untitled';
+
+    const meta = document.createElement('div');
+    meta.className = 'report-meta';
+    meta.textContent = `${report.totalElements} elements • ${new Date(report.timestamp).toLocaleString()}`;
+
+    const url = document.createElement('div');
+    url.className = 'report-url';
+    url.textContent = report.url;
+
+    info.appendChild(title);
+    info.appendChild(meta);
+    info.appendChild(url);
+
+    const actions = document.createElement('div');
+    actions.className = 'report-actions';
+
+    const jsonBtn = document.createElement('button');
+    jsonBtn.className = 'btn-icon export-json-btn';
+    jsonBtn.title = 'Export as JSON';
+    jsonBtn.textContent = '📋';
+    jsonBtn.addEventListener('click', async () => {
+      const r = reports.find(x => x.id === report.id);
+      if (!r) return;
+      try {
+        jsonBtn.disabled = true;
+        await exportReportAsJson(r);
+      } catch (err) {
+        const statusDiv = document.getElementById('extract-status');
+        showStatus(statusDiv, 'error', `JSON export failed: ${err.message}`);
+      } finally {
+        jsonBtn.disabled = false;
       }
     });
-  });
-  
-  container.querySelectorAll('.delete-btn').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      const reportId = e.target.dataset.id;
-      if (confirm('Delete this report?')) {
-        await deleteReport(reportId);
+
+    const csvBtn = document.createElement('button');
+    csvBtn.className = 'btn-icon export-csv-btn';
+    csvBtn.title = 'Export as CSV';
+    csvBtn.textContent = '📊';
+    csvBtn.addEventListener('click', async () => {
+      const r = reports.find(x => x.id === report.id);
+      if (!r) return;
+      try {
+        csvBtn.disabled = true;
+        await exportReportAsCsv(r);
+      } catch (err) {
+        const statusDiv = document.getElementById('extract-status');
+        showStatus(statusDiv, 'error', `CSV export failed: ${err.message}`);
+      } finally {
+        csvBtn.disabled = false;
+      }
+    });
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'btn-icon delete-btn';
+    deleteBtn.title = 'Delete';
+    deleteBtn.textContent = '🗑️';
+    deleteBtn.addEventListener('click', () => {
+      armTwoStepConfirm(deleteBtn, async () => {
+        await deleteReport(report.id);
         await loadReports();
-      }
+      });
     });
-  });
+
+    actions.appendChild(jsonBtn);
+    actions.appendChild(csvBtn);
+    actions.appendChild(deleteBtn);
+
+    item.appendChild(info);
+    item.appendChild(actions);
+    container.appendChild(item);
+  }
 }
 
 function populateReportSelectors() {
   const baselineSelect = document.getElementById('baseline-report');
   const compareSelect = document.getElementById('compare-report');
-  
   if (!baselineSelect || !compareSelect) return;
-  
-  const options = reports.map(report => 
-    `<option value="${report.id}">${report.title || 'Untitled'} (${report.totalElements} elements)</option>`
-  ).join('');
-  
-  baselineSelect.innerHTML = '<option value="">Select baseline report...</option>' + options;
-  compareSelect.innerHTML = '<option value="">Select compare report...</option>' + options;
+
+  const emptyOption = () => {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'Select report...';
+    return opt;
+  };
+
+  baselineSelect.textContent = '';
+  compareSelect.textContent = '';
+  baselineSelect.appendChild(emptyOption());
+  compareSelect.appendChild(emptyOption());
+
+  for (const report of reports) {
+    const makeOption = () => {
+      const opt = document.createElement('option');
+      opt.value = report.id;
+      opt.textContent = `${report.title || 'Untitled'} (${report.totalElements} elements)`;
+      return opt;
+    };
+    baselineSelect.appendChild(makeOption());
+    compareSelect.appendChild(makeOption());
+  }
 }
 
 async function handleComparison() {
   const statusDiv = document.getElementById('compare-status');
   const compareBtn = document.getElementById('compare-btn');
   const resultsDiv = document.getElementById('compare-results');
-  
+
   try {
     const baselineId = document.getElementById('baseline-report')?.value;
     const compareId = document.getElementById('compare-report')?.value;
-    
+
     if (!baselineId || !compareId) {
       showStatus(statusDiv, 'error', '✗ Please select both baseline and compare reports');
       return;
     }
-    
+
     if (baselineId === compareId) {
       showStatus(statusDiv, 'error', '✗ Please select different reports');
       return;
     }
-    
+
     setLoading(compareBtn, true, 'Comparing...');
     showStatus(statusDiv, 'info', 'Comparing reports...');
-    
+
     const mode = document.querySelector('input[name="compare-mode"]:checked')?.value || 'static';
     const results = await compareReports(baselineId, compareId, mode);
-    
     currentComparisonResult = results;
-    
+
     displayComparisonResults(resultsDiv, results);
     showStatus(statusDiv, 'success', '✓ Comparison completed');
-    
   } catch (error) {
     logger.error('Comparison failed', { error: error.message });
     showStatus(statusDiv, 'error', `✗ Comparison failed: ${error.message}`);
@@ -285,191 +344,127 @@ async function handleComparison() {
 
 function displayComparisonResults(container, results) {
   if (!container) return;
-  
-  const { baseline, compare, matching, comparison, unmatchedElements } = results;
-  
-  const criticalCount = comparison.summary.severityCounts.critical;
-  const highCount = comparison.summary.severityCounts.high;
-  const mediumCount = comparison.summary.severityCounts.medium;
-  const lowCount = comparison.summary.severityCounts.low;
-  
-  let alertClass = 'info';
-  if (criticalCount > 0) alertClass = 'error';
-  else if (highCount > 0) alertClass = 'warning';
-  
+
+  const { baseline, matching, comparison } = results;
+  const { severityCounts } = comparison.summary;
+  const { critical, high, medium, low } = severityCounts;
+  const total = comparison.summary.totalDifferences;
+
+  let headerClass = 'info';
+  if (critical > 0) headerClass = 'error';
+  else if (high > 0) headerClass = 'warning';
+
+  const severityBar = (label, count) => {
+    if (!count) return '';
+    const pct = total > 0 ? ((count / total) * 100).toFixed(1) : 0;
+    return `
+      <div class="severity-bar ${label.toLowerCase()}">
+        <span class="severity-label">${sanitize(label)}</span>
+        <div class="severity-progress">
+          <div class="severity-fill" style="width:${pct}%"></div>
+        </div>
+        <span class="severity-count">${count}</span>
+      </div>`;
+  };
+
   container.innerHTML = `
     <div class="comparison-results">
-      <div class="comparison-header ${alertClass}">
+      <div class="comparison-header ${headerClass}">
         <h3>Comparison Results</h3>
         <div class="comparison-meta">
-          <span>Mode: ${results.mode}</span>
+          <span>Mode: ${sanitize(results.mode)}</span>
           <span>Duration: ${results.duration}ms</span>
         </div>
       </div>
-
       <div class="stats-grid">
         <div class="stat-card">
           <div class="stat-label">Match Rate</div>
           <div class="stat-value">${matching.matchRate}%</div>
           <div class="stat-detail">${matching.totalMatched} / ${baseline.totalElements} elements</div>
         </div>
-        
         <div class="stat-card">
           <div class="stat-label">Modified Elements</div>
           <div class="stat-value">${comparison.summary.modifiedElements}</div>
-          <div class="stat-detail">${comparison.summary.totalDifferences} total differences</div>
+          <div class="stat-detail">${total} total differences</div>
         </div>
-        
         <div class="stat-card">
           <div class="stat-label">Unchanged</div>
           <div class="stat-value">${comparison.summary.unchangedElements}</div>
           <div class="stat-detail">No differences detected</div>
         </div>
-        
         <div class="stat-card">
           <div class="stat-label">Unmatched</div>
           <div class="stat-value">${matching.unmatchedBaseline + matching.unmatchedCompare}</div>
           <div class="stat-detail">${matching.unmatchedBaseline} removed, ${matching.unmatchedCompare} added</div>
         </div>
       </div>
-
-      ${criticalCount + highCount + mediumCount + lowCount > 0 ? `
+      ${total > 0 ? `
         <div class="severity-breakdown">
           <h4>Severity Breakdown</h4>
           <div class="severity-bars">
-            ${criticalCount > 0 ? `
-              <div class="severity-bar critical">
-                <span class="severity-label">Critical</span>
-                <div class="severity-progress">
-                  <div class="severity-fill" style="width: ${(criticalCount / comparison.summary.totalDifferences * 100).toFixed(1)}%"></div>
-                </div>
-                <span class="severity-count">${criticalCount}</span>
-              </div>
-            ` : ''}
-            ${highCount > 0 ? `
-              <div class="severity-bar high">
-                <span class="severity-label">High</span>
-                <div class="severity-progress">
-                  <div class="severity-fill" style="width: ${(highCount / comparison.summary.totalDifferences * 100).toFixed(1)}%"></div>
-                </div>
-                <span class="severity-count">${highCount}</span>
-              </div>
-            ` : ''}
-            ${mediumCount > 0 ? `
-              <div class="severity-bar medium">
-                <span class="severity-label">Medium</span>
-                <div class="severity-progress">
-                  <div class="severity-fill" style="width: ${(mediumCount / comparison.summary.totalDifferences * 100).toFixed(1)}%"></div>
-                </div>
-                <span class="severity-count">${mediumCount}</span>
-              </div>
-            ` : ''}
-            ${lowCount > 0 ? `
-              <div class="severity-bar low">
-                <span class="severity-label">Low</span>
-                <div class="severity-progress">
-                  <div class="severity-fill" style="width: ${(lowCount / comparison.summary.totalDifferences * 100).toFixed(1)}%"></div>
-                </div>
-                <span class="severity-count">${lowCount}</span>
-              </div>
-            ` : ''}
+            ${severityBar('Critical', critical)}
+            ${severityBar('High', high)}
+            ${severityBar('Medium', medium)}
+            ${severityBar('Low', low)}
           </div>
-        </div>
-      ` : ''}
-
+        </div>` : ''}
       <div class="comparison-actions">
-        <button id="export-comparison-btn" class="btn-secondary">Export Results</button>
+        <div class="export-picker-row">
+          <select id="export-format-select" class="select-input" aria-label="Export format">
+            <option value="excel">Excel (.xlsx)</option>
+            <option value="csv">CSV (.csv)</option>
+            <option value="html">HTML (.html)</option>
+            <option value="json">JSON (.json)</option>
+          </select>
+          <button id="export-comparison-btn" class="btn-secondary">Export Results</button>
+        </div>
         <button id="view-details-btn" class="btn-primary">View Detailed Report</button>
       </div>
-    </div>
-  `;
-  
-  const exportBtn = container.querySelector('#export-comparison-btn');
-  if (exportBtn) {
-    exportBtn.addEventListener('click', () => exportComparisonResults(results));
-  }
-  
-  const detailsBtn = container.querySelector('#view-details-btn');
-  if (detailsBtn) {
-    detailsBtn.addEventListener('click', () => displayDetailedResults(results));
-  }
+    </div>`;
+
+  container.querySelector('#export-comparison-btn')
+    ?.addEventListener('click', () => exportComparisonResults(results));
+
+  container.querySelector('#view-details-btn')
+    ?.addEventListener('click', () => exportManager.export(results, EXPORT_FORMATS.HTML));
 }
 
-function exportComparisonResults(results) {
+async function exportComparisonResults(results) {
   if (!currentComparisonResult) {
-    alert('No comparison result available to export');
+    const statusDiv = document.getElementById('compare-status');
+    showStatus(statusDiv, 'error', '✗ No comparison result available');
     return;
   }
 
-  const format = prompt(
-    'Select export format:\n' +
-    '1 - Excel (.xlsx)\n' +
-    '2 - CSV (.csv)\n' +
-    '3 - HTML (.html)\n' +
-    '4 - JSON (.json)',
-    '1'
-  );
+  const formatSelect = document.getElementById('export-format-select');
+  const selectedFormat = formatSelect?.value ?? EXPORT_FORMATS.EXCEL;
+  const statusDiv = document.getElementById('compare-status');
 
-  let selectedFormat;
-  switch (format) {
-    case '1':
-      selectedFormat = EXPORT_FORMATS.EXCEL;
-      break;
-    case '2':
-      selectedFormat = EXPORT_FORMATS.CSV;
-      break;
-    case '3':
-      selectedFormat = EXPORT_FORMATS.HTML;
-      break;
-    case '4':
-      selectedFormat = EXPORT_FORMATS.JSON;
-      break;
-    default:
-      return;
+  const result = await exportManager.export(currentComparisonResult, selectedFormat);
+  if (result.success) {
+    logger.info('Export successful', { format: selectedFormat });
+    showStatus(statusDiv, 'success', `✓ Exported as ${selectedFormat.toUpperCase()}`);
+  } else {
+    showStatus(statusDiv, 'error', `✗ Export failed: ${result.error}`);
   }
-
-  exportManager.export(currentComparisonResult, selectedFormat)
-    .then(result => {
-      if (result.success) {
-        logger.info('Export successful', { format: selectedFormat });
-      } else {
-        alert(`Export failed: ${result.error}`);
-      }
-    });
-}
-
-function displayDetailedResults(results) {
-  logger.info('Displaying detailed results', { 
-    totalMatches: results.comparison.results.length 
-  });
-
-  exportManager.export(results, EXPORT_FORMATS.HTML);
-}
-
-function showStatus(element, type, message) {
-  if (!element) return;
-  
-  element.className = `status ${type}`;
-  element.textContent = message;
-  element.style.display = 'block';
 }
 
 async function displayStorageStats() {
   const statsDiv = document.getElementById('storage-stats');
   if (!statsDiv) return;
-  
+
   try {
     const stats = await getStorageStats();
     if (!stats) return;
-    
+
     const percentUsed = stats.quota.percentUsed.toFixed(1);
     const bytesUsedMB = (stats.quota.bytesInUse / (1024 * 1024)).toFixed(2);
     const quotaMB = (stats.quota.quota / (1024 * 1024)).toFixed(2);
-    
+
     let statusClass = 'info';
     if (stats.quota.percentUsed > 80) statusClass = 'warning';
     if (stats.quota.percentUsed > 95) statusClass = 'error';
-    
+
     statsDiv.innerHTML = `
       <div class="stats-grid">
         <div class="stat-item">
@@ -488,18 +483,13 @@ async function displayStorageStats() {
           <span class="stat-label">Storage:</span>
           <span class="stat-value">${bytesUsedMB} / ${quotaMB} MB (${percentUsed}%)</span>
         </div>
-      </div>
-    `;
+      </div>`;
   } catch (error) {
     logger.error('Failed to display storage stats', { error: error.message });
   }
 }
 
 async function handleDeleteAll() {
-  if (!confirm('Delete ALL reports? This cannot be undone.')) {
-    return;
-  }
-  
   try {
     const result = await deleteAllReports();
     if (result.success) {
@@ -512,23 +502,24 @@ async function handleDeleteAll() {
 }
 
 async function handleExportAll() {
-  const choice = confirm(
-    'Export all reports.\n\nClick OK for CSV (spreadsheet-friendly)\nClick Cancel for JSON (full data)'
-  );
+  const statusDiv = document.getElementById('extract-status');
+  const formatSelect = document.getElementById('export-all-format');
+  const format = formatSelect?.value ?? 'csv';
 
   try {
-    if (choice) {
-      const result = await exportAllReportsAsCsv();
-      if (result.success) logger.info('All reports exported as CSV', { count: result.count });
-      else alert(`CSV export failed: ${result.error}`);
+    const result = format === 'csv'
+      ? await exportAllReportsAsCsv()
+      : await exportAllReportsAsJson();
+
+    if (result.success) {
+      showStatus(statusDiv, 'success', `✓ Exported ${result.count} reports as ${format.toUpperCase()}`);
+      logger.info('All reports exported', { format, count: result.count });
     } else {
-      const result = await exportAllReportsAsJson();
-      if (result.success) logger.info('All reports exported as JSON', { count: result.count });
-      else alert(`JSON export failed: ${result.error}`);
+      showStatus(statusDiv, 'error', `✗ Export failed: ${result.error}`);
     }
   } catch (error) {
     logger.error('Export all reports failed', { error: error.message });
-    alert(`Export failed: ${error.message}`);
+    showStatus(statusDiv, 'error', `✗ Export failed: ${error.message}`);
   }
 }
 
@@ -539,20 +530,6 @@ async function handleSearch(query) {
     reports = await searchReports(query.trim());
   }
   displayReports();
-}
-
-function setLoading(button, isLoading, text) {
-  if (!button) return;
-  
-  button.disabled = isLoading;
-  
-  if (isLoading) {
-    button.setAttribute('data-original-text', button.textContent);
-    button.innerHTML = `<span class="spinner"></span> ${text}`;
-  } else {
-    button.textContent = text || button.getAttribute('data-original-text') || 'Submit';
-    button.removeAttribute('data-original-text');
-  }
 }
 
 logger.info('Popup script initialized');
