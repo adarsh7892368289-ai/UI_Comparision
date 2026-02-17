@@ -1,8 +1,24 @@
 import logger from '../infrastructure/logger.js';
 import storage from '../infrastructure/storage.js';
 import { get } from '../config/defaults.js';
+import { validateConfig } from '../config/validator.js';
+
+// ─── STARTUP SEQUENCE ────────────────────────────────────────────────────────
+// Order matters: logger first (init uses config), then config validation,
+// then storage. Fail loudly on config errors so regressions surface immediately.
 
 logger.init();
+
+try {
+  validateConfig({ throwOnError: true });
+  logger.info('Config validation passed ✓');
+} catch (err) {
+  // Log the full error — this is a developer-facing failure
+  logger.error('STARTUP FAILED: Config validation error', { error: err.message });
+  // Re-throw so the service worker crashes visibly (better than silent bad state)
+  throw err;
+}
+
 storage.init();
 
 const activeOperations = new Map();
@@ -95,7 +111,7 @@ async function createTabForExtraction(url) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       reject(new Error('Tab creation timeout'));
-    }, 30000);
+    }, get('infrastructure.timeout.tabLoad'));
 
     chrome.tabs.create({ url, active: false }, (tab) => {
       const tabId = tab.id;
@@ -128,7 +144,7 @@ async function extractFromTab(tabId, filters) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       reject(new Error('Extraction timeout'));
-    }, 60000);
+    }, get('infrastructure.timeout.contentScript'));
 
     chrome.tabs.sendMessage(
       tabId,

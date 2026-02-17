@@ -6,8 +6,10 @@ import {
   loadAllReports, 
   deleteReport, 
   exportReportAsJson,
+  exportReportAsCsv,
   deleteAllReports,
   exportAllReportsAsJson,
+  exportAllReportsAsCsv,
   getStorageStats,
   searchReports
 } from '../application/report-manager.js';
@@ -183,8 +185,11 @@ function displayReports() {
         <div class="report-url">${report.url}</div>
       </div>
       <div class="report-actions">
-        <button class="btn-icon export-btn" data-id="${report.id}" title="Export as JSON">
-          📥
+        <button class="btn-icon export-json-btn" data-id="${report.id}" title="Export as JSON">
+          📋
+        </button>
+        <button class="btn-icon export-csv-btn" data-id="${report.id}" title="Export as CSV">
+          📊
         </button>
         <button class="btn-icon delete-btn" data-id="${report.id}" title="Delete">
           🗑️
@@ -193,12 +198,24 @@ function displayReports() {
     </div>
   `).join('');
   
-  container.querySelectorAll('.export-btn').forEach(btn => {
+  container.querySelectorAll('.export-json-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
-      const reportId = e.target.dataset.id;
+      const reportId = e.currentTarget.dataset.id;
+      const report = reports.find(r => r.id === reportId);
+      if (report) exportReportAsJson(report);
+    });
+  });
+
+  container.querySelectorAll('.export-csv-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const reportId = e.currentTarget.dataset.id;
       const report = reports.find(r => r.id === reportId);
       if (report) {
-        exportReportAsJson(report);
+        try {
+          exportReportAsCsv(report);
+        } catch (err) {
+          alert(`CSV export failed: ${err.message}`);
+        }
       }
     });
   });
@@ -495,13 +512,23 @@ async function handleDeleteAll() {
 }
 
 async function handleExportAll() {
+  const choice = confirm(
+    'Export all reports.\n\nClick OK for CSV (spreadsheet-friendly)\nClick Cancel for JSON (full data)'
+  );
+
   try {
-    const result = await exportAllReportsAsJson();
-    if (result.success) {
-      logger.info('All reports exported', { count: result.count });
+    if (choice) {
+      const result = await exportAllReportsAsCsv();
+      if (result.success) logger.info('All reports exported as CSV', { count: result.count });
+      else alert(`CSV export failed: ${result.error}`);
+    } else {
+      const result = await exportAllReportsAsJson();
+      if (result.success) logger.info('All reports exported as JSON', { count: result.count });
+      else alert(`JSON export failed: ${result.error}`);
     }
   } catch (error) {
-    logger.error('Failed to export all reports', { error: error.message });
+    logger.error('Export all reports failed', { error: error.message });
+    alert(`Export failed: ${error.message}`);
   }
 }
 

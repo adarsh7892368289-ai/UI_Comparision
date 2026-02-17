@@ -1,4 +1,17 @@
-import logger from '../../infrastructure/logger.js';
+import { get } from '../../config/defaults.js';
+import  logger  from '../../infrastructure/logger.js';
+
+// Read rounding precision from config — was hardcoded as 2 everywhere
+const DECIMALS = get('normalization.rounding.decimals', 2);
+
+// Helper — all numeric→px conversions go through here
+function px(value) {
+  return `${value.toFixed(DECIMALS)}px`;
+}
+
+function pct(value) {
+  return `${value.toFixed(DECIMALS)}%`;
+}
 
 const CONTEXT_DEPENDENT_UNITS = ['em', 'rem', '%', 'vw', 'vh', 'vmin', 'vmax'];
 
@@ -34,12 +47,12 @@ function normalizeUnit(value, property, element) {
   const unit = match[2] || '';
 
   if (!unit) {
-    return `${numValue.toFixed(2)}px`;
+    return px(numValue);
   }
 
   switch (unit) {
     case 'px':
-      return `${numValue.toFixed(2)}px`;
+      return px(numValue);
 
     case 'em':
       return emToPx(numValue, element);
@@ -63,22 +76,22 @@ function normalizeUnit(value, property, element) {
       return vmaxToPx(numValue);
 
     case 'pt':
-      return `${(numValue * 1.333333).toFixed(2)}px`;
+      return px((numValue * 1.333333));
 
     case 'pc':
-      return `${(numValue * 16).toFixed(2)}px`;
+      return px((numValue * 16));
 
     case 'in':
-      return `${(numValue * 96).toFixed(2)}px`;
+      return px((numValue * 96));
 
     case 'cm':
-      return `${(numValue * 37.7952755906).toFixed(2)}px`;
+      return px((numValue * 37.7952755906));
 
     case 'mm':
-      return `${(numValue * 3.77952755906).toFixed(2)}px`;
+      return px((numValue * 3.77952755906));
 
     case 'q':
-      return `${(numValue * 0.94488188976).toFixed(2)}px`;
+      return px((numValue * 0.94488188976));
 
     default:
       return value;
@@ -87,22 +100,22 @@ function normalizeUnit(value, property, element) {
 
 function emToPx(value, element) {
   if (!element) {
-    return `${(value * 16).toFixed(2)}px`;
+    return px((value * 16));
   }
 
   try {
     const parent = element.parentElement;
     if (!parent) {
-      return `${(value * 16).toFixed(2)}px`;
+      return px((value * 16));
     }
 
     const parentFontSize = window.getComputedStyle(parent).fontSize;
     const parentPx = parseFloat(parentFontSize);
     
-    return `${(value * parentPx).toFixed(2)}px`;
+    return px((value * parentPx));
   } catch (error) {
     logger.warn('Failed to convert em to px', { error: error.message });
-    return `${(value * 16).toFixed(2)}px`;
+    return px((value * 16));
   }
 }
 
@@ -111,22 +124,22 @@ function remToPx(value) {
     const rootFontSize = window.getComputedStyle(document.documentElement).fontSize;
     const rootPx = parseFloat(rootFontSize);
     
-    return `${(value * rootPx).toFixed(2)}px`;
+    return px((value * rootPx));
   } catch (error) {
     logger.warn('Failed to convert rem to px', { error: error.message });
-    return `${(value * 16).toFixed(2)}px`;
+    return px((value * 16));
   }
 }
 
 function percentToPx(value, property, element) {
   if (!element) {
-    return `${value.toFixed(2)}%`;
+    return pct(value);
   }
 
   try {
     const parent = element.parentElement;
     if (!parent) {
-      return `${value.toFixed(2)}%`;
+      return pct(value);
     }
 
     const computed = window.getComputedStyle(parent);
@@ -139,34 +152,34 @@ function percentToPx(value, property, element) {
     } else if (property.includes('font')) {
       referenceValue = parseFloat(computed.fontSize);
     } else {
-      return `${value.toFixed(2)}%`;
+      return pct(value);
     }
 
-    return `${((value / 100) * referenceValue).toFixed(2)}px`;
+    return px(((value / 100) * referenceValue));
   } catch (error) {
     logger.warn('Failed to convert % to px', { error: error.message });
-    return `${value.toFixed(2)}%`;
+    return pct(value);
   }
 }
 
 function vwToPx(value) {
   const vw = window.innerWidth / 100;
-  return `${(value * vw).toFixed(2)}px`;
+  return px((value * vw));
 }
 
 function vhToPx(value) {
   const vh = window.innerHeight / 100;
-  return `${(value * vh).toFixed(2)}px`;
+  return px((value * vh));
 }
 
 function vminToPx(value) {
   const vmin = Math.min(window.innerWidth, window.innerHeight) / 100;
-  return `${(value * vmin).toFixed(2)}px`;
+  return px((value * vmin));
 }
 
 function vmaxToPx(value) {
   const vmax = Math.max(window.innerWidth, window.innerHeight) / 100;
-  return `${(value * vmax).toFixed(2)}px`;
+  return px((value * vmax));
 }
 
 export { normalizeUnit, isContextDependent };

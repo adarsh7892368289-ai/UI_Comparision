@@ -1,18 +1,20 @@
+import { get } from '../config/defaults.js';
 import logger from './logger.js';
 import errorTracker from './error-tracker.js';
 
 class CircuitBreaker {
   constructor(name, options = {}) {
     this.name = name;
-    this.failureThreshold = options.failureThreshold || 5;
-    this.resetTimeout = options.resetTimeout || 30000;
-    this.cooldownPeriod = options.cooldownPeriod || 5000;
-    
-    this.state = 'CLOSED';
-    this.failures = 0;
-    this.successes = 0;
-    this.lastFailureTime = null;
-    this.nextAttemptTime = null;
+    // All defaults read from config — no hardcoded fallback literals
+    this.failureThreshold = options.failureThreshold ?? get('infrastructure.circuitBreaker.failureThreshold');
+    this.resetTimeout     = options.resetTimeout     ?? get('infrastructure.circuitBreaker.resetTimeout');
+    this.cooldownPeriod   = options.cooldownPeriod   ?? get('infrastructure.circuitBreaker.cooldownPeriod');
+
+    this.state          = 'CLOSED';
+    this.failures       = 0;
+    this.successes      = 0;
+    this.lastFailureTime  = null;
+    this.nextAttemptTime  = null;
   }
 
   async execute(fn) {
@@ -27,40 +29,38 @@ class CircuitBreaker {
 
     try {
       const result = await fn();
-      this.onSuccess();
+      this._onSuccess();
       return result;
     } catch (error) {
-      this.onFailure();
+      this._onFailure();
       throw error;
     }
   }
 
-  onSuccess() {
+  _onSuccess() {
     this.failures = 0;
-    
     if (this.state === 'HALF_OPEN') {
       this.state = 'CLOSED';
       logger.info(`Circuit breaker ${this.name}: CLOSED (recovered)`);
     }
   }
 
-  onFailure() {
+  _onFailure() {
     this.failures++;
     this.lastFailureTime = Date.now();
-
     if (this.failures >= this.failureThreshold) {
-      this.state = 'OPEN';
+      this.state           = 'OPEN';
       this.nextAttemptTime = Date.now() + this.cooldownPeriod;
       logger.warn(`Circuit breaker ${this.name}: OPEN (${this.failures} failures)`);
     }
   }
 
   reset() {
-    this.state = 'CLOSED';
-    this.failures = 0;
-    this.successes = 0;
-    this.lastFailureTime = null;
-    this.nextAttemptTime = null;
+    this.state           = 'CLOSED';
+    this.failures        = 0;
+    this.successes       = 0;
+    this.lastFailureTime  = null;
+    this.nextAttemptTime  = null;
   }
 }
 
@@ -75,73 +75,64 @@ function getCircuitBreaker(operation) {
 
 function isTransientError(error) {
   const transientPatterns = [
-    /timeout/i,
-    /network/i,
-    /quota.*exceeded/i,
-    /temporary/i,
-    /unavailable/i
+    /timeout/i, /network/i, /quota.*exceeded/i, /temporary/i, /unavailable/i
   ];
-
-  const errorMessage = error.message || error.toString();
-  return transientPatterns.some(pattern => pattern.test(errorMessage));
+  return transientPatterns.some(p => p.test(error.message || String(error)));
 }
 
 async function safeExecute(fn, options = {}) {
-  const timeout = options.timeout || 5000;
-  const operation = options.operation || 'anonymous';
-  const fallback = options.fallback;
+  // Read timeout from config — caller may override for specific operations
+  const timeout   = options.timeout   ?? get('infrastructure.timeout.default');
+  const operation = options.operation ?? 'anonymous';
+  const fallback  = options.fallback;
 
   const circuitBreaker = getCircuitBreaker(operation);
 
   try {
-    const result = await circuitBreaker.execute(async () => {
-      return await Promise.race([
+    const result = await circuitBreaker.execute(async () =>
+      Promise.race([
         fn(),
-        new Promise((_, reject) => 
+        new Promise((_, reject) =>
           setTimeout(() => reject(new Error(`Timeout after ${timeout}ms`)), timeout)
         )
-      ]);
-    });
-
+      ])
+    );
     return { success: true, data: result };
   } catch (error) {
-    logger.error(`Operation ${operation} failed`, { 
+    logger.error(`Operation ${operation} failed`, {
       error: error.message,
-      stack: error.stack 
+      stack: error.stack
     });
-
     errorTracker.track({
-      code: 'EXECUTION_FAILED',
+      code:    'EXECUTION_FAILED',
       message: error.message,
       context: { operation }
     });
-
     if (fallback !== undefined) {
       return { success: false, data: fallback, error: error.message };
     }
-
     return { success: false, error: error.message };
   }
 }
 
 async function safeExecuteWithRetry(fn, options = {}) {
-  const maxRetries = options.maxRetries || 3;
-  const timeout = options.timeout || 5000;
-  const operation = options.operation || 'anonymous';
-  const baseDelay = options.baseDelay || 100;
-  const maxDelay = options.maxDelay || 5000;
+  const maxRetries = options.maxRetries ?? get('infrastructure.retry.maxRetries');
+  const timeout    = options.timeout    ?? get('infrastructure.timeout.default');
+  const operation  = options.operation  ?? 'anonymous';
+  const baseDelay  = options.baseDelay  ?? get('infrastructure.retry.baseDelay');
+  const maxDelay   = options.maxDelay   ?? get('infrastructure.retry.maxDelay');
 
   let lastError;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (attempt > 0) {
       const jitter = Math.random() * 0.3;
-      const delay = Math.min(
+      const delay  = Math.min(
         baseDelay * Math.pow(2, attempt - 1) * (1 + jitter),
         maxDelay
       );
       await new Promise(resolve => setTimeout(resolve, delay));
-      logger.debug(`Retry attempt ${attempt} for ${operation} after ${delay}ms`);
+      logger.debug(`Retry attempt ${attempt} for ${operation} after ${Math.round(delay)}ms`);
     }
 
     const result = await safeExecute(fn, { timeout, operation });

@@ -1,7 +1,30 @@
 // Common Utilities: Shared helpers for XPath and CSS generation
 // Pure synchronous functions for text processing, DOM interrogation, and validation
 
+import { get } from '../config/defaults.js';
 import logger from '../infrastructure/logger.js';
+
+// Compiled stability patterns — built once from config on first use
+let _compiledIdPatterns = null;
+let _compiledClassPatterns = null;
+
+function getIdPatterns() {
+  if (!_compiledIdPatterns) {
+    _compiledIdPatterns = get('attributes.dynamicIdPatterns').map(p =>
+      typeof p === 'string' ? new RegExp(p) : p
+    );
+  }
+  return _compiledIdPatterns;
+}
+
+function getClassPatterns() {
+  if (!_compiledClassPatterns) {
+    _compiledClassPatterns = get('attributes.dynamicClassPatterns').map(p =>
+      typeof p === 'string' ? new RegExp(p) : p
+    );
+  }
+  return _compiledClassPatterns;
+}
 
 // ==================== TEXT UTILITIES ====================
 
@@ -130,18 +153,10 @@ export function calculateDistance(elem1, elem2) {
 // Checks if ID is stable (not auto-generated or framework-managed)
 // Contract: Returns false for numeric-only, UUID, framework-prefixed, or dynamic IDs
 export function isStableId(id) {
-  const UNSTABLE_ID_PATTERNS = [
-    /^\d+$/, /^[0-9]{8,}$/, /^[a-f0-9]{8}-[a-f0-9]{4}/i,
-    /^(ember|react|vue|angular)\d+$/i, /^uid-\d+$/i, /^temp[-_]?\d+$/i,
-    /brandBand_\d+/i, /^gen\d+$/i, /^aura-\d+$/i, 
-    /^lightning-\w+-\d+$/i, /^sldsModal\d+$/i, /^forceRecord\w+_\d+$/i,
-    /^[0-9]+:[0-9]+;[a-z]$/i, /-\d+-\d+$/, /-\d{2,}$/,
-    /lgt-datatable.*-\d+-\d+/i, /check-button-label-\d+-\d+/i,
-    /-check-id-\d+-\d+/i, /datatable.*-\d+/i, /-\d+-\d+-\d+/
-  ];
-  
+  // Length guard
   if (!id || id.length < 2 || id.length > 200) return false;
-  return !UNSTABLE_ID_PATTERNS.some(pattern => pattern.test(id));
+  // Config-driven patterns — no hardcoded list here
+  return !getIdPatterns().some(pattern => pattern.test(id));
 }
 
 // Checks if attribute value is stable (not dynamic or generated)
@@ -167,15 +182,8 @@ export function isStableClass(className) {
 
   const trimmed = className.trim();
 
-  const unstablePatterns = [
-    /^Mui[A-Z]\w+-\w+-\d+$/, /^makeStyles-/, 
-    /^css-[a-z0-9]+$/i, /^jss\d+$/,
-    /^[a-z]{1,3}\d{5,}$/i, /^_[a-z0-9]{6,}$/i,
-    /^sc-[a-z]+-[a-z]+$/i, /^emotion-\d+$/,
-    /^[0-9]+:[0-9]+;[a-z]$/i, /lwc-[a-z0-9]+/i
-  ];
-
-  return !unstablePatterns.some(pattern => pattern.test(trimmed));
+  // Config-driven class patterns — no hardcoded list here
+  return !getClassPatterns().some(pattern => pattern.test(trimmed));
 }
 
 // Checks if text content is static (not dynamic like timestamps, UUIDs, currency)
@@ -201,9 +209,8 @@ export function collectStableAttributes(element) {
   const attrs = [];
   
   try {
-    // Priority 1: Test automation attributes
-    const testAttrs = ['data-testid', 'data-test', 'data-qa', 'data-cy', 'data-automation-id',
-                       'data-key', 'data-record-id', 'data-component-id', 'data-row-key-value'];
+    // Priority 1: Test automation attributes — from config
+    const testAttrs = get('attributes.priority');
     for (const attr of testAttrs) {
       const value = element.getAttribute(attr);
       if (value && isStableValue(value)) {
@@ -211,8 +218,8 @@ export function collectStableAttributes(element) {
       }
     }
     
-    // Priority 2: Supplementary attributes
-    const supplementary = ['role', 'type', 'href', 'for', 'value', 'placeholder', 'class'];
+    // Priority 2: Supplementary attributes — from config
+    const supplementary = [...get('attributes.supplementary'), 'class'];
     for (const attr of supplementary) {
       const value = element.getAttribute(attr);
       if (value && isStableValue(value) && !attrs.find(a => a.name === attr)) {

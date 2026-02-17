@@ -285,9 +285,6 @@ storage: {
 3. Add mode selection in `comparator.js`
 4. Update UI in `popup.html`
 
-### Testing
-See `TESTING.md` for comprehensive test cases
-
 ## Known Limitations
 
 1. **Service Worker Lifecycle**: Chrome terminates workers after 5 minutes of inactivity (state recovery implemented)

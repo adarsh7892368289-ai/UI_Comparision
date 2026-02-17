@@ -1,86 +1,74 @@
 import { get } from '../../../config/defaults.js';
-import { ERROR_CODES, errorTracker } from '../../../infrastructure/error-tracker.js';
 import logger from '../../../infrastructure/logger.js';
-import { safeExecute } from '../../../infrastructure/safe-execute.js';
 import { getAllStrategies, TIER_ROBUSTNESS } from './strategies.js';
-import { isUniqueCssSelector } from './validator.js';
+import { isUniqueCssSelector, isValidCssSelector } from './validator.js';
 
+/**
+ * Generate the best CSS selector for an element.
+ *
+ * Same tiered sequential approach as XPath generator.
+ * Uses Promise.allSettled (not race) within each tier group.
+ */
 async function generateCSS(element) {
   if (!element || !element.tagName) {
-    logger.debug('Invalid element for CSS generation');
-    return null;
+    return _buildFallback(element);
   }
 
-  const timeout = get('selectors.css.timeout', 300);
-  const parallelExecution = get('selectors.css.parallelExecution', true);
-
-  const result = await safeExecute(
-    () => parallelExecution 
-      ? generateCSSParallel(element) 
-      : generateCSSSequential(element),
-    { timeout, operation: 'css-generation' }
-  );
-
-  if (result.success && result.data) {
-    return {
-      css: result.data.selector,
-      confidence: result.data.robustness,
-      strategy: result.data.strategy
-    };
-  }
-
-  return null;
-}
-
-async function generateCSSParallel(element) {
-  const startTime = performance.now();
   const tag = element.tagName.toLowerCase();
+  const perStrategyTimeout = get('selectors.css.perStrategyTimeout', 50);
   const strategies = getAllStrategies();
-  const perStrategyTimeout = get('selectors.css.perStrategyTimeout', 30);
 
-  const strategyPromises = strategies.map(({ tier, fn, name }) => 
-    executeStrategy(element, tag, tier, fn, name, perStrategyTimeout)
-  );
+  const tierGroups = [
+    strategies.filter(s => s.tier <= 4),
+    strategies.filter(s => s.tier >= 5 && s.tier <= 7),
+    strategies.filter(s => s.tier >= 8 && s.tier <= 10),
+  ];
 
-  try {
-    const result = await Promise.race(
-      strategyPromises.filter(p => p !== null)
-    );
-
+  for (const group of tierGroups) {
+    const result = await _tryGroup(element, tag, group, perStrategyTimeout);
     if (result) {
-      const duration = performance.now() - startTime;
-      logger.debug('CSS selector generated (parallel)', { 
-        selector: result.selector, 
-        strategy: result.strategy, 
-        tier: result.tier,
-        robustness: result.robustness,
-        duration: Math.round(duration)
+      logger.debug('CSS generated', {
+        css: result.selector,
+        strategy: result.strategy,
+        tier: result.tier
       });
-      return result;
+      return {
+        css:        result.selector,
+        confidence: TIER_ROBUSTNESS[result.tier] || 50,
+        strategy:   result.strategy
+      };
     }
-  } catch (error) {
-    logger.warn('Parallel CSS generation failed', { error: error.message });
   }
 
-  const fallback = generateFallbackCSS(element, tag);
-  if (fallback) return fallback;
-
-  errorTracker.track({
-    code: ERROR_CODES.CSS_GENERATION_FAILED,
-    message: 'No valid CSS selector found',
-    context: { tagName: element.tagName, id: element.id }
+  logger.debug('CSS: semantic strategies exhausted, using positional fallback', {
+    tag: element.tagName
   });
-
-  return null;
+  return _buildFallback(element);
 }
 
-async function executeStrategy(element, tag, tier, strategyFn, strategyName, timeout) {
+async function _tryGroup(element, tag, strategies, timeout) {
+  const settled = await Promise.allSettled(
+    strategies.map(({ tier, fn, name }) =>
+      _runStrategy(element, tag, tier, fn, name, timeout)
+    )
+  );
+
+  const successes = settled
+    .filter(s => s.status === 'fulfilled' && s.value !== null)
+    .map(s => s.value);
+
+  if (successes.length === 0) return null;
+  successes.sort((a, b) => a.tier - b.tier);
+  return successes[0];
+}
+
+function _runStrategy(element, tag, tier, fn, name, timeout) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(null), timeout);
 
     try {
-      const candidates = strategyFn(element, tag);
-      
+      const candidates = fn(element, tag);
+
       if (!candidates || candidates.length === 0) {
         clearTimeout(timer);
         resolve(null);
@@ -88,13 +76,14 @@ async function executeStrategy(element, tag, tier, strategyFn, strategyName, tim
       }
 
       for (const candidate of candidates) {
-        if (!candidate?.selector) continue;
+        if (!candidate || !candidate.selector) continue;
+        if (!isValidCssSelector(candidate.selector)) continue;
 
         if (isUniqueCssSelector(candidate.selector, element)) {
           clearTimeout(timer);
           resolve({
-            selector: candidate.selector,
-            strategy: strategyName,
+            selector:   candidate.selector,
+            strategy:   name,
             tier,
             robustness: TIER_ROBUSTNESS[tier] || 50
           });
@@ -104,80 +93,59 @@ async function executeStrategy(element, tag, tier, strategyFn, strategyName, tim
 
       clearTimeout(timer);
       resolve(null);
-    } catch (error) {
+    } catch (err) {
       clearTimeout(timer);
       resolve(null);
     }
   });
 }
 
-function generateCSSSequential(element) {
-  const startTime = performance.now();
-  const tag = element.tagName.toLowerCase();
-  const strategies = getAllStrategies();
-  const totalTimeout = get('selectors.css.timeout', 300);
+function _buildFallback(element) {
+  return {
+    css:        _buildPositionPath(element),
+    confidence: 30,
+    strategy:   'fallback-position'
+  };
+}
 
-  for (const { tier, fn, name } of strategies) {
-    if (performance.now() - startTime > totalTimeout) {
-      logger.debug('CSS timeout reached');
+function _buildPositionPath(element) {
+  if (!element || element.nodeType !== Node.ELEMENT_NODE) return 'html';
+
+  const path = [];
+  let current = element;
+
+  while (current && current.nodeType === Node.ELEMENT_NODE) {
+    const parent = current.parentElement;
+    const tag = current.tagName.toLowerCase();
+
+    if (!parent) {
+      path.unshift(tag);
       break;
     }
 
-    try {
-      const candidates = fn(element, tag);
-      if (!candidates || candidates.length === 0) continue;
-
-      for (const candidate of candidates) {
-        if (!candidate?.selector) continue;
-
-        if (isUniqueCssSelector(candidate.selector, element)) {
-          const duration = performance.now() - startTime;
-          logger.debug('CSS selector generated (sequential)', {
-            selector: candidate.selector,
-            strategy: name,
-            tier,
-            robustness: TIER_ROBUSTNESS[tier] || 50,
-            duration: Math.round(duration)
-          });
-
-          return {
-            selector: candidate.selector,
-            strategy: name,
-            tier,
-            robustness: TIER_ROBUSTNESS[tier] || 50
-          };
-        }
+    // Stop at stable ID anchor
+    if (current.id) {
+      const id = current.id;
+      const isStable = !/(-\d{2,}$|^\d+$|[a-f0-9]{8}-[a-f0-9]{4})/.test(id);
+      if (isStable) {
+        const escaped = CSS.escape ? CSS.escape(id) : id.replace(/([#.[\]:()])/g, '\\$1');
+        path.unshift(`${tag}#${escaped}`);
+        break;
       }
-    } catch (error) {
-      continue;
     }
+
+    const sameTag = Array.from(parent.children).filter(c => c.tagName === current.tagName);
+    if (sameTag.length === 1) {
+      path.unshift(tag);
+    } else {
+      const idx = sameTag.indexOf(current) + 1;
+      path.unshift(`${tag}:nth-of-type(${idx})`);
+    }
+
+    current = parent;
   }
 
-  const fallback = generateFallbackCSS(element, tag);
-  if (fallback) return fallback;
-
-  return null;
-}
-
-function generateFallbackCSS(element, tag) {
-  const allElements = Array.from(document.querySelectorAll(tag));
-  const index = allElements.indexOf(element);
-
-  if (index !== -1) {
-    const selector = `${tag}:nth-of-type(${index + 1})`;
-    
-    if (isUniqueCssSelector(selector, element)) {
-      logger.debug('CSS via fallback', { selector });
-      return {
-        selector,
-        strategy: 'fallback-nth',
-        tier: 10,
-        robustness: TIER_ROBUSTNESS[10] || 19
-      };
-    }
-  }
-
-  return null;
+  return path.join(' > ');
 }
 
 export { generateCSS };

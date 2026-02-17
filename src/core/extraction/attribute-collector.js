@@ -1,80 +1,74 @@
+import { get } from '../../config/defaults.js';
 import logger from '../../infrastructure/logger.js';
 
-const FRAMEWORK_PATTERNS = [
-  /^ng-/,
-  /^v-/,
-  /^data-v-/,
-  /_ngcontent-/,
-  /_nghost-/,
-  /^data-reactid/,
-  /^data-react/
-];
+// ─── Compiled patterns — built once from config, never hardcoded here ──────
 
-const PRIORITY_ATTRIBUTES = [
-  'data-testid',
-  'data-test',
-  'data-qa',
-  'data-cy',
-  'id',
-  'name',
-  'role',
-  'aria-label',
-  'type',
-  'href',
-  'src',
-  'alt',
-  'title',
-  'placeholder',
-  'value'
-];
-
-function isFrameworkAttribute(attrName) {
-  return FRAMEWORK_PATTERNS.some(pattern => pattern.test(attrName));
+function _buildFrameworkPatterns() {
+  return get('attributes.frameworkPatterns').map(p =>
+    typeof p === 'string' ? new RegExp(p) : p
+  );
 }
 
+let _frameworkPatterns = null;
+function getFrameworkPatterns() {
+  if (!_frameworkPatterns) _frameworkPatterns = _buildFrameworkPatterns();
+  return _frameworkPatterns;
+}
+
+// ─── Attribute collection ────────────────────────────────────────────────────
+
+/**
+ * Collect all non-framework attributes from an element.
+ * Framework-injected attributes (ng-*, _ngcontent*, v-*, etc.) are skipped.
+ */
 function collectAttributes(element) {
   try {
-    const attributes = {};
-    const attrs = element.attributes;
+    const attributes  = {};
+    const patterns    = getFrameworkPatterns();
+    const attrs       = element.attributes;
 
     for (let i = 0; i < attrs.length; i++) {
-      const attr = attrs[i];
-      
-      if (!isFrameworkAttribute(attr.name)) {
-        attributes[attr.name] = attr.value;
+      const { name, value } = attrs[i];
+      if (!patterns.some(p => p.test(name))) {
+        attributes[name] = value;
       }
     }
 
     return attributes;
   } catch (error) {
-    logger.error('Attribute collection failed', { 
+    logger.error('Attribute collection failed', {
       tagName: element.tagName,
-      error: error.message 
+      error:   error.message
     });
     return {};
   }
 }
 
+/**
+ * Collect only high-priority attributes (test IDs, semantic identifiers).
+ * Order matches config priority list — first entry has highest priority.
+ */
 function getPriorityAttributes(element) {
-  const attributes = {};
+  const priorityList    = get('attributes.priority');
+  const supplementary   = get('attributes.supplementary');
+  const allAttrs        = [...priorityList, ...supplementary];
+  const attributes      = {};
 
-  for (const attrName of PRIORITY_ATTRIBUTES) {
+  for (const attrName of allAttrs) {
     const value = element.getAttribute(attrName);
-    if (value !== null) {
-      attributes[attrName] = value;
-    }
+    if (value !== null) attributes[attrName] = value;
   }
 
   return attributes;
 }
 
+/**
+ * Returns true if the element has any test-automation attribute.
+ * Reads attribute names from config — no hardcoded ['data-testid', ...].
+ */
 function hasTestAttribute(element) {
-  return (
-    element.hasAttribute('data-testid') ||
-    element.hasAttribute('data-test') ||
-    element.hasAttribute('data-qa') ||
-    element.hasAttribute('data-cy')
-  );
+  const priorityList = get('attributes.priority');
+  return priorityList.some(attr => element.hasAttribute(attr));
 }
 
 export { collectAttributes, getPriorityAttributes, hasTestAttribute };
