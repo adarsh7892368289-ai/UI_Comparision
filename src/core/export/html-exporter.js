@@ -46,7 +46,12 @@ function _buildDocument(grouped, raw) {
   </header>
   <div class="layout">
     <aside class="sidebar">${_buildSidebar(summary)}</aside>
-    <main class="panel-list" id="panel-list">${_buildList(grouped)}</main>
+    <main class="panel-list" id="panel-list">
+      <div class="list-loading" id="list-loading">
+        <div class="list-spinner"></div>
+        <span>Rendering elements…</span>
+      </div>
+    </main>
     <aside class="panel-detail" id="panel-detail"><div class="detail-placeholder">Select an element</div></aside>
   </div>
 </div>
@@ -93,58 +98,6 @@ function _buildSidebar(s) {
 </div>`;
 }
 
-function _buildList(grouped) {
-  const SEVERITIES = [
-    { key: 'critical', label: 'Critical', icon: '🔴', expanded: true },
-    { key: 'high',     label: 'High',     icon: '🟠', expanded: true },
-    { key: 'medium',   label: 'Medium',   icon: '🟡', expanded: false },
-    { key: 'low',      label: 'Low',      icon: '⚪', expanded: false },
-    { key: 'added',    label: 'Added',    icon: '🟢', expanded: true },
-    { key: 'removed',  label: 'Removed',  icon: '⬛', expanded: true }
-  ];
-
-  return SEVERITIES.map(({ key, label, icon, expanded }) => {
-    const items = grouped.groups[key] ?? [];
-    if (items.length === 0) return '';
-    const openAttr = expanded ? ' open' : '';
-    return `<details class="severity-group" data-sev="${key}"${openAttr}>
-  <summary class="severity-header">
-    <span class="sev-icon">${icon}</span>
-    <span class="sev-label">${label}</span>
-    <span class="sev-count">${items.length}</span>
-  </summary>
-  <div class="severity-body">
-    ${items.map((item, i) => _buildElementCard(item, key, i)).join('')}
-  </div>
-</details>`;
-  }).join('');
-}
-
-function _buildElementCard(item, severity, index) {
-  const key = `${severity}-${index}`;
-  const countBadge = item.totalDiffs != null
-    ? `<span class="diff-count">${item.totalDiffs} diff${item.totalDiffs !== 1 ? 's' : ''}</span>`
-    : '';
-  const confidence = item.matchConfidence != null
-    ? `<span class="confidence">${Math.round(item.matchConfidence * 100)}%</span>`
-    : '';
-
-  return `<div class="element-card" data-key="${_esc(key)}" data-sev="${severity}" role="button" tabindex="0">
-  <div class="card-header">
-    <code class="element-label">${_esc(item.elementKey)}</code>
-    <div class="card-meta">${countBadge}${confidence}</div>
-  </div>
-  ${item.breadcrumb ? `<div class="card-breadcrumb">${_esc(item.breadcrumb)}</div>` : ''}
-  ${_buildCategoryPills(item.diffsByCategory)}
-</div>`;
-}
-
-function _buildCategoryPills(diffsByCategory) {
-  if (!diffsByCategory) return '';
-  return `<div class="cat-pills">${Object.keys(diffsByCategory).map(cat =>
-    `<span class="cat-pill cat-${cat}">${cat} ${diffsByCategory[cat].length}</span>`
-  ).join('')}</div>`;
-}
 
 function _esc(str) {
   return String(str ?? '')
@@ -194,6 +147,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .icon{width:16px;display:inline-block;text-align:center}
 .icon.add{color:#10b981}.icon.rem{color:#ef4444}
 .panel-list{overflow-y:auto;padding:8px}
+.list-loading{display:flex;align-items:center;gap:10px;padding:20px;color:#4a5568;font-size:12px}
+.list-spinner{width:16px;height:16px;border:2px solid #2d3148;border-top-color:#7c3aed;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
 .severity-group{margin-bottom:6px}
 .severity-header{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#1e2133;border-radius:6px;cursor:pointer;list-style:none;user-select:none;border:1px solid #2d3148}
 .severity-header::-webkit-details-marker{display:none}
@@ -252,144 +208,188 @@ const GROUPED = ${data};
 const listEl   = document.getElementById('panel-list');
 const detailEl = document.getElementById('panel-detail');
 const searchEl = document.getElementById('search');
-let activeSev  = 'all';
-let activeCat  = 'all';
+let activeSev    = 'all';
+let activeCat    = 'all';
 let selectedCard = null;
 
-function isColorProp(p){ return p.includes('color') || p.includes('background'); }
+const SEV_ORDER = [
+  { key:'critical', label:'Critical', icon:'\u{1F534}', expanded:true  },
+  { key:'high',     label:'High',     icon:'\u{1F7E0}', expanded:true  },
+  { key:'medium',   label:'Medium',   icon:'\u{1F7E1}', expanded:false },
+  { key:'low',      label:'Low',      icon:'\u26AA',   expanded:false },
+  { key:'added',    label:'Added',    icon:'\u{1F7E2}', expanded:true  },
+  { key:'removed',  label:'Removed',  icon:'\u2B1B',   expanded:true  }
+];
 
-function swatch(v){
-  if(!v||v==='none'||v==='transparent') return '';
-  return '<span class="swatch" style="background:'+esc(v)+'" title="'+esc(v)+'"></span>';
+function ric(cb){
+  if(typeof requestIdleCallback==='function') requestIdleCallback(cb,{timeout:1000});
+  else setTimeout(()=>cb({timeRemaining:()=>50,didTimeout:false}),0);
 }
 
 function esc(s){
   return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+function isColorProp(p){ return p.includes('color')||p.includes('background'); }
+
+function swatch(v){
+  if(!v||v==='none'||v==='transparent') return '';
+  return '<span class="swatch" style="background:'+esc(v)+'" title="'+esc(v)+'"></span>';
+}
+
 function sevPip(s){ return '<span class="sev-pip '+esc(s)+'"></span>'; }
+
+function buildCatPills(diffsByCategory){
+  const cats=Object.keys(diffsByCategory||{});
+  if(!cats.length) return '';
+  return '<div class="cat-pills">'+cats.map(cat=>'<span class="cat-pill cat-'+esc(cat)+'">'+esc(cat)+' '+diffsByCategory[cat].length+'</span>').join('')+'</div>';
+}
+
+function buildCard(item,severity,index){
+  const key=severity+'-'+index;
+  const badge=item.totalDiffs!=null?'<span class="diff-count">'+item.totalDiffs+' diff'+(item.totalDiffs!==1?'s':'')+'</span>':'';
+  const conf=item.matchConfidence!=null?'<span class="confidence">'+Math.round(item.matchConfidence*100)+'%</span>':'';
+  return '<div class="element-card" data-key="'+esc(key)+'" data-sev="'+esc(severity)+'" role="button" tabindex="0">'
+    +'<div class="card-header"><code class="element-label">'+esc(item.elementKey)+'</code>'
+    +'<div class="card-meta">'+badge+conf+'</div></div>'
+    +(item.breadcrumb?'<div class="card-breadcrumb">'+esc(item.breadcrumb)+'</div>':'')
+    +buildCatPills(item.diffsByCategory)+'</div>';
+}
+
+function buildGroup(spec){
+  const items=GROUPED.groups[spec.key]??[];
+  if(!items.length) return null;
+  const el=document.createElement('details');
+  el.className='severity-group';
+  el.dataset.sev=spec.key;
+  if(spec.expanded) el.open=true;
+  el.innerHTML='<summary class="severity-header">'
+    +'<span class="sev-icon">'+spec.icon+'</span>'
+    +'<span class="sev-label">'+spec.label+'</span>'
+    +'<span class="sev-count">'+items.length+'</span>'
+    +'</summary>'
+    +'<div class="severity-body">'+items.map((item,i)=>buildCard(item,spec.key,i)).join('')+'</div>';
+  return el;
+}
+
+function renderListAsync(){
+  const loading=document.getElementById('list-loading');
+  const queue=SEV_ORDER.slice();
+  const frag=document.createDocumentFragment();
+  function chunk(deadline){
+    while(queue.length>0&&(deadline.timeRemaining()>4||deadline.didTimeout)){
+      const g=buildGroup(queue.shift());
+      if(g) frag.appendChild(g);
+    }
+    if(queue.length>0){ ric(chunk); }
+    else {
+      if(loading) loading.remove();
+      listEl.appendChild(frag);
+      attachListHandlers();
+    }
+  }
+  ric(chunk);
+}
 
 function renderDetail(item){
   if(!item){ detailEl.innerHTML='<div class="detail-placeholder">Select an element</div>'; return; }
-
-  const selectors = item.selectors || {};
-  const selBtns = [
-    selectors.xpath ? '<button class="sel-btn" data-copy="'+esc(selectors.xpath)+'">Copy XPath</button>' : '',
-    selectors.css   ? '<button class="sel-btn" data-copy="'+esc(selectors.css)+'">Copy CSS</button>' : ''
+  const sel=item.selectors||{};
+  const selBtns=[
+    sel.xpath?'<button class="sel-btn" data-copy="'+esc(sel.xpath)+'">Copy XPath</button>':'',
+    sel.css  ?'<button class="sel-btn" data-copy="'+esc(sel.css)+'">Copy CSS</button>':''
   ].join('');
-
-  const catBlocks = Object.keys(item.diffsByCategory||{}).map(cat => {
-    const diffs = item.diffsByCategory[cat];
-    const rows  = diffs.map(d => {
-      const colorCls = isColorProp(d.property) ? ' color-diff' : '';
-      return '<div class="diff-row'+colorCls+'">'
+  const catBlocks=Object.keys(item.diffsByCategory||{}).map(cat=>{
+    const rows=item.diffsByCategory[cat].map(d=>{
+      const cls=isColorProp(d.property)?' color-diff':'';
+      return '<div class="diff-row'+cls+'">'
         +'<span class="diff-prop">'+esc(d.property)+'</span>'
-        +'<span class="diff-base">'+swatch(d.baseValue)+esc(d.baseValue??'—')+'</span>'
-        +'<span class="diff-arrow">→</span>'
-        +'<span class="diff-compare">'+swatch(d.compareValue)+esc(d.compareValue??'—')+sevPip(d.severity||'low')+'</span>'
+        +'<span class="diff-base">'+swatch(d.baseValue)+esc(d.baseValue??'\u2014')+'</span>'
+        +'<span class="diff-arrow">\u2192</span>'
+        +'<span class="diff-compare">'+swatch(d.compareValue)+esc(d.compareValue??'\u2014')+sevPip(d.severity||'low')+'</span>'
         +'</div>';
     }).join('');
     return '<div class="detail-category"><div class="cat-title">'+esc(cat)+'</div>'+rows+'</div>';
   }).join('');
-
-  detailEl.innerHTML = \`
-<div class="detail-header">
-  <div class="detail-tag">\${esc(item.elementKey)}</div>
-  \${item.breadcrumb?'<div class="detail-breadcrumb">'+esc(item.breadcrumb)+'</div>':''}
-  <div class="detail-selectors">\${selBtns}</div>
-</div>
-\${catBlocks||'<div class="detail-placeholder" style="margin-top:20px">No property diffs</div>'}
-\`;
-
-  detailEl.querySelectorAll('[data-copy]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      navigator.clipboard.writeText(btn.dataset.copy).then(() => {
-        const orig = btn.textContent;
-        btn.textContent = 'Copied!';
-        setTimeout(() => { btn.textContent = orig; }, 1200);
+  detailEl.innerHTML='<div class="detail-header">'
+    +'<div class="detail-tag">'+esc(item.elementKey)+'</div>'
+    +(item.breadcrumb?'<div class="detail-breadcrumb">'+esc(item.breadcrumb)+'</div>':'')
+    +'<div class="detail-selectors">'+selBtns+'</div>'
+    +'</div>'
+    +(catBlocks||'<div class="detail-placeholder" style="margin-top:20px">No property diffs</div>');
+  detailEl.querySelectorAll('[data-copy]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      navigator.clipboard.writeText(btn.dataset.copy).then(()=>{
+        const orig=btn.textContent; btn.textContent='Copied!';
+        setTimeout(()=>{ btn.textContent=orig; },1200);
       });
     });
   });
 }
 
 function applyFilters(){
-  const q = searchEl.value.toLowerCase();
-  listEl.querySelectorAll('.severity-group').forEach(group => {
-    const sev = group.dataset.sev;
-    const sevMatch = activeSev === 'all' || sev === activeSev;
-    group.style.display = sevMatch ? '' : 'none';
-
-    group.querySelectorAll('.element-card').forEach(card => {
-      const label = (card.querySelector('.element-label')?.textContent || '').toLowerCase();
-      const crumb = (card.querySelector('.card-breadcrumb')?.textContent || '').toLowerCase();
-      const textMatch = !q || label.includes(q) || crumb.includes(q);
-
-      let catMatch = true;
-      if(activeCat !== 'all'){
-        catMatch = Array.from(card.querySelectorAll('.cat-pill')).some(p => p.textContent.trim().startsWith(activeCat));
-      }
-      card.style.display = textMatch && catMatch ? '' : 'none';
+  const q=searchEl.value.toLowerCase();
+  listEl.querySelectorAll('.severity-group').forEach(group=>{
+    const sevMatch=activeSev==='all'||group.dataset.sev===activeSev;
+    group.style.display=sevMatch?'':'none';
+    group.querySelectorAll('.element-card').forEach(card=>{
+      const label=(card.querySelector('.element-label')?.textContent||'').toLowerCase();
+      const crumb=(card.querySelector('.card-breadcrumb')?.textContent||'').toLowerCase();
+      const textMatch=!q||label.includes(q)||crumb.includes(q);
+      const catMatch=activeCat==='all'||Array.from(card.querySelectorAll('.cat-pill')).some(p=>p.textContent.trim().startsWith(activeCat));
+      card.style.display=textMatch&&catMatch?'':'none';
     });
   });
 }
 
-listEl.addEventListener('click', e => {
-  const card = e.target.closest('.element-card');
-  if(!card) return;
-  if(selectedCard) selectedCard.classList.remove('selected');
-  card.classList.add('selected');
-  selectedCard = card;
+function attachListHandlers(){
+  listEl.addEventListener('click',e=>{
+    const card=e.target.closest('.element-card');
+    if(!card) return;
+    if(selectedCard) selectedCard.classList.remove('selected');
+    card.classList.add('selected');
+    selectedCard=card;
+    const [sev,idx]=card.dataset.key.split(/-(.+)/);
+    renderDetail((GROUPED.groups[sev]||[])[parseInt(idx)]||null);
+  });
+  listEl.addEventListener('keydown',e=>{
+    if(e.key===' '&&e.target.classList.contains('element-card')){ e.target.click(); e.preventDefault(); }
+    if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+      const cards=Array.from(listEl.querySelectorAll('.element-card:not([style*="none"])'));
+      const next=cards[cards.indexOf(document.activeElement)+(e.key==='ArrowDown'?1:-1)];
+      if(next){ next.focus(); e.preventDefault(); }
+    }
+  });
+}
 
-  const sev = card.dataset.sev;
-  const key = card.dataset.key;
-  const [severity, idx] = key.split(/-(.+)/);
-  const items = GROUPED.groups[sev] || [];
-  renderDetail(items[parseInt(idx)] || null);
-});
-
-listEl.addEventListener('keydown', e => {
-  if(e.key === ' ' && e.target.classList.contains('element-card')){ e.target.click(); e.preventDefault(); }
-  if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
-    const cards = Array.from(listEl.querySelectorAll('.element-card:not([style*="none"])'));
-    const idx = cards.indexOf(document.activeElement);
-    const next = cards[idx + (e.key === 'ArrowDown' ? 1 : -1)];
-    if(next){ next.focus(); e.preventDefault(); }
-  }
-});
-
-document.querySelectorAll('[data-sev]').forEach(btn => {
-  if(!btn.classList.contains('filter-btn')) return;
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('[data-sev].filter-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    activeSev = btn.dataset.sev;
-    applyFilters();
+document.querySelectorAll('[data-sev].filter-btn').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('[data-sev].filter-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active'); activeSev=btn.dataset.sev; applyFilters();
   });
 });
 
-document.querySelectorAll('[data-cat]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('[data-cat].filter-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    activeCat = btn.dataset.cat;
-    applyFilters();
+document.querySelectorAll('[data-cat].filter-btn').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('[data-cat].filter-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active'); activeCat=btn.dataset.cat; applyFilters();
   });
 });
 
-searchEl.addEventListener('input', applyFilters);
+searchEl.addEventListener('input',applyFilters);
 
-document.addEventListener('keydown', e => {
-  if(e.key === 'f' && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName)){
-    searchEl.focus(); e.preventDefault();
-  }
-  if(e.key === 'c' && selectedCard){
-    const sel = GROUPED.groups[selectedCard.dataset.sev]?.[parseInt(selectedCard.dataset.key.split(/-(.+)/)[1])]?.selectors?.css;
+document.addEventListener('keydown',e=>{
+  if(e.key==='f'&&!['INPUT','TEXTAREA'].includes(document.activeElement.tagName)){ searchEl.focus(); e.preventDefault(); }
+  if(e.key==='c'&&selectedCard){
+    const sel=GROUPED.groups[selectedCard.dataset.sev]?.[parseInt(selectedCard.dataset.key.split(/-(.+)/)[1])]?.selectors?.css;
     if(sel) navigator.clipboard.writeText(sel);
   }
 });
 
+renderListAsync();
+
 })();
 `;
 }
+
 
 export { exportToHTML };

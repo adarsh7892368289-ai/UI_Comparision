@@ -1,18 +1,13 @@
 import logger from '../infrastructure/logger.js';
-import { StorageTransport } from '../infrastructure/storage-transport.js';
 import storage from '../infrastructure/storage.js';
 import { get } from '../config/defaults.js';
 import { validateConfig } from '../config/validator.js';
 import { MessageTypes, onMessage } from '../infrastructure/chrome-messaging.js';
 import { TabAdapter } from '../infrastructure/chrome-tabs.js';
 import { extractFromActiveTab } from './extract-workflow.js';
-import { compareReports } from './compare-workflow.js';
+import { compareReports, getCachedComparison } from './compare-workflow.js';
 
 logger.init();
-
-if (get('logging.persistLogs', true)) {
-  logger.addTransport(new StorageTransport());
-}
 
 try {
   validateConfig({ throwOnError: true });
@@ -25,11 +20,12 @@ try {
 storage.init();
 
 const handlers = {
-  [MessageTypes.EXTRACT_ELEMENTS]: handleExtractElements,
-  [MessageTypes.START_COMPARISON]: handleStartComparison,
-  [MessageTypes.SAVE_REPORT]: handleSaveReport,
-  [MessageTypes.LOAD_REPORTS]: handleLoadReports,
-  [MessageTypes.DELETE_REPORT]: handleDeleteReport,
+  [MessageTypes.EXTRACT_ELEMENTS]:       handleExtractElements,
+  [MessageTypes.START_COMPARISON]:       handleStartComparison,
+  [MessageTypes.LOAD_CACHED_COMPARISON]: handleLoadCachedComparison,
+  [MessageTypes.SAVE_REPORT]:            handleSaveReport,
+  [MessageTypes.LOAD_REPORTS]:           handleLoadReports,
+  [MessageTypes.DELETE_REPORT]:          handleDeleteReport,
 };
 
 onMessage(async (type, payload, sender) => {
@@ -102,6 +98,18 @@ async function handleDeleteReport(payload, sender) {
   } catch (error) {
     const errorMsg = error.message || String(error);
     logger.error('handleDeleteReport failed', { error: errorMsg });
+    throw new Error(errorMsg);
+  }
+}
+
+async function handleLoadCachedComparison(payload) {
+  try {
+    const { baselineId, compareId, mode } = payload;
+    const cached = await getCachedComparison(baselineId, compareId, mode);
+    return { cached };
+  } catch (error) {
+    const errorMsg = error.message || String(error);
+    logger.error('handleLoadCachedComparison failed', { error: errorMsg });
     throw new Error(errorMsg);
   }
 }

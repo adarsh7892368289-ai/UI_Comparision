@@ -53,17 +53,15 @@ class ExportManager {
 
   _exportToJSON(comparisonResult) {
     try {
-      const json = JSON.stringify(comparisonResult, null, 2);
-      const blob = new Blob([json], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `comparison-${comparisonResult.baseline.id}-vs-${comparisonResult.compare.id}.json`;
+      const json     = JSON.stringify(comparisonResult, null, 2);
+      const blob     = new Blob([json], { type: 'application/json' });
+      const url      = URL.createObjectURL(blob);
+      const filename = `comparison-${comparisonResult.baseline.id}-vs-${comparisonResult.compare.id}.json`;
+      const a        = Object.assign(document.createElement('a'), { href: url, download: filename });
+      document.body.appendChild(a);
       a.click();
-      
-      URL.revokeObjectURL(url);
-      
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
       return { success: true };
     } catch (error) {
       return { success: false, error: error.message };

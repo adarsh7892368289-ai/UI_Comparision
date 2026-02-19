@@ -50,7 +50,7 @@ async function extractFromActiveTab(filters = null) {
 }
 
 function createReport(extractionData) {
-  const reportId = Date.now().toString();
+  const reportId = crypto.randomUUID();
   
   return {
     id: reportId,

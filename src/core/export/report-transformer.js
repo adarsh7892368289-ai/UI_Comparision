@@ -40,7 +40,7 @@ function transformToGroupedReport(comparisonResult) {
   const groups = { critical: [], high: [], medium: [], low: [], unchanged: [], added: [], removed: [] };
 
   for (const match of results) {
-    const el   = match.baselineElement || match;
+    const el   = match.baselineElement || { id: match.baselineElementId, tagName: match.tagName, elementId: match.elementId, className: match.className, selectors: match.selectors };
     const diffs = match.annotatedDifferences ?? match.differences ?? [];
 
     if ((match.totalDifferences ?? diffs.length) === 0) {

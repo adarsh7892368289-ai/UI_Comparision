@@ -14,7 +14,8 @@ export const MessageTypes = Object.freeze({
   LOAD_REPORTS:          'loadReports',
   LOAD_REPORT_ELEMENTS:  'loadReportElements',
   DELETE_REPORT:         'deleteReport',
-  DELETE_ALL_REPORTS:    'deleteAllReports',
+  DELETE_ALL_REPORTS:          'deleteAllReports',
+  LOAD_CACHED_COMPARISON:      'loadCachedComparison',
   
   GET_STATE:             'getState',
   WRITE_PROGRESS:        'writeProgress',

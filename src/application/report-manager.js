@@ -3,6 +3,8 @@ import logger from '../infrastructure/logger.js';
 import storage from '../infrastructure/storage.js';
 import { isValidMeta, isValidReport, sanitizeReport } from '../shared/report-validator.js';
 
+const UTF8_BOM = '\uFEFF';
+
 async function loadAllReports() {
   try {
     const reports = await storage.loadReports();
@@ -73,13 +75,10 @@ async function getReportById(reportId) {
 async function deleteAllReports() {
   try {
     const reports = await storage.loadReports();
-    const baseKey = get('storage.reportKey');
     const count   = reports.length;
+    const result  = await storage.deleteAllReports();
 
-    await Promise.all([
-      storage.save(`${baseKey}_meta`, []),
-      ...reports.map(r => chrome.storage.local.remove(`${baseKey}_el_${r.id}`))
-    ]);
+    if (!result.success) return result;
 
     logger.info('All reports deleted', { count });
     return { success: true, count };
@@ -154,7 +153,7 @@ async function exportReportAsCsv(report) {
     const data = full || report;
     const csv      = _buildReportCsv(data);
     const filename = `report-${report.id}-${_safeTimestamp()}.csv`;
-    _triggerDownload(csv, 'text/csv;charset=utf-8;', filename);
+    _triggerDownload(UTF8_BOM + csv, 'text/csv;charset=utf-8;', filename);
     logger.info('Report exported as CSV', { id: report.id, elementCount: data.elements?.length ?? 0 });
   } catch (error) {
     logger.error('CSV export failed', { id: report.id, error: error.message });
@@ -170,7 +169,7 @@ async function exportAllReportsAsCsv() {
     const sections = full.map((report, i) =>
       `## ===== REPORT ${i + 1} of ${full.length} =====\n` + _buildReportCsv(report)
     );
-    _triggerDownload(sections.join('\n\n'), 'text/csv;charset=utf-8;', `all-reports-${_safeTimestamp()}.csv`);
+    _triggerDownload(UTF8_BOM + sections.join('\n\n'), 'text/csv;charset=utf-8;', `all-reports-${_safeTimestamp()}.csv`);
     logger.info('All reports exported as CSV', { count: full.length });
     return { success: true, count: full.length };
   } catch (error) {
@@ -180,45 +179,62 @@ async function exportAllReportsAsCsv() {
 }
 
 function _buildReportCsv(report) {
+  const cssProperties = get('extraction.cssProperties', []);
   const rows = [];
 
-  rows.push(['## REPORT METADATA']);
-  rows.push(['Report ID',      report.id]);
-  rows.push(['URL',            report.url]);
-  rows.push(['Title',          report.title]);
-  rows.push(['Timestamp',      report.timestamp]);
-  rows.push(['Total Elements', report.totalElements]);
-  rows.push(['Duration (ms)',  report.duration ?? 'N/A']);
+  rows.push(['REPORT METADATA']);
+  rows.push(['Report ID',       report.id]);
+  rows.push(['URL',             report.url]);
+  rows.push(['Title',           report.title]);
+  rows.push(['Timestamp',       report.timestamp]);
+  rows.push(['Total Elements',  report.totalElements]);
+  rows.push(['Duration (ms)',   report.duration ?? 'N/A']);
   rows.push([]);
 
   if (report.filters && Object.values(report.filters).some(Boolean)) {
-    rows.push(['## FILTERS APPLIED']);
-    rows.push(['Class Filter', report.filters.class  || 'none']);
-    rows.push(['ID Filter',    report.filters.id     || 'none']);
-    rows.push(['Tag Filter',   report.filters.tag    || 'none']);
+    rows.push(['FILTERS APPLIED']);
+    rows.push(['Class Filter', report.filters.class || 'none']);
+    rows.push(['ID Filter',    report.filters.id    || 'none']);
+    rows.push(['Tag Filter',   report.filters.tag   || 'none']);
     rows.push([]);
   }
 
-  rows.push(['## EXTRACTED ELEMENTS']);
+  rows.push(['EXTRACTED ELEMENTS']);
   rows.push([
     'Element ID', 'Index', 'Tag Name', 'id Attribute', 'Class Name',
-    'Text Content (first 120 chars)',
+    'Text Content',
     'XPath', 'XPath Confidence', 'XPath Strategy',
     'CSS Selector', 'CSS Confidence', 'CSS Strategy',
     'Position X', 'Position Y', 'Width', 'Height',
-    'Is Visible', 'Display', 'Visibility', 'Opacity'
+    'Is Visible', 'Display', 'Visibility', 'Opacity',
+    'Attributes',
+    ...cssProperties
   ]);
 
   for (const el of (report.elements || [])) {
     rows.push([
-      el.id, el.index, el.tagName,
-      _csv(el.elementId), _csv(el.className),
-      _csv(el.textContent ? el.textContent.substring(0, 120) : ''),
-      _csv(el.selectors?.xpath), el.selectors?.xpathConfidence ?? 0, _csv(el.selectors?.xpathStrategy),
-      _csv(el.selectors?.css),   el.selectors?.cssConfidence   ?? 0, _csv(el.selectors?.cssStrategy),
-      el.position?.x ?? 0, el.position?.y ?? 0, el.position?.width ?? 0, el.position?.height ?? 0,
+      el.id,
+      el.index,
+      el.tagName,
+      el.elementId ?? '',
+      el.className ?? '',
+      (el.textContent ?? '').substring(0, 200),
+      el.selectors?.xpath          ?? '',
+      el.selectors?.xpathConfidence ?? 0,
+      el.selectors?.xpathStrategy  ?? '',
+      el.selectors?.css            ?? '',
+      el.selectors?.cssConfidence  ?? 0,
+      el.selectors?.cssStrategy    ?? '',
+      el.position?.x      ?? 0,
+      el.position?.y      ?? 0,
+      el.position?.width  ?? 0,
+      el.position?.height ?? 0,
       el.visibility?.isVisible ? 'Yes' : 'No',
-      _csv(el.visibility?.display), _csv(el.visibility?.visibility), el.visibility?.opacity ?? ''
+      el.visibility?.display    ?? '',
+      el.visibility?.visibility ?? '',
+      el.visibility?.opacity    ?? '',
+      el.attributes ? JSON.stringify(el.attributes) : '',
+      ...cssProperties.map(prop => el.styles?.[prop] ?? '')
     ]);
   }
 
@@ -237,6 +253,9 @@ function _csv(value) {
 }
 
 function _triggerDownload(content, mimeType, filename) {
+  if (typeof document === 'undefined') {
+    throw new Error('_triggerDownload called outside browser context');
+  }
   const blob = new Blob([content], { type: mimeType });
   const url  = URL.createObjectURL(blob);
   const a    = Object.assign(document.createElement('a'), { href: url, download: filename });

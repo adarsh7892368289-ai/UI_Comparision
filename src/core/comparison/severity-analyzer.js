@@ -1,5 +1,6 @@
 import { get } from '../../config/defaults.js';
 import { PROPERTY_CATEGORIES } from './differ.js';
+import { parseRgba, parsePx, relativeLuminance } from '../../shared/color-utils.js';
 
 const SEVERITY_LEVELS = {
   CRITICAL: 'critical',
@@ -59,8 +60,8 @@ class SeverityAnalyzer {
       }
     }
     if (property === 'width' || property === 'height') {
-      const basePx    = this._parsePx(baseValue);
-      const comparePx = this._parsePx(compareValue);
+      const basePx    = parsePx(baseValue);
+      const comparePx = parsePx(compareValue);
       if (basePx && comparePx) {
         return Math.abs((comparePx - basePx) / basePx) * 100 > 50;
       }
@@ -75,43 +76,20 @@ class SeverityAnalyzer {
       if (!isNaN(b) && !isNaN(c)) return Math.abs(b - c) > 0.3;
     }
     if (property.includes('color')) {
-      const baseRgba    = this._parseRgba(baseValue);
-      const compareRgba = this._parseRgba(compareValue);
+      const baseRgba    = parseRgba(baseValue);
+      const compareRgba = parseRgba(compareValue);
       if (baseRgba && compareRgba) {
-        return Math.abs(
-          this._luminance(baseRgba) - this._luminance(compareRgba)
-        ) > 0.4;
+        return Math.abs(relativeLuminance(baseRgba) - relativeLuminance(compareRgba)) > 0.4;
       }
     }
     if (property === 'font-size') {
-      const basePx    = this._parsePx(baseValue);
-      const comparePx = this._parsePx(compareValue);
+      const basePx    = parsePx(baseValue);
+      const comparePx = parsePx(compareValue);
       if (basePx && comparePx) {
         return Math.abs((comparePx - basePx) / basePx) * 100 > 25;
       }
     }
     return false;
-  }
-
-  _luminance({ r, g, b }) {
-    const toLinear = v => {
-      const n = v / 255;
-      return n <= 0.03928 ? n / 12.92 : Math.pow((n + 0.055) / 1.055, 2.4);
-    };
-    return 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
-  }
-
-  _parseRgba(value) {
-    if (typeof value !== 'string') return null;
-    const m = value.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([0-9.]+))?\s*\)/);
-    if (!m) return null;
-    return { r: +m[1], g: +m[2], b: +m[3], a: m[4] != null ? +m[4] : 1 };
-  }
-
-  _parsePx(value) {
-    if (typeof value !== 'string') return null;
-    const m = value.match(/^([0-9.]+)px$/);
-    return m ? parseFloat(m[1]) : null;
   }
 
   _countBySeverity(annotated) {

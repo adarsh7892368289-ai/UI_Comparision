@@ -1,5 +1,6 @@
 import { get } from '../../config/defaults.js';
 import { normalizerEngine } from '../normalization/normalizer-engine.js';
+import { parseRgba, parsePx } from '../../shared/color-utils.js';
 
 const DIFF_TYPES = {
   UNCHANGED: 'unchanged',
@@ -107,8 +108,8 @@ class PropertyDiffer {
   }
 
   _colorWithinTolerance(baseValue, compareValue, tolerance) {
-    const baseRgba    = this._parseRgba(baseValue);
-    const compareRgba = this._parseRgba(compareValue);
+    const baseRgba    = parseRgba(baseValue);
+    const compareRgba = parseRgba(compareValue);
     if (!baseRgba || !compareRgba) return baseValue === compareValue;
     return (
       Math.abs(baseRgba.r - compareRgba.r) <= tolerance &&
@@ -119,23 +120,10 @@ class PropertyDiffer {
   }
 
   _sizeWithinTolerance(baseValue, compareValue, tolerance) {
-    const basePx    = this._parsePx(baseValue);
-    const comparePx = this._parsePx(compareValue);
+    const basePx    = parsePx(baseValue);
+    const comparePx = parsePx(compareValue);
     if (basePx === null || comparePx === null) return baseValue === compareValue;
     return Math.abs(basePx - comparePx) <= tolerance;
-  }
-
-  _parseRgba(value) {
-    if (typeof value !== 'string') return null;
-    const m = value.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([0-9.]+))?\s*\)/);
-    if (!m) return null;
-    return { r: +m[1], g: +m[2], b: +m[3], a: m[4] != null ? +m[4] : 1 };
-  }
-
-  _parsePx(value) {
-    if (typeof value !== 'string') return null;
-    const m = value.match(/^([0-9.]+)px$/);
-    return m ? parseFloat(m[1]) : null;
   }
 
   _categorizeProperty(property) {

@@ -1,38 +1,171 @@
 import logger from '../infrastructure/logger.js';
-import { errorTracker } from '../infrastructure/error-tracker.js';
 import storage from '../infrastructure/storage.js';
 import { popupState } from './popup-state.js';
 import { TabAdapter } from '../infrastructure/chrome-tabs.js';
-import { extractFromActiveTab } from '../application/extract-workflow.js';
+import { sendToBackground, MessageTypes } from '../infrastructure/chrome-messaging.js';
+import { getCachedComparison } from '../application/compare-workflow.js';
 import {
-  loadAllReports,
-  deleteReport,
-  exportReportAsJson,
-  exportReportAsCsv,
-  deleteAllReports,
-  exportAllReportsAsJson,
-  exportAllReportsAsCsv,
-  getStorageStats,
-  searchReports
+  loadAllReports, deleteReport, deleteAllReports,
+  exportReportAsJson, exportReportAsCsv,
+  exportAllReportsAsJson, exportAllReportsAsCsv
 } from '../application/report-manager.js';
-import { compareReports } from '../application/compare-workflow.js';
 import { ExportManager, EXPORT_FORMATS } from '../core/export/export-manager.js';
 
 logger.init();
-errorTracker.init();
 storage.init();
-
 logger.setContext({ script: 'popup' });
 
 const exportManager = new ExportManager();
 
-document.addEventListener('DOMContentLoaded', async () => {
-  logger.info('Popup opened');
-  await initializeUI();
-  setupEventListeners();
-  setupStateSubscription();
-  await loadReportsFromStorage();
-});
+class ToastManager {
+  _init() {
+    this._root = this._root ?? document.getElementById('toast-root');
+  }
+
+  show(message, type = 'info', duration = 3000) {
+    this._init();
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+
+    const text = document.createElement('span');
+    text.textContent = message;
+
+    const close = document.createElement('button');
+    close.className = 'toast-close';
+    close.setAttribute('aria-label', 'Dismiss');
+    close.textContent = '×';
+    close.addEventListener('click', () => this._dismiss(toast));
+
+    toast.appendChild(text);
+    toast.appendChild(close);
+    this._root.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('toast-visible'));
+
+    if (duration > 0) setTimeout(() => this._dismiss(toast), duration);
+
+    while (this._root.children.length > 3) {
+      this._dismiss(this._root.firstChild);
+    }
+  }
+
+  _dismiss(toast) {
+    if (!toast?.isConnected) return;
+    toast.classList.remove('toast-visible');
+    toast.addEventListener('transitionend', () => toast.remove(), { once: true });
+  }
+
+  success(msg) { this.show(msg, 'success', 3000); }
+  error(msg)   { this.show(msg, 'error', 0); }
+  warning(msg) { this.show(msg, 'warning', 4000); }
+  info(msg)    { this.show(msg, 'info', 3000); }
+}
+
+class ModalManager {
+  _init() {
+    if (this._ready) return;
+    this._overlay = document.getElementById('modal-overlay');
+    this._box     = document.getElementById('modal-box');
+    this._resolve = null;
+    this._ready   = true;
+
+    this._overlay.addEventListener('click', e => {
+      if (e.target === this._overlay) this._close(false);
+    });
+    document.addEventListener('keydown', e => {
+      if (!this._resolve) return;
+      if (e.key === 'Escape') this._close(false);
+    });
+  }
+
+  confirm(title, message, { confirmText = 'Confirm', destructive = false } = {}) {
+    this._init();
+    return new Promise(resolve => {
+      this._resolve = resolve;
+      this._box.innerHTML = `
+        <p class="modal-title" id="modal-title">${sanitize(title)}</p>
+        <p class="modal-message">${sanitize(message)}</p>
+        <div class="modal-actions">
+          <button class="btn-ghost modal-cancel">Cancel</button>
+          <button class="btn-${destructive ? 'destructive' : 'primary'} btn-sm modal-confirm">
+            ${sanitize(confirmText)}
+          </button>
+        </div>`;
+      this._overlay.classList.remove('hidden');
+      this._box.querySelector('.modal-confirm').focus();
+      this._box.querySelector('.modal-cancel').addEventListener('click',  () => this._close(false));
+      this._box.querySelector('.modal-confirm').addEventListener('click', () => this._close(true));
+    });
+  }
+
+  _close(result) {
+    this._overlay?.classList.add('hidden');
+    const res    = this._resolve;
+    this._resolve = null;
+    res?.(result);
+  }
+}
+
+class ProgressManager {
+  show(id, label = 'Working…') {
+    const wrap = document.getElementById(`${id}-progress`);
+    if (wrap) wrap.classList.remove('hidden');
+    this.update(id, 0, label);
+  }
+
+  update(id, pct, label) {
+    const bar   = document.getElementById(`${id}-progress-bar`);
+    const lbl   = document.getElementById(`${id}-progress-label`);
+    const wrap  = document.getElementById(`${id}-progress`);
+    if (bar)  { bar.style.width = `${pct}%`; bar.setAttribute('aria-valuenow', pct); }
+    if (lbl && label) lbl.textContent = label;
+    if (wrap) wrap.setAttribute('aria-valuenow', pct);
+  }
+
+  hide(id) {
+    const wrap = document.getElementById(`${id}-progress`);
+    if (wrap) wrap.classList.add('hidden');
+    this.update(id, 0, '');
+  }
+
+  simulate(id, estimatedMs, stages = []) {
+    const defaultStages = [
+      { at: 8,  label: 'Scanning DOM…' },
+      { at: 25, label: 'Processing elements…' },
+      { at: 55, label: 'Generating selectors…' },
+      { at: 80, label: 'Normalizing styles…' },
+      { at: 92, label: 'Saving report…' }
+    ];
+    const activeStages = stages.length ? stages : defaultStages;
+    const stepMs = estimatedMs / 100;
+    let frame = 0;
+    let stopped = false;
+
+    this.show(id, activeStages[0].label);
+
+    const tick = () => {
+      if (stopped) return;
+      frame = Math.min(frame + 1, 92);
+      const stage = [...activeStages].reverse().find(s => frame >= s.at);
+      this.update(id, frame, stage?.label ?? '');
+      setTimeout(tick, stepMs);
+    };
+
+    setTimeout(tick, stepMs);
+
+    return {
+      done: () => {
+        stopped = true;
+        this.update(id, 100, 'Complete');
+        setTimeout(() => this.hide(id), 500);
+      }
+    };
+  }
+}
+
+const Toast    = new ToastManager();
+const Modal    = new ModalManager();
+const Progress = new ProgressManager();
 
 function sanitize(value) {
   const el = document.createElement('span');
@@ -40,564 +173,496 @@ function sanitize(value) {
   return el.innerHTML;
 }
 
-function showStatus(element, type, message) {
-  if (!element) return;
-  element.className = `status ${type}`;
-  element.textContent = message;
-  element.style.display = 'block';
-}
-
-function setLoading(button, isLoading, text) {
-  if (!button) return;
-  button.disabled = isLoading;
-  if (isLoading) {
-    button.setAttribute('data-original-text', button.textContent);
-    const spinner = document.createElement('span');
-    spinner.className = 'spinner';
-    button.textContent = '';
-    button.appendChild(spinner);
-    button.appendChild(document.createTextNode(` ${text}`));
-  } else {
-    button.textContent = text || button.getAttribute('data-original-text') || 'Submit';
-    button.removeAttribute('data-original-text');
-  }
-}
-
-function armTwoStepConfirm(button, onConfirm) {
-  if (button.dataset.confirmArmed === 'true') {
-    clearTimeout(button._confirmTimer);
-    button.dataset.confirmArmed = 'false';
-    button.textContent = button.dataset.originalLabel;
-    onConfirm();
-    return;
-  }
-  button.dataset.originalLabel = button.textContent;
-  button.dataset.confirmArmed = 'true';
-  button.textContent = 'Confirm?';
-  button._confirmTimer = setTimeout(() => {
-    button.dataset.confirmArmed = 'false';
-    button.textContent = button.dataset.originalLabel;
-  }, 3000);
-}
-
-async function initializeUI() {
-  setupTabs();
-  await loadCurrentPageInfo();
-}
-
-function setupTabs() {
-  document.querySelectorAll('.tab-button').forEach(button => {
-    button.addEventListener('click', () => {
-      popupState.dispatch('TAB_CHANGED', { tab: button.dataset.tab });
-    });
-  });
-}
-
-async function loadCurrentPageInfo() {
-  try {
-    const tab = await TabAdapter.getActiveTab();
-    if (tab) {
-      const urlElement = document.getElementById('current-url');
-      if (urlElement) urlElement.textContent = tab.url;
-    }
-  } catch (error) {
-    logger.error('Failed to get current tab info', { error: error.message });
-  }
-}
-
-function setupEventListeners() {
-  document.getElementById('extract-btn')?.addEventListener('click', handleExtraction);
-  document.getElementById('compare-btn')?.addEventListener('click', handleComparison);
-
-  const deleteAllBtn = document.getElementById('delete-all-btn');
-  if (deleteAllBtn) {
-    deleteAllBtn.addEventListener('click', () => {
-      armTwoStepConfirm(deleteAllBtn, handleDeleteAll);
-    });
-  }
-
-  document.getElementById('export-all-btn')?.addEventListener('click', handleExportAll);
-
-  const searchInput = document.getElementById('search-reports');
-  if (searchInput) {
-    let debounceTimer;
-    searchInput.addEventListener('input', (e) => {
-      clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        popupState.dispatch('SEARCH_CHANGED', { query: e.target.value });
-      }, 300);
-    });
-  }
-
-  const baselineSelect = document.getElementById('baseline-report');
-  const compareSelect = document.getElementById('compare-report');
-  
-  if (baselineSelect) {
-    baselineSelect.addEventListener('change', (e) => {
-      popupState.dispatch('BASELINE_SELECTED', { id: e.target.value });
-    });
-  }
-  
-  if (compareSelect) {
-    compareSelect.addEventListener('change', (e) => {
-      popupState.dispatch('COMPARE_SELECTED', { id: e.target.value });
-    });
-  }
-
-  document.querySelectorAll('input[name="compare-mode"]').forEach(radio => {
-    radio.addEventListener('change', (e) => {
-      if (e.target.checked) {
-        popupState.dispatch('MODE_CHANGED', { mode: e.target.value });
-      }
-    });
-  });
-}
-
-function setupStateSubscription() {
-  popupState.subscribe((state, type) => {
-    updateUIFromState(state, type);
-  });
-}
-
-function updateUIFromState(state, transitionType) {
-  if (transitionType === 'TAB_CHANGED') {
-    document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-    
-    const activeTab = document.querySelector(`[data-tab="${state.activeTab}"]`);
-    if (activeTab) activeTab.classList.add('active');
-    
-    const activeContent = document.getElementById(`${state.activeTab}-tab`);
-    if (activeContent) activeContent.classList.add('active');
-  }
-
-  if (transitionType === 'REPORTS_LOADED' || transitionType === 'REPORT_DELETED') {
-    displayReports(state.reports, state.search);
-    populateReportSelectors(state.reports);
-  }
-
-  if (transitionType === 'SEARCH_CHANGED') {
-    displayReports(state.reports, state.search);
-  }
-
-  if (transitionType === 'STORAGE_STATS_LOADED') {
-    displayStorageStats(state.storageStats);
-  }
-
-  if (transitionType === 'EXTRACTION_STARTED' || transitionType === 'EXTRACTION_COMPLETE' || 
-      transitionType === 'EXTRACTION_FAILED' || transitionType === 'EXTRACTION_PROGRESS') {
-    updateExtractionUI(state);
-  }
-
-  if (transitionType === 'COMPARISON_STARTED' || transitionType === 'COMPARISON_COMPLETE' || 
-      transitionType === 'COMPARISON_FAILED' || transitionType === 'COMPARISON_PROGRESS') {
-    updateComparisonUI(state);
-  }
-
-  if (transitionType === 'COMPARISON_COMPLETE') {
-    displayComparisonResults(state.comparisonResult);
-  }
-}
-
-function updateExtractionUI(state) {
-  const statusDiv = document.getElementById('extract-status');
-  const extractBtn = document.getElementById('extract-btn');
-
-  setLoading(extractBtn, state.isExtracting, state.extractionLabel || 'Extracting...');
-
-  if (state.isExtracting) {
-    showStatus(statusDiv, 'info', state.extractionLabel);
-  } else if (state.error && state.error.includes('Extract')) {
-    showStatus(statusDiv, 'error', `✗ ${state.error}`);
-  }
-}
-
-function updateComparisonUI(state) {
-  const statusDiv = document.getElementById('compare-status');
-  const compareBtn = document.getElementById('compare-btn');
-
-  setLoading(compareBtn, state.isComparing, state.comparisonLabel || 'Comparing...');
-
-  if (state.isComparing) {
-    showStatus(statusDiv, 'info', state.comparisonLabel);
-  } else if (state.error && state.error.includes('Comparison')) {
-    showStatus(statusDiv, 'error', `✗ ${state.error}`);
-  }
-}
-
-async function handleExtraction() {
-  popupState.dispatch('EXTRACTION_STARTED');
-
-  try {
-    const filters = getFilters();
-    const report = await extractFromActiveTab(filters);
-    
-    popupState.dispatch('EXTRACTION_COMPLETE', { report });
-    await loadReportsFromStorage();
-    
-    const statusDiv = document.getElementById('extract-status');
-    showStatus(statusDiv, 'success', `✓ Extracted ${report.totalElements} elements`);
-  } catch (error) {
-    const errorMsg = error.message || String(error);
-    popupState.dispatch('EXTRACTION_FAILED', { error: errorMsg });
-    logger.error('Extraction failed', { error: errorMsg });
-  }
+function relativeTime(isoString) {
+  const mins = Math.floor((Date.now() - new Date(isoString).getTime()) / 60000);
+  if (mins < 1)   return 'just now';
+  if (mins < 60)  return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)   return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
 }
 
 function getFilters() {
+  const pick = id => document.getElementById(id)?.value.trim();
   const filters = {};
-  const classVal = document.getElementById('filter-class')?.value.trim();
-  const idVal = document.getElementById('filter-id')?.value.trim();
-  const tagVal = document.getElementById('filter-tag')?.value.trim();
-  
-  if (classVal) filters.class = classVal;
-  if (idVal) filters.id = idVal;
-  if (tagVal) filters.tag = tagVal;
-  
-  return Object.keys(filters).length > 0 ? filters : null;
+  const cls = pick('filter-class'); if (cls) filters.class = cls;
+  const id  = pick('filter-id');    if (id)  filters.id    = id;
+  const tag = pick('filter-tag');   if (tag) filters.tag   = tag;
+  return Object.keys(filters).length ? filters : null;
 }
 
-async function loadReportsFromStorage() {
+function hostFromUrl(url) {
+  try { return new URL(url).hostname; } catch { return url; }
+}
+
+async function handleExtraction() {
+  const btn = document.getElementById('extract-btn');
+  const sim = Progress.simulate('extract', 5000);
+  btn.disabled = true;
+
   try {
-    const reports = await loadAllReports();
-    popupState.dispatch('REPORTS_LOADED', { reports });
-    
-    const stats = await getStorageStats();
-    if (stats) {
-      popupState.dispatch('STORAGE_STATS_LOADED', { stats });
-    }
-  } catch (error) {
-    logger.error('Failed to load reports', { error: error.message });
+    const response = await sendToBackground(MessageTypes.EXTRACT_ELEMENTS, { filters: getFilters() });
+    const report   = response.data.report;
+    sim.done();
+    popupState.dispatch('EXTRACTION_COMPLETE', { report });
+    await refreshReports();
+    Toast.success(`Extracted ${report.totalElements} elements in ${report.duration}ms`);
+  } catch (err) {
+    sim.done();
+    popupState.dispatch('EXTRACTION_FAILED', { error: err.message });
+    Toast.error(err.message);
+    logger.error('Extraction failed', { error: err.message });
+  } finally {
+    btn.disabled = false;
   }
-}
-
-function displayReports(reports, searchQuery) {
-  const container = document.getElementById('reports-list');
-  if (!container) return;
-
-  const filteredReports = searchQuery
-    ? reports.filter(r => 
-        (r.title || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (r.url || '').toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : reports;
-
-  if (filteredReports.length === 0) {
-    container.textContent = '';
-    const empty = document.createElement('p');
-    empty.className = 'empty-state';
-    empty.textContent = searchQuery 
-      ? 'No reports match your search.'
-      : 'No reports yet. Extract elements from a page to create your first report.';
-    container.appendChild(empty);
-    return;
-  }
-
-  container.textContent = '';
-
-  for (const report of filteredReports) {
-    const item = document.createElement('div');
-    item.className = 'report-item';
-    item.dataset.id = report.id;
-
-    const info = document.createElement('div');
-    info.className = 'report-info';
-
-    const title = document.createElement('div');
-    title.className = 'report-title';
-    title.textContent = report.title || 'Untitled';
-
-    const meta = document.createElement('div');
-    meta.className = 'report-meta';
-    meta.textContent = `${report.totalElements} elements • ${new Date(report.timestamp).toLocaleString()}`;
-
-    const url = document.createElement('div');
-    url.className = 'report-url';
-    url.textContent = report.url;
-
-    info.appendChild(title);
-    info.appendChild(meta);
-    info.appendChild(url);
-
-    const actions = document.createElement('div');
-    actions.className = 'report-actions';
-
-    const jsonBtn = createActionButton('📋', 'Export as JSON', async () => {
-      try {
-        await exportReportAsJson(report);
-      } catch (err) {
-        showStatus(document.getElementById('extract-status'), 'error', `✗ Export failed: ${err.message}`);
-      }
-    });
-
-    const csvBtn = createActionButton('📊', 'Export as CSV', async () => {
-      try {
-        await exportReportAsCsv(report);
-      } catch (err) {
-        showStatus(document.getElementById('extract-status'), 'error', `✗ Export failed: ${err.message}`);
-      }
-    });
-
-    const deleteBtn = createActionButton('🗑️', 'Delete', () => {
-      armTwoStepConfirm(deleteBtn, async () => {
-        await deleteReport(report.id);
-        popupState.dispatch('REPORT_DELETED', { id: report.id });
-        await loadReportsFromStorage();
-      });
-    });
-
-    actions.appendChild(jsonBtn);
-    actions.appendChild(csvBtn);
-    actions.appendChild(deleteBtn);
-
-    item.appendChild(info);
-    item.appendChild(actions);
-    container.appendChild(item);
-  }
-}
-
-function createActionButton(icon, title, onClick) {
-  const btn = document.createElement('button');
-  btn.className = 'btn-icon';
-  btn.title = title;
-  btn.textContent = icon;
-  btn.addEventListener('click', onClick);
-  return btn;
-}
-
-function populateReportSelectors(reports) {
-  const baselineSelect = document.getElementById('baseline-report');
-  const compareSelect = document.getElementById('compare-report');
-  
-  if (!baselineSelect || !compareSelect) return;
-
-  const createOptions = () => {
-    const fragment = document.createDocumentFragment();
-    const emptyOpt = document.createElement('option');
-    emptyOpt.value = '';
-    emptyOpt.textContent = 'Select report...';
-    fragment.appendChild(emptyOpt);
-
-    for (const report of reports) {
-      const opt = document.createElement('option');
-      opt.value = report.id;
-      opt.textContent = `${report.title || 'Untitled'} (${report.totalElements} elements)`;
-      fragment.appendChild(opt);
-    }
-    
-    return fragment;
-  };
-
-  baselineSelect.textContent = '';
-  compareSelect.textContent = '';
-  baselineSelect.appendChild(createOptions());
-  compareSelect.appendChild(createOptions());
 }
 
 async function handleComparison() {
   const state = popupState.get();
-  const statusDiv = document.getElementById('compare-status');
-
   if (!state.selectedBaseline || !state.selectedCompare) {
-    showStatus(statusDiv, 'error', '✗ Please select both baseline and compare reports');
+    Toast.warning('Select both baseline and compare reports');
     return;
   }
-
   if (state.selectedBaseline === state.selectedCompare) {
-    showStatus(statusDiv, 'error', '✗ Please select different reports');
+    Toast.warning('Select two different reports to compare');
     return;
   }
 
-  popupState.dispatch('COMPARISON_STARTED');
+  const btn = document.getElementById('compare-btn');
+  const sim = Progress.simulate('compare', 3000, [
+    { at: 5,  label: 'Loading reports…' },
+    { at: 20, label: 'Matching elements…' },
+    { at: 60, label: 'Comparing properties…' },
+    { at: 82, label: 'Analyzing severity…' },
+    { at: 94, label: 'Building results…' }
+  ]);
+  btn.disabled = true;
 
   try {
-    const result = await compareReports(
-      state.selectedBaseline, 
-      state.selectedCompare, 
-      state.compareMode
-    );
-    
-    popupState.dispatch('COMPARISON_COMPLETE', { result });
-    showStatus(statusDiv, 'success', '✓ Comparison completed');
-  } catch (error) {
-    const errorMsg = error.message || String(error);
-    popupState.dispatch('COMPARISON_FAILED', { error: errorMsg });
-    showStatus(statusDiv, 'error', `✗ ${errorMsg}`);
+    const response = await sendToBackground(MessageTypes.START_COMPARISON, {
+      baselineId: state.selectedBaseline,
+      compareId:  state.selectedCompare,
+      mode:       state.compareMode
+    });
+    const result = response.data.result;
+    sim.done();
+    popupState.dispatch('COMPARISON_COMPLETE', { result, cachedAt: null });
+    const diffs = result.comparison.summary.totalDifferences;
+    Toast.success(`Done — ${diffs} difference${diffs !== 1 ? 's' : ''} found`);
+  } catch (err) {
+    sim.done();
+    popupState.dispatch('COMPARISON_FAILED', { error: err.message });
+    Toast.error(err.message);
+    logger.error('Comparison failed', { error: err.message });
+  } finally {
+    btn.disabled = false;
   }
-}
-
-function displayComparisonResults(result) {
-  const container = document.getElementById('compare-results');
-  if (!container || !result) return;
-
-  const { baseline, matching, comparison } = result;
-  const { severityCounts } = comparison.summary;
-  const { critical, high, medium, low } = severityCounts;
-  const total = comparison.summary.totalDifferences;
-
-  let headerClass = 'info';
-  if (critical > 0) headerClass = 'error';
-  else if (high > 0) headerClass = 'warning';
-
-  const severityBar = (label, count) => {
-    if (!count) return '';
-    const pct = total > 0 ? ((count / total) * 100).toFixed(1) : 0;
-    return `
-      <div class="severity-bar ${label.toLowerCase()}">
-        <span class="severity-label">${sanitize(label)}</span>
-        <div class="severity-progress">
-          <div class="severity-fill" style="width:${pct}%"></div>
-        </div>
-        <span class="severity-count">${count}</span>
-      </div>`;
-  };
-
-  container.innerHTML = `
-    <div class="comparison-results">
-      <div class="comparison-header ${headerClass}">
-        <h3>Comparison Results</h3>
-        <div class="comparison-meta">
-          <span>Mode: ${sanitize(result.mode)}</span>
-          <span>Duration: ${result.duration}ms</span>
-        </div>
-      </div>
-      <div class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-label">Match Rate</div>
-          <div class="stat-value">${matching.matchRate}%</div>
-          <div class="stat-detail">${matching.totalMatched} / ${baseline.totalElements} elements</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Modified Elements</div>
-          <div class="stat-value">${comparison.summary.modifiedElements}</div>
-          <div class="stat-detail">${total} total differences</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Unchanged</div>
-          <div class="stat-value">${comparison.summary.unchangedElements}</div>
-          <div class="stat-detail">No differences detected</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Unmatched</div>
-          <div class="stat-value">${matching.unmatchedBaseline + matching.unmatchedCompare}</div>
-          <div class="stat-detail">${matching.unmatchedBaseline} removed, ${matching.unmatchedCompare} added</div>
-        </div>
-      </div>
-      ${total > 0 ? `
-        <div class="severity-breakdown">
-          <h4>Severity Breakdown</h4>
-          <div class="severity-bars">
-            ${severityBar('Critical', critical)}
-            ${severityBar('High', high)}
-            ${severityBar('Medium', medium)}
-            ${severityBar('Low', low)}
-          </div>
-        </div>` : ''}
-      <div class="comparison-actions">
-        <div class="export-picker-row">
-          <select id="export-format-select" class="select-input" aria-label="Export format">
-            <option value="excel">Excel (.xlsx)</option>
-            <option value="csv">CSV (.csv)</option>
-            <option value="html">HTML (.html)</option>
-            <option value="json">JSON (.json)</option>
-          </select>
-          <button id="export-comparison-btn" class="btn-secondary">Export Results</button>
-        </div>
-        <button id="view-details-btn" class="btn-primary">View Detailed Report</button>
-      </div>
-    </div>`;
-
-  container.querySelector('#export-comparison-btn')
-    ?.addEventListener('click', () => exportComparisonResults());
-
-  container.querySelector('#view-details-btn')
-    ?.addEventListener('click', () => exportManager.export(result, EXPORT_FORMATS.HTML));
-}
-
-async function exportComparisonResults() {
-  const state = popupState.get();
-  const result = state.comparisonResult;
-  
-  if (!result) {
-    showStatus(document.getElementById('compare-status'), 'error', '✗ No comparison result available');
-    return;
-  }
-
-  const formatSelect = document.getElementById('export-format-select');
-  const selectedFormat = formatSelect?.value ?? EXPORT_FORMATS.EXCEL;
-  const statusDiv = document.getElementById('compare-status');
-
-  const exportResult = await exportManager.export(result, selectedFormat);
-  if (exportResult.success) {
-    showStatus(statusDiv, 'success', `✓ Exported as ${selectedFormat.toUpperCase()}`);
-  } else {
-    showStatus(statusDiv, 'error', `✗ Export failed: ${exportResult.error}`);
-  }
-}
-
-function displayStorageStats(stats) {
-  const statsDiv = document.getElementById('storage-stats');
-  if (!statsDiv || !stats) return;
-
-  const percentUsed = stats.quota.percentUsed.toFixed(1);
-  const bytesUsedMB = (stats.quota.bytesInUse / (1024 * 1024)).toFixed(2);
-  const quotaMB = (stats.quota.quota / (1024 * 1024)).toFixed(2);
-
-  let statusClass = 'info';
-  if (stats.quota.percentUsed > 80) statusClass = 'warning';
-  if (stats.quota.percentUsed > 95) statusClass = 'error';
-
-  statsDiv.innerHTML = `
-    <div class="stats-grid">
-      <div class="stat-item">
-        <span class="stat-label">Reports:</span>
-        <span class="stat-value">${stats.reportsCount}</span>
-      </div>
-      <div class="stat-item">
-        <span class="stat-label">Total Elements:</span>
-        <span class="stat-value">${stats.totalElements.toLocaleString()}</span>
-      </div>
-      <div class="stat-item">
-        <span class="stat-label">Avg Elements:</span>
-        <span class="stat-value">${stats.avgElements}</span>
-      </div>
-      <div class="stat-item ${statusClass}">
-        <span class="stat-label">Storage:</span>
-        <span class="stat-value">${bytesUsedMB} / ${quotaMB} MB (${percentUsed}%)</span>
-      </div>
-    </div>`;
 }
 
 async function handleDeleteAll() {
+  const confirmed = await Modal.confirm(
+    'Delete all reports',
+    'This permanently deletes all saved reports. This cannot be undone.',
+    { confirmText: 'Delete All', destructive: true }
+  );
+  if (!confirmed) return;
+
   try {
     const result = await deleteAllReports();
     if (result.success) {
-      popupState.dispatch('REPORTS_LOADED', { reports: [] });
-      await loadReportsFromStorage();
+      await refreshReports();
+      Toast.success(`Deleted ${result.count} report${result.count !== 1 ? 's' : ''}`);
+    } else {
+      Toast.error(result.error ?? 'Delete failed');
     }
-  } catch (error) {
-    logger.error('Failed to delete all reports', { error: error.message });
+  } catch (err) {
+    Toast.error(err.message);
+  }
+}
+
+async function handleDeleteReport(report) {
+  const confirmed = await Modal.confirm(
+    'Delete report',
+    `Delete "${report.title || 'Untitled'}"? This cannot be undone.`,
+    { confirmText: 'Delete', destructive: true }
+  );
+  if (!confirmed) return;
+
+  try {
+    const result = await deleteReport(report.id);
+    if (result.success) {
+      await refreshReports();
+      Toast.success('Report deleted');
+    } else {
+      Toast.error(result.error ?? 'Delete failed');
+    }
+  } catch (err) {
+    Toast.error(err.message);
   }
 }
 
 async function handleExportAll() {
-  const statusDiv = document.getElementById('extract-status');
-  const formatSelect = document.getElementById('export-all-format');
-  const format = formatSelect?.value ?? 'csv';
-
+  const format = document.getElementById('export-all-format')?.value ?? 'csv';
   try {
-    const result = format === 'csv'
-      ? await exportAllReportsAsCsv()
-      : await exportAllReportsAsJson();
-
+    const result = format === 'json' ? await exportAllReportsAsJson() : await exportAllReportsAsCsv();
     if (result.success) {
-      showStatus(statusDiv, 'success', `✓ Exported ${result.count} reports as ${format.toUpperCase()}`);
+      Toast.success(`Exported ${result.count} reports as ${format.toUpperCase()}`);
     } else {
-      showStatus(statusDiv, 'error', `✗ Export failed: ${result.error}`);
+      Toast.error(result.error ?? 'Export failed');
     }
-  } catch (error) {
-    showStatus(statusDiv, 'error', `✗ Export failed: ${error.message}`);
+  } catch (err) {
+    Toast.error(err.message);
   }
 }
 
-logger.info('Popup script initialized');
+async function handleExportReport(report, format) {
+  try {
+    if (format === 'json') {
+      await exportReportAsJson(report);
+    } else {
+      await exportReportAsCsv(report);
+    }
+    Toast.success(`Exported as ${format.toUpperCase()}`);
+  } catch (err) {
+    Toast.error(`Export failed: ${err.message}`);
+  }
+}
+
+async function handleExportComparison() {
+  const result = popupState.get().comparisonResult;
+  if (!result) { Toast.error('No comparison result to export'); return; }
+
+  const format = document.getElementById('export-format-select')?.value ?? EXPORT_FORMATS.EXCEL;
+  const res    = await exportManager.export(result, format);
+  if (res.success) {
+    Toast.success(`Exported as ${format.toUpperCase()}`);
+  } else {
+    Toast.error(`Export failed: ${res.error}`);
+  }
+}
+
+async function refreshReports() {
+  try {
+    const reports = await loadAllReports();
+    popupState.dispatch('REPORTS_LOADED', { reports });
+  } catch (err) {
+    logger.error('Failed to refresh reports', { error: err.message });
+  }
+}
+
+function renderReportCard(report) {
+  const card = document.createElement('div');
+  card.className = 'report-card';
+  card.setAttribute('role', 'listitem');
+
+  card.innerHTML = `
+    <div class="report-card-body">
+      <div class="report-card-title">${sanitize(report.title || 'Untitled')}</div>
+      <div class="report-card-meta">
+        <span class="meta-host">${sanitize(hostFromUrl(report.url))}</span>
+        <span class="meta-sep">·</span>
+        <span>${sanitize(report.totalElements)} el</span>
+        <span class="meta-sep">·</span>
+        <span>${relativeTime(report.timestamp)}</span>
+      </div>
+    </div>
+    <div class="report-card-actions">
+      <details class="export-dropdown">
+        <summary class="btn-ghost btn-sm" title="Export options">Export ▾</summary>
+        <div class="export-menu">
+          <button class="export-menu-item" data-format="json">JSON</button>
+          <button class="export-menu-item" data-format="csv">CSV</button>
+        </div>
+      </details>
+      <button class="btn-icon-danger" title="Delete report" aria-label="Delete ${sanitize(report.title || 'report')}">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+          <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/>
+        </svg>
+      </button>
+    </div>`;
+
+  card.querySelectorAll('.export-menu-item').forEach(btn => {
+    btn.addEventListener('click', () => {
+      card.querySelector('details').removeAttribute('open');
+      handleExportReport(report, btn.dataset.format);
+    });
+  });
+
+  card.querySelector('.btn-icon-danger').addEventListener('click', () => handleDeleteReport(report));
+  return card;
+}
+
+function displayReports(reports, searchQuery) {
+  const list  = document.getElementById('reports-list');
+  const empty = document.getElementById('reports-empty');
+  if (!list) return;
+
+  const q        = searchQuery?.toLowerCase() ?? '';
+  const filtered = q
+    ? reports.filter(r =>
+        (r.title || '').toLowerCase().includes(q) ||
+        (r.url   || '').toLowerCase().includes(q))
+    : reports;
+
+  list.textContent = '';
+
+  if (filtered.length === 0) {
+    empty?.classList.remove('hidden');
+    return;
+  }
+
+  empty?.classList.add('hidden');
+  const frag = document.createDocumentFragment();
+  filtered.forEach(r => frag.appendChild(renderReportCard(r)));
+  list.appendChild(frag);
+}
+
+function populateReportSelectors(reports) {
+  ['baseline-report', 'compare-report'].forEach(selId => {
+    const sel = document.getElementById(selId);
+    if (!sel) return;
+    const current = sel.value;
+    sel.textContent = '';
+    const placeholder = new Option('Select report…', '');
+    sel.appendChild(placeholder);
+    reports.forEach(r => {
+      const opt = new Option(
+        `${r.title || 'Untitled'} · ${r.totalElements} el · ${relativeTime(r.timestamp)}`,
+        r.id
+      );
+      if (r.id === current) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  });
+  syncCompareButton();
+}
+
+function displayComparisonResults(result, cachedAt = null) {
+  const container = document.getElementById('compare-results');
+  if (!container || !result) return;
+
+  const { matching, comparison, mode, duration } = result;
+  const { summary: { severityCounts, totalDifferences, modifiedElements, unchangedElements } } = comparison;
+  const { critical, high, medium, low } = severityCounts;
+
+  const severityRow = (label, count, type) => count === 0 ? '' : `
+    <div class="sev-row">
+      <span class="badge badge-${type}">${label}</span>
+      <div class="sev-bar-wrap">
+        <div class="sev-bar-fill sev-${type}"
+             style="width:${totalDifferences > 0 ? ((count / totalDifferences) * 100).toFixed(1) : 0}%">
+        </div>
+      </div>
+      <span class="sev-count">${count}</span>
+    </div>`;
+
+  const rateClass = critical > 0 ? 'rate-critical' : high > 0 ? 'rate-high' : 'rate-ok';
+
+  container.innerHTML = `
+    <div class="result-card">
+      <div class="result-header">
+        <div class="result-match-rate ${rateClass}">
+          <span class="rate-value">${matching.matchRate}%</span>
+          <span class="rate-label">matched</span>
+        </div>
+        <div class="result-meta">
+          <span class="result-mode-badge">${sanitize(mode)}</span>
+          <span class="result-duration">${duration}ms</span>
+          ${cachedAt ? `<span class="result-cached-badge" title="Loaded from cache — run Compare to refresh">Cached · ${relativeTime(cachedAt)}</span>` : ''}
+        </div>
+      </div>
+
+      <div class="result-stats">
+        <div class="result-stat">
+          <div class="rs-val">${modifiedElements}</div>
+          <div class="rs-lbl">Modified</div>
+        </div>
+        <div class="result-stat">
+          <div class="rs-val">${result.unmatchedElements.compare.length}</div>
+          <div class="rs-lbl">Added</div>
+        </div>
+        <div class="result-stat">
+          <div class="rs-val">${result.unmatchedElements.baseline.length}</div>
+          <div class="rs-lbl">Removed</div>
+        </div>
+        <div class="result-stat">
+          <div class="rs-val">${unchangedElements}</div>
+          <div class="rs-lbl">Unchanged</div>
+        </div>
+      </div>
+
+      ${totalDifferences > 0 ? `
+        <div class="severity-section">
+          <div class="severity-section-title">Severity Breakdown</div>
+          ${severityRow('Critical', critical, 'critical')}
+          ${severityRow('High', high, 'high')}
+          ${severityRow('Medium', medium, 'medium')}
+          ${severityRow('Low', low, 'low')}
+        </div>` : `<div class="no-diffs">✓ No differences detected</div>`}
+
+      <div class="result-actions">
+        <div class="export-format-row">
+          <select class="select" id="export-format-select" aria-label="Export format">
+            <option value="excel">Excel</option>
+            <option value="csv">CSV</option>
+            <option value="html">HTML</option>
+            <option value="json">JSON</option>
+          </select>
+          <button class="btn-ghost btn-sm" id="export-comparison-btn">Export</button>
+        </div>
+        <button class="btn-primary btn-sm" id="view-report-btn">Full Report</button>
+      </div>
+    </div>`;
+
+  container.querySelector('#export-comparison-btn')
+    ?.addEventListener('click', handleExportComparison);
+  container.querySelector('#view-report-btn')
+    ?.addEventListener('click', () => exportManager.export(result, EXPORT_FORMATS.HTML));
+}
+
+function displayReportsFooter(count) {
+  const footer = document.getElementById('reports-footer');
+  if (!footer) return;
+  footer.textContent = count === 0 ? '' : `${count} report${count !== 1 ? 's' : ''} saved`;
+}
+
+async function tryLoadCachedComparison() {
+  const state = popupState.get();
+  if (!state.selectedBaseline || !state.selectedCompare) return;
+
+  const cached = await getCachedComparison(
+    state.selectedBaseline,
+    state.selectedCompare,
+    state.compareMode
+  );
+
+  if (cached) {
+    const reconstructed = {
+      baseline:         cached.baseline,
+      compare:          cached.compare,
+      mode:             cached.mode,
+      matching:         cached.matching,
+      comparison:       { summary: cached.summary, results: [] },
+      unmatchedElements: cached.unmatchedElements,
+      duration:         cached.duration,
+      timestamp:        cached.timestamp,
+    };
+    popupState.dispatch('COMPARISON_COMPLETE', {
+      result:   reconstructed,
+      cachedAt: cached.timestamp,
+    });
+  } else {
+    popupState.dispatch('RESET_COMPARISON', {});
+  }
+}
+
+function syncCompareButton() {
+  const state = popupState.get();
+  const btn   = document.getElementById('compare-btn');
+  if (btn) btn.disabled = !state.selectedBaseline || !state.selectedCompare;
+}
+
+function updateUIFromState(state, type) {
+  switch (type) {
+    case 'TAB_CHANGED': {
+      document.querySelectorAll('[role="tab"]').forEach(t => {
+        const active = t.dataset.tab === state.activeTab;
+        t.classList.toggle('active', active);
+        t.setAttribute('aria-selected', String(active));
+      });
+      document.querySelectorAll('[role="tabpanel"]').forEach(p => {
+        p.hidden = p.id !== `panel-${state.activeTab}`;
+      });
+      break;
+    }
+    case 'REPORTS_LOADED':
+    case 'REPORT_DELETED':
+      displayReports(state.reports, state.search);
+      populateReportSelectors(state.reports);
+      displayReportsFooter(state.reports.length);
+      break;
+    case 'SEARCH_CHANGED':
+      displayReports(state.reports, state.search);
+      break;
+    case 'COMPARISON_COMPLETE':
+      displayComparisonResults(state.comparisonResult, state.cachedAt);
+      break;
+    case 'BASELINE_SELECTED':
+    case 'COMPARE_SELECTED':
+      syncCompareButton();
+      break;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  logger.info('Popup opened');
+
+  const tab = await TabAdapter.getActiveTab();
+  if (tab?.url) {
+    const urlEl = document.getElementById('header-url');
+    if (urlEl) {
+      urlEl.textContent = hostFromUrl(tab.url);
+      urlEl.title       = tab.url;
+    }
+  }
+
+  document.querySelectorAll('[role="tab"]').forEach(btn => {
+    btn.addEventListener('click', () => popupState.dispatch('TAB_CHANGED', { tab: btn.dataset.tab }));
+  });
+
+  document.getElementById('extract-btn')?.addEventListener('click', handleExtraction);
+  document.getElementById('compare-btn')?.addEventListener('click', handleComparison);
+  document.getElementById('delete-all-btn')?.addEventListener('click', handleDeleteAll);
+  document.getElementById('export-all-btn')?.addEventListener('click', handleExportAll);
+
+  document.getElementById('baseline-report')?.addEventListener('change', e => {
+    popupState.dispatch('BASELINE_SELECTED', { id: e.target.value });
+    tryLoadCachedComparison();
+  });
+  document.getElementById('compare-report')?.addEventListener('change', e => {
+    popupState.dispatch('COMPARE_SELECTED', { id: e.target.value });
+    tryLoadCachedComparison();
+  });
+  document.querySelectorAll('[name="compare-mode"]').forEach(r => {
+    r.addEventListener('change', e => {
+      if (e.target.checked) {
+        popupState.dispatch('MODE_CHANGED', { mode: e.target.value });
+        tryLoadCachedComparison();
+      }
+    });
+  });
+
+  let searchDebounce;
+  document.getElementById('search-reports')?.addEventListener('input', e => {
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => {
+      popupState.dispatch('SEARCH_CHANGED', { query: e.target.value });
+    }, 250);
+  });
+
+  document.addEventListener('keydown', e => {
+    const inInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
+    if (inInput) return;
+
+    if (e.key === '1') popupState.dispatch('TAB_CHANGED', { tab: 'extract' });
+    if (e.key === '2') popupState.dispatch('TAB_CHANGED', { tab: 'compare' });
+    if (e.key === '/') {
+      e.preventDefault();
+      document.getElementById('search-reports')?.focus();
+    }
+    if (e.key === 'Escape') {
+      const search = document.getElementById('search-reports');
+      if (search?.value) {
+        search.value = '';
+        popupState.dispatch('SEARCH_CHANGED', { query: '' });
+      }
+    }
+  });
+
+  popupState.subscribe((state, type) => updateUIFromState(state, type));
+
+  await refreshReports();
+  await tryLoadCachedComparison();
+
+  logger.info('Popup initialized');
+});

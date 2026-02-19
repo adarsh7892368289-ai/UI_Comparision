@@ -12,8 +12,8 @@ const initialState = {
   selectedCompare: null,
   compareMode: 'static',
   comparisonResult: null,
+  cachedAt: null,
   error: null,
-  storageStats: null,
 };
 
 const transitions = {
@@ -73,12 +73,13 @@ const transitions = {
     comparisonLabel: label
   }),
 
-  COMPARISON_COMPLETE: (state, { result }) => ({
+  COMPARISON_COMPLETE: (state, { result, cachedAt = null }) => ({
     ...state,
     isComparing: false,
     comparisonProgress: 100,
     comparisonLabel: 'Complete',
-    comparisonResult: result
+    comparisonResult: result,
+    cachedAt
   }),
 
   COMPARISON_FAILED: (state, { error }) => ({
@@ -86,6 +87,7 @@ const transitions = {
     isComparing: false,
     comparisonProgress: 0,
     comparisonLabel: '',
+    cachedAt: null,
     error
   }),
 
@@ -116,11 +118,6 @@ const transitions = {
     compareMode: mode
   }),
 
-  STORAGE_STATS_LOADED: (state, { stats }) => ({
-    ...state,
-    storageStats: stats
-  }),
-
   ERROR_CLEARED: (state) => ({
     ...state,
     error: null
@@ -131,6 +128,7 @@ const transitions = {
     comparisonResult: null,
     comparisonProgress: 0,
     comparisonLabel: '',
+    cachedAt: null,
     isComparing: false
   })
 };

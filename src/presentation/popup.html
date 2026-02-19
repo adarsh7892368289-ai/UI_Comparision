@@ -3,99 +3,193 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>UI Comparison</title>
+  <title>UI Compare</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div class="container">
-    <header>
-      <h1>UI Comparison</h1>
-      <div class="current-page">
-        <small id="current-url"></small>
+
+  <div id="toast-root" aria-live="polite" aria-atomic="false" aria-relevant="additions"></div>
+
+  <div id="modal-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-box" id="modal-box"></div>
+  </div>
+
+  <div class="popup-root">
+
+    <header class="popup-header">
+      <div class="header-brand">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" aria-hidden="true">
+          <rect x="2" y="3" width="20" height="14" rx="2"/>
+          <path d="M8 21h8M12 17v4"/>
+        </svg>
+        <span class="header-title">UI Compare</span>
       </div>
+      <div id="header-url" class="header-url" title=""></div>
     </header>
 
-    <nav class="tabs">
-      <button class="tab-button active" data-tab="extract">Extract</button>
-      <button class="tab-button" data-tab="compare">Compare</button>
+    <nav class="tab-bar" role="tablist" aria-label="Main navigation">
+      <button class="tab active" role="tab" aria-selected="true"
+              aria-controls="panel-extract" id="tab-extract" data-tab="extract">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+        </svg>
+        Extract
+      </button>
+      <button class="tab" role="tab" aria-selected="false"
+              aria-controls="panel-compare" id="tab-compare" data-tab="compare">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true">
+          <path d="M8 6l4-4 4 4M16 18l-4 4-4-4M12 2v20"/>
+        </svg>
+        Compare
+      </button>
     </nav>
 
-    <div id="extract-tab" class="tab-content active">
-      <section class="section">
-        <h2>Extract Elements</h2>
+    <main class="popup-content">
 
-        <div class="filters">
-          <input type="text" id="filter-class" placeholder="Filter by class (e.g., btn, card)">
-          <input type="text" id="filter-id" placeholder="Filter by ID (e.g., header, nav)">
-          <input type="text" id="filter-tag" placeholder="Filter by tag (e.g., button, a)">
+      <section id="panel-extract" role="tabpanel" aria-labelledby="tab-extract">
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Filters</h2>
+            <span class="badge-optional">optional</span>
+          </div>
+          <div class="filter-grid">
+            <input class="input" id="filter-class" type="text"
+                   placeholder="Class (e.g. btn)" aria-label="Filter by CSS class">
+            <input class="input" id="filter-id" type="text"
+                   placeholder="ID (e.g. header)" aria-label="Filter by element ID">
+            <input class="input" id="filter-tag" type="text"
+                   placeholder="Tag (e.g. button)" aria-label="Filter by HTML tag">
+          </div>
         </div>
 
-        <button id="extract-btn" class="primary-btn">Extract Elements</button>
+        <button class="btn-primary" id="extract-btn" aria-describedby="extract-progress">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true">
+            <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+          </svg>
+          Extract Elements
+        </button>
 
-        <div id="extract-status" class="status"></div>
+        <div id="extract-progress" class="progress-wrap hidden" role="progressbar"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+             aria-label="Extraction progress">
+          <div class="progress-track">
+            <div class="progress-fill" id="extract-progress-bar"></div>
+          </div>
+          <span class="progress-label" id="extract-progress-label">Scanning…</span>
+        </div>
 
-        <div class="reports-section">
-          <div class="reports-header">
-            <h3>Saved Reports</h3>
-            <div class="reports-actions">
-              <input type="text" id="search-reports" placeholder="Search reports..." class="search-input">
-              <div class="export-picker-row">
-                <select id="export-all-format" class="select-input" aria-label="Export format">
-                  <option value="csv">CSV</option>
-                  <option value="json">JSON</option>
-                </select>
-                <button id="export-all-btn" class="btn-secondary" title="Export all reports">Export All</button>
+        <div class="section-row">
+          <h2 class="section-title">Saved Reports</h2>
+          <div class="section-row-actions">
+            <select class="select select-sm" id="export-all-format" aria-label="Bulk export format">
+              <option value="csv">CSV</option>
+              <option value="json">JSON</option>
+            </select>
+            <button class="btn-ghost btn-sm" id="export-all-btn" title="Export all reports" aria-label="Export all reports">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+              </svg>
+              Export All
+            </button>
+            <button class="btn-destructive btn-sm" id="delete-all-btn" title="Delete all reports" aria-label="Delete all reports">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true">
+                <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="search-wrap">
+          <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+            <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+          </svg>
+          <input class="search-input" id="search-reports" type="search"
+                 placeholder="Search reports… (press /)" aria-label="Search saved reports">
+        </div>
+
+        <div id="reports-list" class="reports-list" role="list" aria-label="Saved reports"></div>
+
+        <div id="reports-empty" class="empty-state hidden" aria-live="polite">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none"
+               stroke="var(--text-tertiary)" stroke-width="1.5" aria-hidden="true">
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+          </svg>
+          <p class="empty-title">No reports yet</p>
+          <p class="empty-hint">Extract elements from a page to create your first report</p>
+        </div>
+
+      </section>
+
+      <section id="panel-compare" role="tabpanel" aria-labelledby="tab-compare" hidden>
+
+        <div class="card">
+          <div class="form-field">
+            <label class="label" for="baseline-report">Baseline</label>
+            <select class="select" id="baseline-report" aria-label="Select baseline report">
+              <option value="">Select report…</option>
+            </select>
+          </div>
+          <div class="vs-row"><span class="vs-label">VS</span></div>
+          <div class="form-field">
+            <label class="label" for="compare-report">Compare</label>
+            <select class="select" id="compare-report" aria-label="Select compare report">
+              <option value="">Select report…</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="mode-grid" role="group" aria-label="Comparison mode">
+          <label class="mode-option">
+            <input type="radio" name="compare-mode" value="static" checked>
+            <div class="mode-card">
+              <svg class="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>
+              </svg>
+              <div>
+                <div class="mode-name">Static</div>
+                <div class="mode-desc">Pixel-perfect diff</div>
               </div>
-              <button id="delete-all-btn" class="btn-danger" title="Delete all reports">Delete All</button>
             </div>
+          </label>
+          <label class="mode-option">
+            <input type="radio" name="compare-mode" value="dynamic">
+            <div class="mode-card">
+              <svg class="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+              </svg>
+              <div>
+                <div class="mode-name">Dynamic</div>
+                <div class="mode-desc">Ignore layout noise</div>
+              </div>
+            </div>
+          </label>
+        </div>
+
+        <button class="btn-primary" id="compare-btn" disabled>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true">
+            <path d="M8 6l4-4 4 4M16 18l-4 4-4-4M12 2v20"/>
+          </svg>
+          Compare Reports
+        </button>
+
+        <div id="compare-progress" class="progress-wrap hidden" role="progressbar"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+             aria-label="Comparison progress">
+          <div class="progress-track">
+            <div class="progress-fill" id="compare-progress-bar"></div>
           </div>
-
-          <div id="storage-stats" class="storage-stats"></div>
-
-          <div id="reports-list"></div>
+          <span class="progress-label" id="compare-progress-label">Matching elements…</span>
         </div>
+
+        <div id="compare-results"></div>
+
       </section>
-    </div>
 
-    <div id="compare-tab" class="tab-content">
-      <section class="section">
-        <h2>Compare Reports</h2>
+    </main>
 
-        <div class="form-group">
-          <label for="baseline-report">Baseline Report:</label>
-          <select id="baseline-report" class="select-input">
-            <option value="">Select baseline report...</option>
-          </select>
-        </div>
-
-        <div class="form-group">
-          <label for="compare-report">Compare Report:</label>
-          <select id="compare-report" class="select-input">
-            <option value="">Select compare report...</option>
-          </select>
-        </div>
-
-        <div class="mode-selection">
-          <label><strong>Comparison Mode:</strong></label>
-          <div class="radio-group">
-            <label>
-              <input type="radio" name="compare-mode" value="static" checked>
-              Static Mode
-            </label>
-            <label>
-              <input type="radio" name="compare-mode" value="dynamic">
-              Dynamic Mode
-            </label>
-          </div>
-        </div>
-
-        <button id="compare-btn" class="primary-btn">Compare Reports</button>
-
-        <div id="compare-status" class="status"></div>
-
-        <div id="compare-results" class="results"></div>
-      </section>
-    </div>
+    <footer class="reports-footer" id="reports-footer" aria-live="polite"></footer>
   </div>
 
   <script src="libs/xlsx.full.min.js"></script>
