@@ -1,16 +1,9 @@
-/**
- * config/defaults.js — Single Source of Truth
- *
- * ALL constants live here. No other file may define numeric thresholds,
- * string lists, or timeout values. Use get('path.to.key') everywhere.
- */
-
 const rawConfig = {
 
   // EXTRACTION 
   extraction: {
-    batchSize:          10,
-    perElementTimeout:  200,    // ms — time budget per element
+    batchSize:          50,     
+    perElementTimeout:  200,    
     maxElements:        10000,
     skipInvisible:      true,
 

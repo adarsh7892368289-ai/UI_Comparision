@@ -1,11 +1,14 @@
 import { get } from '../config/defaults.js';
 
+const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
+
 class ConsoleTransport {
   write(logEntry) {
     const { level, message, timestamp, ...meta } = logEntry;
     const consoleFn = console[level] || console.log;
     const prefix = `[${timestamp}] ${level.toUpperCase()}:`;
     const hasMetadata = Object.keys(meta).length > 0;
+    
     if (hasMetadata) {
       consoleFn(prefix, message, meta);
     } else {
@@ -14,69 +17,63 @@ class ConsoleTransport {
   }
 }
 
-class StorageTransport {
-  constructor() {
-    this.buffer       = [];
-    this.maxEntries   = get('logging.maxEntries', 1000);
-    this.flushBatchSize = 10;
-  }
-
-  async write(logEntry) {
-    this.buffer.push(logEntry);
-    if (this.buffer.length > this.maxEntries) this.buffer.shift();
-    if (this.buffer.length % this.flushBatchSize === 0) await this._flush();
-  }
-
-  async _flush() {
-    try {
-      const storageKey = get('storage.logsKey', 'page_comparator_logs');
-      await chrome.storage.local.set({ [storageKey]: this.buffer });
-    } catch (error) {
-      console.error('[Logger] Failed to persist logs:', error);
-    }
-  }
-
-  async forceFlush() {
-    if (this.buffer.length > 0) await this._flush();
-  }
-
-  getLogs() { return [...this.buffer]; }
-  clear()   { this.buffer = []; }
-}
-
 class Logger {
   constructor() {
-    this.transports    = [];
-    this.level         = 'info';
-    this.context       = {};
-    this.initialized   = false;
-    this._storageTransport = null;
+    this.transports = [];
+    this.level = 'info';
+    this.context = {};
+    this.initialized = false;
   }
 
   init() {
     if (this.initialized) return this;
+    
     this.level = get('logging.level', 'info');
     this.transports.push(new ConsoleTransport());
-    if (get('logging.persistLogs', true)) {
-      this._storageTransport = new StorageTransport();
-      this.transports.push(this._storageTransport);
-    }
     this.initialized = true;
+    
     return this;
   }
 
-  setContext(context) { this.context = { ...this.context, ...context }; }
-  clearContext()      { this.context = {}; }
+  addTransport(transport) {
+    if (!transport || typeof transport.write !== 'function') {
+      throw new Error('Transport must have a write method');
+    }
+    this.transports.push(transport);
+    return this;
+  }
 
-  debug(message, meta = {}) { this._log('debug', message, meta); }
-  info(message, meta = {})  { this._log('info',  message, meta); }
-  warn(message, meta = {})  { this._log('warn',  message, meta); }
-  error(message, meta = {}) { this._log('error', message, meta); }
+  removeTransport(transport) {
+    this.transports = this.transports.filter(t => t !== transport);
+    return this;
+  }
 
-  /**
-   * Log a performance measurement.
-   * Threshold is read from config — no hardcoded 500ms.
-   */
+  setContext(context) {
+    this.context = { ...this.context, ...context };
+    return this;
+  }
+
+  clearContext() {
+    this.context = {};
+    return this;
+  }
+
+  debug(message, meta = {}) {
+    this._log('debug', message, meta);
+  }
+
+  info(message, meta = {}) {
+    this._log('info', message, meta);
+  }
+
+  warn(message, meta = {}) {
+    this._log('warn', message, meta);
+  }
+
+  error(message, meta = {}) {
+    this._log('error', message, meta);
+  }
+
   perf(operation, durationMs, data = {}) {
     const threshold = get('logging.slowOperationThreshold', 500);
     if (durationMs > threshold) {
@@ -88,6 +85,7 @@ class Logger {
 
   _log(level, message, meta) {
     if (this._shouldSkip(level)) return;
+    
     const logEntry = {
       timestamp: new Date().toISOString(),
       level,
@@ -95,40 +93,53 @@ class Logger {
       ...this.context,
       ...meta
     };
-    if (level === 'error') logEntry.stack = new Error().stack;
+
+    if (level === 'error') {
+      logEntry.stack = new Error().stack;
+    }
+
     for (const transport of this.transports) {
-      try { transport.write(logEntry); }
-      catch (err) { console.error('[Logger] Transport failed:', err); }
+      try {
+        transport.write(logEntry);
+      } catch (error) {
+        console.error('[Logger] Transport write failed:', error);
+      }
     }
   }
 
   _shouldSkip(level) {
-    const levels = ['debug', 'info', 'warn', 'error'];
-    return levels.indexOf(level) < levels.indexOf(this.level);
+    const configLevel = LEVELS[this.level] ?? 1;
+    const messageLevel = LEVELS[level] ?? 1;
+    return messageLevel < configLevel;
   }
-
-  exportLogs() { return this._storageTransport?.getLogs() ?? []; }
-  clearLogs()  { this._storageTransport?.clear(); }
 
   async flush() {
-    if (this._storageTransport) await this._storageTransport.forceFlush();
+    for (const transport of this.transports) {
+      if (typeof transport.flush === 'function') {
+        await transport.flush();
+      }
+    }
   }
 
-  async measure(label, fn) {
-    const start = performance.now();
-    try {
-      const result = await fn();
-      this.perf(label, performance.now() - start);
-      return result;
-    } catch (error) {
-      this.error(`${label} failed`, {
-        duration: performance.now() - start,
-        error:    error.message
-      });
-      throw error;
+  getLogs() {
+    for (const transport of this.transports) {
+      if (typeof transport.getLogs === 'function') {
+        return transport.getLogs();
+      }
+    }
+    return [];
+  }
+
+  clear() {
+    for (const transport of this.transports) {
+      if (typeof transport.clear === 'function') {
+        transport.clear();
+      }
     }
   }
 }
 
 const logger = new Logger();
+
 export default logger;
+export { Logger, ConsoleTransport };

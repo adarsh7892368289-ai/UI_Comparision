@@ -3,15 +3,7 @@ import logger from '../../infrastructure/logger.js';
 function calculatePosition(element) {
   try {
     const rect = element.getBoundingClientRect();
-    const scrollX = window.pageXOffset || document.documentElement.scrollLeft;
-    const scrollY = window.pageYOffset || document.documentElement.scrollTop;
-
-    return {
-      x: Math.round(rect.left + scrollX),
-      y: Math.round(rect.top + scrollY),
-      width: Math.round(rect.width),
-      height: Math.round(rect.height)
-    };
+    return calculatePositionFromRect(rect);
   } catch (error) {
     logger.error('Position calculation failed', { 
       tagName: element.tagName,
@@ -21,31 +13,55 @@ function calculatePosition(element) {
   }
 }
 
+function calculatePositionFromRect(rect) {
+  const scrollX = window.pageXOffset || document.documentElement.scrollLeft;
+  const scrollY = window.pageYOffset || document.documentElement.scrollTop;
+
+  return {
+    x:      Math.round(rect.left + scrollX),
+    y:      Math.round(rect.top + scrollY),
+    width:  Math.round(rect.width),
+    height: Math.round(rect.height)
+  };
+}
+
 function getVisibilityData(element) {
   try {
     const computed = window.getComputedStyle(element);
     const rect = element.getBoundingClientRect();
+    return getVisibilityDataFromRect(element, rect, computed);
+  } catch (error) {
+    return {
+      isVisible:  false,
+      display:    'none',
+      visibility: 'hidden',
+      opacity:    '0'
+    };
+  }
+}
 
+function getVisibilityDataFromRect(element, rect, computedStyle) {
+  try {
     const isVisible = (
-      computed.display !== 'none' &&
-      computed.visibility !== 'hidden' &&
-      parseFloat(computed.opacity) > 0 &&
+      computedStyle.display !== 'none' &&
+      computedStyle.visibility !== 'hidden' &&
+      parseFloat(computedStyle.opacity) > 0 &&
       rect.width > 0 &&
       rect.height > 0
     );
 
     return {
       isVisible,
-      display: computed.display,
-      visibility: computed.visibility,
-      opacity: computed.opacity
+      display:    computedStyle.display,
+      visibility: computedStyle.visibility,
+      opacity:    computedStyle.opacity
     };
   } catch (error) {
     return {
-      isVisible: false,
-      display: 'none',
+      isVisible:  false,
+      display:    'none',
       visibility: 'hidden',
-      opacity: '0'
+      opacity:    '0'
     };
   }
 }
@@ -60,4 +76,10 @@ function isInViewport(element) {
   );
 }
 
-export { calculatePosition, getVisibilityData, isInViewport };
+export { 
+  calculatePosition, 
+  calculatePositionFromRect,
+  getVisibilityData,
+  getVisibilityDataFromRect,
+  isInViewport 
+};

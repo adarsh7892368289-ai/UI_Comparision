@@ -1,11 +1,13 @@
 import logger from '../infrastructure/logger.js';
 import storage from '../infrastructure/storage.js';
+import { TabAdapter } from '../infrastructure/chrome-tabs.js';
+import { MessageTypes, sendToTab } from '../infrastructure/chrome-messaging.js';
 
 async function extractFromActiveTab(filters = null) {
   logger.info('Starting extraction from active tab', { filters });
 
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = await TabAdapter.getActiveTab();
     
     if (!tab) {
       throw new Error('No active tab found');
@@ -15,13 +17,21 @@ async function extractFromActiveTab(filters = null) {
       throw new Error('Cannot extract from chrome:// pages');
     }
 
-    const response = await chrome.tabs.sendMessage(tab.id, {
-      action: 'extractElements',
-      filters
-    });
+    const response = await sendToTab(tab.id, MessageTypes.EXTRACT_ELEMENTS, { filters });
+
+    if (!response) {
+      throw new Error('No response from content script - script may not be injected');
+    }
 
     if (!response.success) {
-      throw new Error(response.error || 'Extraction failed');
+      const errorMsg = typeof response.error === 'string' 
+        ? response.error 
+        : response.error?.message || 'Extraction failed';
+      throw new Error(errorMsg);
+    }
+
+    if (!response.data) {
+      throw new Error('Response missing data field');
     }
 
     const report = createReport(response.data);
@@ -33,8 +43,9 @@ async function extractFromActiveTab(filters = null) {
 
     return report;
   } catch (error) {
-    logger.error('Extract workflow failed', { error: error.message });
-    throw error;
+    const errorMsg = error.message || String(error);
+    logger.error('Extract workflow failed', { error: errorMsg, stack: error.stack });
+    throw new Error(errorMsg);
   }
 }
 

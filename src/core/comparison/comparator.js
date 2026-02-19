@@ -1,36 +1,36 @@
-import logger from '../../infrastructure/logger.js';
 import { ElementMatcher } from './matcher.js';
 import { StaticComparisonMode, DynamicComparisonMode } from './comparison-modes.js';
 
 class Comparator {
-  constructor() {
-    this.matcher = new ElementMatcher();
-    this.staticMode = new StaticComparisonMode();
-    this.dynamicMode = new DynamicComparisonMode();
+  constructor({ matcher, modes, logger } = {}) {
+    this.matcher = matcher ?? new ElementMatcher();
+    this.modes = modes ?? {
+      static: new StaticComparisonMode(),
+      dynamic: new DynamicComparisonMode()
+    };
+    this.logger = logger;
   }
 
   compare(baselineReport, compareReport, mode = 'static') {
     const startTime = performance.now();
 
-    logger.info('Starting comparison', {
-      mode,
-      baselineUrl: baselineReport.url,
-      compareUrl: compareReport.url,
-      baselineElements: baselineReport.elements.length,
-      compareElements: compareReport.elements.length
-    });
+    if (this.logger) {
+      this.logger.info('Starting comparison', {
+        mode,
+        baselineUrl: baselineReport.url,
+        compareUrl: compareReport.url,
+        baselineElements: baselineReport.elements.length,
+        compareElements: compareReport.elements.length
+      });
+    }
 
     const matchingResult = this.matcher.matchElements(
       baselineReport.elements,
       compareReport.elements
     );
 
-    let comparisonResult;
-    if (mode === 'dynamic') {
-      comparisonResult = this.dynamicMode.compare(matchingResult.matches);
-    } else {
-      comparisonResult = this.staticMode.compare(matchingResult.matches);
-    }
+    const comparisonMode = this.modes[mode] ?? this.modes.static;
+    const comparisonResult = comparisonMode.compare(matchingResult.matches);
 
     const duration = performance.now() - startTime;
 
@@ -78,11 +78,13 @@ class Comparator {
       timestamp: new Date().toISOString()
     };
 
-    logger.info('Comparison complete', {
-      duration: Math.round(duration),
-      matched: matchingResult.matches.length,
-      differences: comparisonResult.summary.totalDifferences
-    });
+    if (this.logger) {
+      this.logger.info('Comparison complete', {
+        duration: Math.round(duration),
+        matched: matchingResult.matches.length,
+        differences: comparisonResult.summary.totalDifferences
+      });
+    }
 
     return finalResult;
   }

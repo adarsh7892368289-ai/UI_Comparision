@@ -1,5 +1,5 @@
 import { get } from '../../config/defaults.js';
-import { NormalizerEngine } from '../normalization/normalizer-engine.js';
+import { normalizerEngine } from '../normalization/normalizer-engine.js';
 
 const DIFF_TYPES = {
   UNCHANGED: 'unchanged',
@@ -19,7 +19,7 @@ const PROPERTY_CATEGORIES = {
 
 class PropertyDiffer {
   constructor() {
-    this.normalizer = new NormalizerEngine();
+    this.normalizer = normalizerEngine;
 
     this._categories = {
       layout:     new Set(get('comparison.propertyCategories.layout')),

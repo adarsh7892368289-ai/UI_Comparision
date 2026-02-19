@@ -4,11 +4,25 @@ import logger from '../../infrastructure/logger.js';
 function collectStyles(element) {
   try {
     const computed = window.getComputedStyle(element);
+    return collectStylesFromComputed(computed);
+  } catch (error) {
+    logger.error('Style collection failed', { 
+      tagName: element.tagName,
+      error: error.message 
+    });
+    return {};
+  }
+}
+
+function collectStylesFromComputed(computedStyle) {
+  try {
+    if (!computedStyle) return {};
+    
     const properties = get('extraction.cssProperties', []);
     const styles = {};
 
     for (const prop of properties) {
-      const value = computed.getPropertyValue(prop);
+      const value = computedStyle.getPropertyValue(prop);
       if (value) {
         styles[prop] = value;
       }
@@ -16,10 +30,7 @@ function collectStyles(element) {
 
     return styles;
   } catch (error) {
-    logger.error('Style collection failed', { 
-      tagName: element.tagName,
-      error: error.message 
-    });
+    logger.error('Style collection from computed failed', { error: error.message });
     return {};
   }
 }
@@ -41,4 +52,4 @@ function isElementVisible(element) {
   }
 }
 
-export { collectStyles, isElementVisible };
+export { collectStyles, collectStylesFromComputed, isElementVisible };

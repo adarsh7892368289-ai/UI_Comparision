@@ -13,6 +13,14 @@ async function compareReports(baselineId, compareId, mode = 'static') {
       throw new Error('One or both reports not found');
     }
 
+    if (!baseline.elements || !Array.isArray(baseline.elements)) {
+      throw new Error('Baseline report missing elements array');
+    }
+
+    if (!compare.elements || !Array.isArray(compare.elements)) {
+      throw new Error('Compare report missing elements array');
+    }
+
     const comparator = new Comparator();
     const result = await comparator.compare(baseline, compare, mode);
 
@@ -24,8 +32,9 @@ async function compareReports(baselineId, compareId, mode = 'static') {
 
     return result;
   } catch (error) {
-    logger.error('Compare workflow failed', { error: error.message });
-    throw error;
+    const errorMsg = error.message || String(error);
+    logger.error('Compare workflow failed', { error: errorMsg, stack: error.stack });
+    throw new Error(errorMsg);
   }
 }
 

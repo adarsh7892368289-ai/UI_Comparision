@@ -1,5 +1,6 @@
 import logger from '../infrastructure/logger.js';
 import { errorTracker, ERROR_CODES } from '../infrastructure/error-tracker.js';
+import { MessageTypes } from '../infrastructure/chrome-messaging.js';
 import { extract } from '../core/extraction/extractor.js';
 
 logger.init();
@@ -15,11 +16,13 @@ logger.info('Content script initialized', {
   title: document.title 
 });
 
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  logger.debug('Content script received message', { action: request.action });
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const { type, ...payload } = message;
+  
+  logger.debug('Content script received message', { type });
 
-  if (request.action === 'extractElements') {
-    handleExtraction(request.filters)
+  if (type === MessageTypes.EXTRACT_ELEMENTS) {
+    handleExtraction(payload.filters)
       .then(report => {
         logger.info('Extraction completed', { 
           totalElements: report.totalElements,
@@ -41,14 +44,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         
         sendResponse({ 
           success: false, 
-          error: error.message 
+          error: error.message || String(error)
         });
       });
     
     return true;
   }
 
-  sendResponse({ success: false, error: 'Unknown action' });
+  logger.warn('Unknown message type', { type });
+  sendResponse({ success: false, error: `Unknown message type: ${type}` });
   return false;
 });
 

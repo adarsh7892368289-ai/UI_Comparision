@@ -1,5 +1,5 @@
 import { get } from '../config/defaults.js';
-import logger from './logger.js';
+
 import { errorTracker, ERROR_CODES } from './error-tracker.js';
 
 class Storage {
@@ -42,7 +42,7 @@ class Storage {
       await chrome.storage.local.remove(key);
       return { success: true };
     } catch (error) {
-      logger.error('Storage delete failed', { key, error: error.message });
+      console.error('Storage delete failed', { key, error: error.message });
       return { success: false };
     }
   }
@@ -52,7 +52,7 @@ class Storage {
       await chrome.storage.local.clear();
       return { success: true };
     } catch (error) {
-      logger.error('Storage clear failed', { error: error.message });
+      console.error('Storage clear failed', { error: error.message });
       return { success: false };
     }
   }
@@ -73,7 +73,7 @@ class Storage {
         await Promise.all(
           evicted.map(r => chrome.storage.local.remove(`${baseKey}_el_${r.id}`))
         );
-        logger.warn('Evicted old reports', { count: evicted.length });
+        console.warn('Evicted old reports', { count: evicted.length });
       }
 
       const [metaResult, elResult] = await Promise.all([
@@ -86,7 +86,7 @@ class Storage {
 
       return { success: true, id: report.id };
     } catch (error) {
-      logger.error('Failed to save report', { error: error.message });
+      console.error('Failed to save report', { error: error.message });
       return { success: false, error: error.message };
     }
   }
@@ -120,7 +120,7 @@ class Storage {
 
       return { success: true };
     } catch (error) {
-      logger.error('Failed to delete report', { id, error: error.message });
+      console.error('Failed to delete report', { id, error: error.message });
       return { success: false, error: error.message };
     }
   }
@@ -132,12 +132,12 @@ class Storage {
       const percentUsed = (bytesInUse / quota) * 100;
 
       if (percentUsed > 80) {
-        logger.warn('Storage quota warning', { bytesInUse, quota, percentUsed: percentUsed.toFixed(1) });
+        console.warn('Storage quota warning', { bytesInUse, quota, percentUsed: percentUsed.toFixed(1) });
       }
 
       return { bytesInUse, quota, percentUsed, available: quota - bytesInUse };
     } catch (error) {
-      logger.error('Failed to check quota', { error: error.message });
+      console.error('Failed to check quota', { error: error.message });
       return null;
     }
   }
