@@ -24,16 +24,17 @@ const REQUIRED_PATHS = [
   'selectors.xpath.perStrategyTimeout',
   'selectors.xpath.totalTimeout',
   'selectors.xpath.enableFallback',
+  'selectors.xpath.parallelExecution',
   'selectors.css.perStrategyTimeout',
   'selectors.css.totalTimeout',
   'selectors.css.enableFallback',
+  'selectors.css.parallelExecution',
   'selectors.minRobustnessScore',
 
   // Comparison — tolerances
   'comparison.tolerances.color',
   'comparison.tolerances.size',
   'comparison.tolerances.opacity',
-  'comparison.matching.confidenceThreshold',
   'comparison.matching.positionTolerance',
   'comparison.confidence.high',
   'comparison.confidence.medium',

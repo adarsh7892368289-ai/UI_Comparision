@@ -1,9 +1,7 @@
 import logger from '../infrastructure/logger.js';
-import storage from '../infrastructure/storage.js';
 import { popupState } from './popup-state.js';
 import { TabAdapter } from '../infrastructure/chrome-tabs.js';
 import { sendToBackground, MessageTypes } from '../infrastructure/chrome-messaging.js';
-import { getCachedComparison } from '../application/compare-workflow.js';
 import {
   loadAllReports, deleteReport, deleteAllReports,
   exportReportAsJson, exportReportAsCsv,
@@ -12,7 +10,6 @@ import {
 import { ExportManager, EXPORT_FORMATS } from '../core/export/export-manager.js';
 
 logger.init();
-storage.init();
 logger.setContext({ script: 'popup' });
 
 const exportManager = new ExportManager();
@@ -195,23 +192,68 @@ function hostFromUrl(url) {
   try { return new URL(url).hostname; } catch { return url; }
 }
 
+const EXTRACTION_TIMEOUT_MS = 300_000;
+const EXTRACTION_POLL_INTERVAL_MS = 3_000;
+const EXTRACTION_POLL_MAX_WAIT_MS = 360_000;
+
+async function pollForNewReport(knownIds, maxWaitMs = EXTRACTION_POLL_MAX_WAIT_MS) {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, EXTRACTION_POLL_INTERVAL_MS));
+    try {
+      const reports = await loadAllReports();
+      const newReport = reports.find(r => !knownIds.has(r.id));
+      if (newReport) return newReport;
+    } catch {
+      // continue polling
+    }
+  }
+  return null;
+}
+
 async function handleExtraction() {
   const btn = document.getElementById('extract-btn');
-  const sim = Progress.simulate('extract', 5000);
+  const sim = Progress.simulate('extract', EXTRACTION_TIMEOUT_MS * 0.6, [
+    { at: 5,  label: 'Scanning DOM…'           },
+    { at: 20, label: 'Processing elements…'     },
+    { at: 45, label: 'Generating selectors…'    },
+    { at: 70, label: 'Normalizing styles…'      },
+    { at: 88, label: 'Saving report…'           },
+  ]);
   btn.disabled = true;
 
   try {
-    const response = await sendToBackground(MessageTypes.EXTRACT_ELEMENTS, { filters: getFilters() });
-    const report   = response.data.report;
+    const response = await sendToBackground(
+      MessageTypes.EXTRACT_ELEMENTS,
+      { filters: getFilters() },
+      EXTRACTION_TIMEOUT_MS,
+    );
+    const report = response.data.report;
     sim.done();
     popupState.dispatch('EXTRACTION_COMPLETE', { report });
     await refreshReports();
     Toast.success(`Extracted ${report.totalElements} elements in ${report.duration}ms`);
   } catch (err) {
     sim.done();
-    popupState.dispatch('EXTRACTION_FAILED', { error: err.message });
-    Toast.error(err.message);
-    logger.error('Extraction failed', { error: err.message });
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    const isTimeout = errorMsg.toLowerCase().includes('timeout');
+
+    if (isTimeout) {
+      Toast.info('Extraction is taking longer than expected — waiting for results…');
+      const knownIds = new Set(popupState.get().reports.map(r => r.id));
+      const report = await pollForNewReport(knownIds);
+      if (report) {
+        popupState.dispatch('EXTRACTION_COMPLETE', { report });
+        await refreshReports();
+        Toast.success(`Extracted ${report.totalElements} elements`);
+        btn.disabled = false;
+        return;
+      }
+    }
+
+    popupState.dispatch('EXTRACTION_FAILED', { error: errorMsg });
+    Toast.error(errorMsg);
+    logger.error('Extraction failed', { error: errorMsg });
   } finally {
     btn.disabled = false;
   }
@@ -530,28 +572,34 @@ async function tryLoadCachedComparison() {
   const state = popupState.get();
   if (!state.selectedBaseline || !state.selectedCompare) return;
 
-  const cached = await getCachedComparison(
-    state.selectedBaseline,
-    state.selectedCompare,
-    state.compareMode
-  );
-
-  if (cached) {
-    const reconstructed = {
-      baseline:         cached.baseline,
-      compare:          cached.compare,
-      mode:             cached.mode,
-      matching:         cached.matching,
-      comparison:       { summary: cached.summary, results: [] },
-      unmatchedElements: cached.unmatchedElements,
-      duration:         cached.duration,
-      timestamp:        cached.timestamp,
-    };
-    popupState.dispatch('COMPARISON_COMPLETE', {
-      result:   reconstructed,
-      cachedAt: cached.timestamp,
+  try {
+    const response = await sendToBackground(MessageTypes.LOAD_CACHED_COMPARISON, {
+      baselineId: state.selectedBaseline,
+      compareId:  state.selectedCompare,
+      mode:       state.compareMode,
     });
-  } else {
+    const cached = response?.data?.cached;
+
+    if (cached) {
+      const reconstructed = {
+        baseline:          cached.baseline,
+        compare:           cached.compare,
+        mode:              cached.mode,
+        matching:          cached.matching,
+        comparison:        { summary: cached.summary, results: [] },
+        unmatchedElements: cached.unmatchedElements,
+        duration:          cached.duration,
+        timestamp:         cached.timestamp,
+      };
+      popupState.dispatch('COMPARISON_COMPLETE', {
+        result:   reconstructed,
+        cachedAt: cached.timestamp,
+      });
+    } else {
+      popupState.dispatch('RESET_COMPARISON', {});
+    }
+  } catch (err) {
+    logger.warn('Failed to load cached comparison', { error: err instanceof Error ? err.message : String(err) });
     popupState.dispatch('RESET_COMPARISON', {});
   }
 }

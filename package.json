@@ -2,14 +2,7 @@
   "name": "web-page-element-comparator",
   "version": "1.0.0",
   "description": "Chrome extension for extracting and comparing web page elements",
-  "scripts": {
-    "setup": "npm install",
-    "clean": "rm -rf node_modules package-lock.json",
-    "build": "webpack"
-  },
-  "dependencies": {
-    "xlsx": "^0.18.5"
-  },
+  "type": "module",
   "keywords": [
     "chrome-extension",
     "web-scraping",
@@ -20,9 +13,55 @@
   ],
   "author": "",
   "license": "MIT",
+  "scripts": {
+    "build":          "webpack --config webpack.config.cjs",
+    "build:dev":      "webpack --config webpack.config.cjs --mode development",
+    "watch":          "webpack --config webpack.config.cjs --watch --mode development",
+    "test":           "node --experimental-vm-modules node_modules/.bin/jest --coverage",
+    "test:watch":     "node --experimental-vm-modules node_modules/.bin/jest --watch",
+    "test:unit":      "node --experimental-vm-modules node_modules/.bin/jest --testPathPattern=unit",
+    "lint":           "eslint src/ --ext .js",
+    "lint:fix":       "eslint src/ --ext .js --fix",
+    "check:circular": "madge --circular --extensions js src/"
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  },
   "devDependencies": {
-    "copy-webpack-plugin": "^13.0.1",
-    "webpack": "^5.105.0",
-    "webpack-cli": "^6.0.1"
+    "webpack":                "^5.105.0",
+    "webpack-cli":            "^6.0.1",
+    "copy-webpack-plugin":    "^13.0.1",
+    "jest":                   "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "@jest/globals":          "^29.7.0",
+    "eslint":                 "^8.57.0",
+    "madge":                  "^6.1.0"
+  },
+  "jest": {
+    "testEnvironment": "jsdom",
+    "extensionsToTreatAsEsm": [".js"],
+    "moduleNameMapper": {
+      "^(\\.{1,2}/.*)\\.js$": "$1"
+    },
+    "transform": {},
+    "testMatch": [
+      "**/tests/**/*.test.js",
+      "**/__tests__/**/*.test.js"
+    ],
+    "coverageDirectory": "coverage",
+    "coverageThreshold": {
+      "global": {
+        "lines":      60,
+        "functions":  60,
+        "branches":   50,
+        "statements": 60
+      }
+    },
+    "collectCoverageFrom": [
+      "src/core/**/*.js",
+      "src/config/**/*.js",
+      "src/shared/**/*.js",
+      "!src/**/*.test.js"
+    ]
   }
 }

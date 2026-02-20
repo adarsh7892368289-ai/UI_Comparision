@@ -56,12 +56,14 @@ const rawConfig = {
     xpath: {
       perStrategyTimeout: 80,     
       totalTimeout:       500,
-      enableFallback:     true
+      enableFallback:     true,
+      parallelExecution:  true
     },
     css: {
       perStrategyTimeout: 50,     
       totalTimeout:       300,
-      enableFallback:     true
+      enableFallback:     true,
+      parallelExecution:  true
     },
     minRobustnessScore: 50
   },
@@ -196,7 +198,7 @@ const rawConfig = {
       default:       5000,   
       extraction:    200,    
       tabLoad:       30000,  
-      contentScript: 60000   
+      contentScript: 300000  
     }
   },
 

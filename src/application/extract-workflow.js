@@ -2,6 +2,7 @@ import logger from '../infrastructure/logger.js';
 import storage from '../infrastructure/storage.js';
 import { TabAdapter } from '../infrastructure/chrome-tabs.js';
 import { MessageTypes, sendToTab } from '../infrastructure/chrome-messaging.js';
+import { get } from '../config/defaults.js';
 
 async function extractFromActiveTab(filters = null) {
   logger.info('Starting extraction from active tab', { filters });
@@ -17,7 +18,7 @@ async function extractFromActiveTab(filters = null) {
       throw new Error('Cannot extract from chrome:// pages');
     }
 
-    const response = await sendToTab(tab.id, MessageTypes.EXTRACT_ELEMENTS, { filters });
+    const response = await sendToTab(tab.id, MessageTypes.EXTRACT_ELEMENTS, { filters }, get('infrastructure.timeout.contentScript'));
 
     if (!response) {
       throw new Error('No response from content script - script may not be injected');

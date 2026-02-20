@@ -6,12 +6,13 @@ import { generateSelectors } from '../selectors/selector-engine.js';
 import { collectAttributes } from './attribute-collector.js';
 import { shouldSkipElement } from './element-filters.js';
 import { 
-  calculatePosition, 
   calculatePositionFromRect,
-  getVisibilityData,
   getVisibilityDataFromRect 
 } from './position-calculator.js';
-import { collectStyles, collectStylesFromComputed } from './style-collector.js';
+import { collectStylesFromComputed } from './style-collector.js';
+
+// Max chars stored for textContent per element — prevents bloated reports on text-heavy pages
+const TEXT_CONTENT_MAX_CHARS = 500;
 
 async function extract(filters = null) {
   const perfHandle = performanceMonitor.start('extraction-total');
@@ -28,9 +29,16 @@ async function extract(filters = null) {
     elements = elements.filter(el => !shouldSkipElement(el));
 
     if (get('extraction.skipInvisible')) {
-      elements = elements.filter(el => {
-        const computed = window.getComputedStyle(el);
-        return computed.display !== 'none' && computed.visibility !== 'hidden';
+      // Batch ALL getComputedStyle reads in one synchronous pass to avoid
+      // N individual forced-layout reflows before the main batchDOMReads.
+      // Reading all at once lets the browser resolve layout a single time.
+      const computedStyles = elements.map(el => {
+        try { return window.getComputedStyle(el); }
+        catch (_) { return null; }
+      });
+      elements = elements.filter((_, i) => {
+        const cs = computedStyles[i];
+        return cs && cs.display !== 'none' && cs.visibility !== 'hidden';
       });
     }
 
@@ -145,8 +153,8 @@ function yieldToMain() {
 }
 
 async function _extractBatched(elements) {
-  const batchSize      = get('extraction.batchSize', 50);
-  const perElementTimeout = get('extraction.perElementTimeout', 200);
+  const batchSize         = get('extraction.batchSize');
+  const perElementTimeout = get('extraction.perElementTimeout');
   const results        = [];
 
   logger.debug('Starting batched DOM reads...');
@@ -196,7 +204,7 @@ async function _extractData(element, index, domReading) {
     tagName:     element.tagName,
     elementId:   element.id || null,
     className:   element.className || '',
-    textContent: (element.textContent || '').trim().substring(0, 500),
+    textContent: (element.textContent || '').trim().substring(0, TEXT_CONTENT_MAX_CHARS),
     selectors,
     styles,
     attributes,

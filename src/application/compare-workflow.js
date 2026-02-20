@@ -34,7 +34,7 @@ async function compareReports(baselineId, compareId, mode = 'static') {
       duration:    result.duration,
     });
 
-    _persistComparison(result, baselineId, compareId, mode);
+    await _persistComparison(result, baselineId, compareId, mode);
 
     return result;
   } catch (error) {
@@ -44,7 +44,7 @@ async function compareReports(baselineId, compareId, mode = 'static') {
   }
 }
 
-function _persistComparison(result, baselineId, compareId, mode) {
+async function _persistComparison(result, baselineId, compareId, mode) {
   const id      = crypto.randomUUID();
   const pairKey = buildPairKey(baselineId, compareId, mode);
 
@@ -71,9 +71,15 @@ function _persistComparison(result, baselineId, compareId, mode) {
     })
   );
 
-  storage.saveComparison(meta, slimResults).catch(err => {
-    logger.warn('Failed to persist comparison', { error: err.message });
-  });
+  storage.saveComparison(meta, slimResults)
+    .then(saved => {
+      if (!saved.success) {
+        logger.warn('Failed to persist comparison', { error: saved.error });
+      }
+    })
+    .catch(err => {
+      logger.warn('Failed to persist comparison', { error: err.message });
+    });
 }
 
 async function getCachedComparison(baselineId, compareId, mode) {

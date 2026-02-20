@@ -103,6 +103,22 @@ const transitions = {
     selectedCompare: state.selectedCompare === id ? null : state.selectedCompare
   }),
 
+  DELETE_ALL_REPORTS: (state) => ({
+    ...state,
+    reports: [],
+    selectedBaseline: null,
+    selectedCompare: null,
+    comparisonResult: null,
+    comparisonProgress: 0,
+    comparisonLabel: '',
+    cachedAt: null
+  }),
+
+  COMPARISON_CACHED: (state, { _pairKey, cachedAt }) => ({
+    ...state,
+    cachedAt
+  }),
+
   BASELINE_SELECTED: (state, { id }) => ({
     ...state,
     selectedBaseline: id

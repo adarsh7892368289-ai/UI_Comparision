@@ -21,9 +21,14 @@ const DYNAMIC_FILTER = {
 };
 
 class BaseComparisonMode {
-  constructor() {
-    this.differ           = new PropertyDiffer();
-    this.severityAnalyzer = new SeverityAnalyzer();
+  /**
+   * @param {Object} [deps]
+   * @param {PropertyDiffer}    [deps.differ]           - injectable for testing
+   * @param {SeverityAnalyzer}  [deps.severityAnalyzer] - injectable for testing
+   */
+  constructor({ differ, severityAnalyzer } = {}) {
+    this.differ           = differ           ?? new PropertyDiffer();
+    this.severityAnalyzer = severityAnalyzer ?? new SeverityAnalyzer();
   }
 
   _compareMatch(match, filter) {
@@ -117,6 +122,8 @@ class BaseComparisonMode {
 }
 
 class StaticComparisonMode extends BaseComparisonMode {
+  constructor(deps = {}) { super(deps); }
+
   compare(matches) {
     const results = matches.map(match => this._compareMatch(match, STATIC_FILTER));
     return { mode: 'static', results, summary: this._generateSummary(results, 'static') };
@@ -124,6 +131,8 @@ class StaticComparisonMode extends BaseComparisonMode {
 }
 
 class DynamicComparisonMode extends BaseComparisonMode {
+  constructor(deps = {}) { super(deps); }
+
   compare(matches) {
     const results = matches.map(match => this._compareMatch(match, DYNAMIC_FILTER));
     return { mode: 'dynamic', results, summary: this._generateSummary(results, 'dynamic') };

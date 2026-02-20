@@ -3,7 +3,10 @@ import logger from '../infrastructure/logger.js';
 import storage from '../infrastructure/storage.js';
 import { isValidMeta, isValidReport, sanitizeReport } from '../shared/report-validator.js';
 
-const UTF8_BOM = '\uFEFF';
+const UTF8_BOM             = '\uFEFF';
+const CSV_TEXT_MAX_CHARS   = 200;   // textContent column truncation in CSV exports
+const URL_REVOKE_DELAY_MS  = 1000;  // ms to wait before revoking object URL after download
+const ISO_DATE_SLICE_END   = 19;    // 'YYYY-MM-DDTHH:mm:ss' → 19 chars, drop ms + Z
 
 async function loadAllReports() {
   try {
@@ -137,7 +140,15 @@ async function exportAllReportsAsJson() {
   try {
     const metas = await storage.loadReports();
     if (metas.length === 0) return { success: false, error: 'No reports to export' };
-    const full = await Promise.all(metas.map(m => getReportById(m.id)));
+
+    // Sequential load: prevents loading all element arrays into memory simultaneously.
+    // Promise.all on N reports × 10k elements each = catastrophic memory spike.
+    const full = [];
+    for (const meta of metas) {
+      const report = await getReportById(meta.id);
+      if (report) full.push(report);
+    }
+
     _triggerDownload(JSON.stringify(full, null, 2), 'application/json', `all-reports-${Date.now()}.json`);
     logger.info('All reports exported as JSON', { count: full.length });
     return { success: true, count: full.length };
@@ -165,13 +176,19 @@ async function exportAllReportsAsCsv() {
   try {
     const metas = await storage.loadReports();
     if (metas.length === 0) return { success: false, error: 'No reports to export' };
-    const full = await Promise.all(metas.map(m => getReportById(m.id)));
-    const sections = full.map((report, i) =>
-      `## ===== REPORT ${i + 1} of ${full.length} =====\n` + _buildReportCsv(report)
-    );
+
+    // Sequential: see exportAllReportsAsJson for memory rationale
+    const sections = [];
+    for (let i = 0; i < metas.length; i++) {
+      const report = await getReportById(metas[i].id);
+      if (report) {
+        sections.push(`## ===== REPORT ${i + 1} of ${metas.length} =====\n` + _buildReportCsv(report));
+      }
+    }
+
     _triggerDownload(UTF8_BOM + sections.join('\n\n'), 'text/csv;charset=utf-8;', `all-reports-${_safeTimestamp()}.csv`);
-    logger.info('All reports exported as CSV', { count: full.length });
-    return { success: true, count: full.length };
+    logger.info('All reports exported as CSV', { count: sections.length });
+    return { success: true, count: sections.length };
   } catch (error) {
     logger.error('Failed to export all reports as CSV', { error: error.message });
     return { success: false, error: error.message };
@@ -218,7 +235,7 @@ function _buildReportCsv(report) {
       el.tagName,
       el.elementId ?? '',
       el.className ?? '',
-      (el.textContent ?? '').substring(0, 200),
+      (el.textContent ?? '').substring(0, CSV_TEXT_MAX_CHARS),
       el.selectors?.xpath          ?? '',
       el.selectors?.xpathConfidence ?? 0,
       el.selectors?.xpathStrategy  ?? '',
@@ -262,11 +279,11 @@ function _triggerDownload(content, mimeType, filename) {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setTimeout(() => URL.revokeObjectURL(url), URL_REVOKE_DELAY_MS);
 }
 
 function _safeTimestamp() {
-  return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  return new Date().toISOString().replace(/[:.]/g, '-').slice(0, ISO_DATE_SLICE_END);
 }
 
 export {

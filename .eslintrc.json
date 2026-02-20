@@ -1,20 +1,42 @@
 {
   "env": {
     "browser": true,
-    "es2021": true,
+    "es2022": true,
     "webextensions": true
   },
-  "extends": "eslint:recommended",
   "parserOptions": {
     "ecmaVersion": 2022,
     "sourceType": "module"
   },
   "rules": {
-    "indent": ["error", 2],
-    "linebreak-style": ["error", "unix"],
-    "quotes": ["error", "single"],
-    "semi": ["error", "always"],
-    "no-unused-vars": "warn",
-    "no-console": "off"
-  }
+    "no-magic-numbers": [
+      "warn",
+      {
+        "ignore": [-1, 0, 1, 2, 100],
+        "ignoreArrayIndexes": true,
+        "ignoreDefaultValues": true,
+        "enforceConst": true
+      }
+    ],
+    "no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
+    "no-console": "off",
+    "eqeqeq": ["error", "always", { "null": "ignore" }],
+    "no-var": "error",
+    "prefer-const": "error"
+  },
+  "overrides": [
+    {
+      "files": ["src/config/defaults.js", "src/config/validator.js"],
+      "rules": {
+        "no-magic-numbers": "off"
+      }
+    },
+    {
+      "files": ["tests/**/*.test.js"],
+      "env": { "jest": true },
+      "rules": {
+        "no-magic-numbers": "off"
+      }
+    }
+  ]
 }
