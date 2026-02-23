@@ -16,11 +16,15 @@ export const MessageTypes = Object.freeze({
   DELETE_REPORT:         'deleteReport',
   DELETE_ALL_REPORTS:          'deleteAllReports',
   LOAD_CACHED_COMPARISON:      'loadCachedComparison',
+  EXPORT_COMPARISON_HTML:      'exportComparisonHtml',
   
   GET_STATE:             'getState',
   WRITE_PROGRESS:        'writeProgress',
   WRITE_COMPLETE:        'writeComplete',
   WRITE_ERROR:           'writeError',
+
+  VISUAL_PREPARE:        'VISUAL_PREPARE',
+  VISUAL_REVERT:         'VISUAL_REVERT'
 });
 
 export function sendToBackground(type, payload = {}, timeoutMs = 30000) {

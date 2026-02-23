@@ -85,13 +85,13 @@ class ElementMatcher {
         if (v) { testAttr.set(`${attr}::${v}`, i); break; }
       }
 
-      if (el.elementId) byId.set(el.elementId, i);
-      if (el.selectors?.css)   byCss.set(el.selectors.css, i);
-      if (el.selectors?.xpath) byXPath.set(el.selectors.xpath, i);
+      if (el.elementId) {byId.set(el.elementId, i);}
+      if (el.selectors?.css)   {byCss.set(el.selectors.css, i);}
+      if (el.selectors?.xpath) {byXPath.set(el.selectors.xpath, i);}
 
       if (el.position?.x != null && el.position?.y != null) {
         const key = this._gridKey(el.position.x, el.position.y, el.tagName, cellSize);
-        if (!grid.has(key)) grid.set(key, []);
+        if (!grid.has(key)) {grid.set(key, []);}
         grid.get(key).push({ index: i, x: el.position.x, y: el.position.y });
       }
     }
@@ -102,7 +102,7 @@ class ElementMatcher {
   _lookupMatch(base, { testAttr, byId, byCss, byXPath, grid, cellSize }, usedCompare) {
     for (const attr of this.priorityAttrs) {
       const v = base.attributes?.[attr];
-      if (!v) continue;
+      if (!v) {continue;}
       const idx = testAttr.get(`${attr}::${v}`);
       if (idx != null && !usedCompare.has(idx)) {
         return { index: idx, confidence: CONFIDENCE.TEST_ATTR, strategy: MATCH_STRATEGIES.TEST_ATTRIBUTE };
@@ -152,10 +152,10 @@ class ElementMatcher {
       for (let dy = -1; dy <= 1; dy++) {
         const key      = `${cx + dx}:${cy + dy}:${tag}`;
         const bucket   = grid.get(key);
-        if (!bucket) continue;
+        if (!bucket) {continue;}
 
         for (const { index, x, y } of bucket) {
-          if (usedCompare.has(index)) continue;
+          if (usedCompare.has(index)) {continue;}
           const dist = Math.hypot(bx - x, by - y);
           if (dist < this.positionTolerance && dist < bestDist) {
             bestDist = dist;
@@ -165,7 +165,7 @@ class ElementMatcher {
       }
     }
 
-    if (bestIdx === null) return null;
+    if (bestIdx === null) {return null;}
 
     const confidence = Math.max(0.1, 1 - bestDist / this.positionTolerance) * CONFIDENCE.POSITION;
     return { index: bestIdx, confidence, strategy: MATCH_STRATEGIES.POSITION };

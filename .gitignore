@@ -45,3 +45,6 @@ coverage/
 .cache/
 .tmp/
 *.bak
+
+# Documentation
+UI_Comparison_Engineering_Spec_v2.md

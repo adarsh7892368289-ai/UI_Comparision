@@ -7,7 +7,7 @@ class Storage {
   }
 
   init() {
-    if (this.initialized) return this;
+    if (this.initialized) {return this;}
     this.initialized = true;
     return this;
   }

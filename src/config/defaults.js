@@ -343,14 +343,14 @@ function get(path, fallback) {
 
   for (const seg of segments) {
     if (current === undefined || current === null) {
-      if (fallback !== undefined) return fallback;
+      if (fallback !== undefined) {return fallback;}
       throw new Error(`[Config] Path not found: "${path}" (failed at "${seg}")`);
     }
     current = current[seg];
   }
 
   if (current === undefined) {
-    if (fallback !== undefined) return fallback;
+    if (fallback !== undefined) {return fallback;}
     throw new Error(`[Config] Path not found: "${path}"`);
   }
 

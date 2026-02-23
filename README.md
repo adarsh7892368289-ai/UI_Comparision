@@ -324,3 +324,93 @@ Built with:
 - Multi-format export (Excel, CSV, HTML, JSON)
 - Report management (search, bulk operations)
 - Production-ready error handling
+
+
+UI_Comparison Project Structure
+==============================
+
+.eslintrc.json
+.gitignore
+.prettierrc
+manifest.json
+package.json
+README.md
+webpack.config.cjs
+icons/
+  icon16.png
+  icon48.png
+  icon128.png
+libs/
+  DOWNLOAD_XLSX_LIBRARY.txt
+  xlsx.full.min.js
+src/
+  application/
+    background.js
+    compare-workflow.js
+    extract-workflow.js
+    report-manager.js
+    visual-workflow.js
+  config/
+    defaults.js
+    validator.js
+  core/
+    comparison/
+      comparator.js
+      comparison-modes.js
+      differ.js
+      matcher.js
+      pixel-differ.js
+      severity-analyzer.js
+    export/
+      csv-exporter.js
+      excel-exporter.js
+      export-manager.js
+      html-exporter.js
+      json-exporter.js
+      report-transformer.js
+    extraction/
+      attribute-collector.js
+      element-filters.js
+      extractor.js
+      position-calculator.js
+      style-collector.js
+      visual-capture.js
+    normalization/
+      cache.js
+      color-normalizer.js
+      font-normalizer.js
+      normalizer-engine.js
+      shorthand-expander.js
+      unit-normalizer.js
+    selectors/
+      selector-engine.js
+      css/
+        generator.js
+        strategies.js
+        validator.js
+      xpath/
+        generator.js
+        strategies.js
+        validator.js
+    visual/
+  infrastructure/
+    chrome-messaging.js
+    chrome-tabs.js
+    error-tracker.js
+    idb-repository.js
+    image-processor.js
+    logger.js
+    performance-monitor.js
+    safe-execute.js
+    storage-transport.js
+    storage.js
+  presentation/
+    content.js
+    popup-state.js
+    popup.css
+    popup.html
+    popup.js
+  shared/
+    color-utils.js
+    dom-utils.js
+    report-validator.js

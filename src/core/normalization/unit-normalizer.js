@@ -16,7 +16,7 @@ function pct(value) {
 const CONTEXT_DEPENDENT_UNITS = ['em', 'rem', '%', 'vw', 'vh', 'vmin', 'vmax'];
 
 function isContextDependent(value) {
-  if (!value || typeof value !== 'string') return false;
+  if (!value || typeof value !== 'string') {return false;}
   
   const trimmed = value.trim().toLowerCase();
   return CONTEXT_DEPENDENT_UNITS.some(unit => trimmed.includes(unit));

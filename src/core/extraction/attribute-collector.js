@@ -11,7 +11,7 @@ function _buildFrameworkPatterns() {
 
 let _frameworkPatterns = null;
 function getFrameworkPatterns() {
-  if (!_frameworkPatterns) _frameworkPatterns = _buildFrameworkPatterns();
+  if (!_frameworkPatterns) {_frameworkPatterns = _buildFrameworkPatterns();}
   return _frameworkPatterns;
 }
 
@@ -56,7 +56,7 @@ function getPriorityAttributes(element) {
 
   for (const attrName of allAttrs) {
     const value = element.getAttribute(attrName);
-    if (value !== null) attributes[attrName] = value;
+    if (value !== null) {attributes[attrName] = value;}
   }
 
   return attributes;

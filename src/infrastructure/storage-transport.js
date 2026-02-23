@@ -22,7 +22,7 @@ class StorageTransport {
   }
 
   _scheduleFlush() {
-    if (this.flushTimer) return;
+    if (this.flushTimer) {return;}
     
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
@@ -31,7 +31,7 @@ class StorageTransport {
   }
 
   async flush() {
-    if (this.buffer.length === 0) return;
+    if (this.buffer.length === 0) {return;}
 
     try {
       const storageKey = get('storage.logsKey', 'page_comparator_logs');

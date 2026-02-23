@@ -2,7 +2,7 @@ import { get } from '../config/defaults.js';
 import { errorTracker, ERROR_CODES } from './error-tracker.js';
 
 const DB_NAME           = 'ui_comparison_db';
-const DB_VERSION        = 2;
+const DB_VERSION        = 3;
 const STORE_REPORTS     = 'reports';
 const STORE_ELEMENTS    = 'elements';
 const STORE_COMPARISONS = 'comparisons';
@@ -41,15 +41,15 @@ class IDBRepository {
   }
 
   _getDB() {
-    if (this._db) return Promise.resolve(this._db);
-    if (this._opening) return this._opening;
+    if (this._db) {return Promise.resolve(this._db);}
+    if (this._opening) {return this._opening;}
 
     this._opening = new Promise((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
 
       request.onupgradeneeded = (event) => {
         const db         = event.target.result;
-        const oldVersion = event.oldVersion;
+        const {oldVersion} = event;
 
         if (oldVersion < 1) {
           const reportStore = db.createObjectStore(STORE_REPORTS, { keyPath: 'id' });
@@ -64,6 +64,11 @@ class IDBRepository {
           compStore.createIndex('by_pair',      'pairKey',   { unique: true  });
           db.createObjectStore(STORE_COMP_DIFFS, { keyPath: 'comparisonId' });
         }
+
+        if (oldVersion < 3) {
+          // Version 3: reserved — schema sealed to match existing on-disk databases.
+          // Future store additions (e.g. visual_diff_blobs) go in oldVersion < 4.
+        }
       };
 
       request.onsuccess = (event) => {
@@ -77,7 +82,7 @@ class IDBRepository {
         db.onerror = (event) => {
           errorTracker.track({
             code:    ERROR_CODES.STORAGE_READ_FAILED,
-            message: event.target.error?.message ?? 'IDB error',
+            message: event.target.error?.message ?? 'IDB error'
           });
         };
 
@@ -149,7 +154,7 @@ class IDBRepository {
       errorTracker.track({
         code:    ERROR_CODES.STORAGE_WRITE_FAILED,
         message: error.message,
-        context: { id: report.id },
+        context: { id: report.id }
       });
       return { success: false, error: error.message };
     }
@@ -179,7 +184,7 @@ class IDBRepository {
       errorTracker.track({
         code:    ERROR_CODES.STORAGE_READ_FAILED,
         message: error.message,
-        context: { reportId },
+        context: { reportId }
       });
       return [];
     }
@@ -213,7 +218,7 @@ class IDBRepository {
       errorTracker.track({
         code:    ERROR_CODES.STORAGE_WRITE_FAILED,
         message: error.message,
-        context: { id },
+        context: { id }
       });
       return { success: false, error: error.message };
     }

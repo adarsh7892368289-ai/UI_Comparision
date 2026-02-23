@@ -13,7 +13,7 @@ const initialState = {
   compareMode: 'static',
   comparisonResult: null,
   cachedAt: null,
-  error: null,
+  error: null
 };
 
 const transitions = {

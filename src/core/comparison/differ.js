@@ -46,15 +46,15 @@ class PropertyDiffer {
     const differences = [];
 
     for (const property of allProperties) {
-      if (ignoredProperties.has(property)) continue;
+      if (ignoredProperties.has(property)) {continue;}
 
       const baseValue    = baseNorm[property];
       const compareValue = compareNorm[property];
       const diffType     = this._getDiffType(baseValue, compareValue);
 
-      if (diffType === DIFF_TYPES.UNCHANGED) continue;
+      if (diffType === DIFF_TYPES.UNCHANGED) {continue;}
 
-      if (this._withinTolerance(property, baseValue, compareValue, tolerances)) continue;
+      if (this._withinTolerance(property, baseValue, compareValue, tolerances)) {continue;}
 
       differences.push({
         property,
@@ -74,14 +74,14 @@ class PropertyDiffer {
   }
 
   _getDiffType(baseValue, compareValue) {
-    if (baseValue === undefined && compareValue !== undefined) return DIFF_TYPES.ADDED;
-    if (baseValue !== undefined && compareValue === undefined) return DIFF_TYPES.REMOVED;
-    if (baseValue === compareValue)                            return DIFF_TYPES.UNCHANGED;
+    if (baseValue === undefined && compareValue !== undefined) {return DIFF_TYPES.ADDED;}
+    if (baseValue !== undefined && compareValue === undefined) {return DIFF_TYPES.REMOVED;}
+    if (baseValue === compareValue)                            {return DIFF_TYPES.UNCHANGED;}
     return DIFF_TYPES.MODIFIED;
   }
 
   _withinTolerance(property, baseValue, compareValue, tolerances) {
-    if (baseValue === undefined || compareValue === undefined) return false;
+    if (baseValue === undefined || compareValue === undefined) {return false;}
 
     if (this._categories.visual.has(property) || property.includes('color')) {
       return this._colorWithinTolerance(baseValue, compareValue, tolerances.color ?? 5);
@@ -101,7 +101,7 @@ class PropertyDiffer {
     if (property === 'opacity') {
       const b = parseFloat(baseValue);
       const c = parseFloat(compareValue);
-      if (!isNaN(b) && !isNaN(c)) return Math.abs(b - c) <= (tolerances.opacity ?? 0.01);
+      if (!isNaN(b) && !isNaN(c)) {return Math.abs(b - c) <= (tolerances.opacity ?? 0.01);}
     }
 
     return false;
@@ -110,7 +110,7 @@ class PropertyDiffer {
   _colorWithinTolerance(baseValue, compareValue, tolerance) {
     const baseRgba    = parseRgba(baseValue);
     const compareRgba = parseRgba(compareValue);
-    if (!baseRgba || !compareRgba) return baseValue === compareValue;
+    if (!baseRgba || !compareRgba) {return baseValue === compareValue;}
     return (
       Math.abs(baseRgba.r - compareRgba.r) <= tolerance &&
       Math.abs(baseRgba.g - compareRgba.g) <= tolerance &&
@@ -122,16 +122,16 @@ class PropertyDiffer {
   _sizeWithinTolerance(baseValue, compareValue, tolerance) {
     const basePx    = parsePx(baseValue);
     const comparePx = parsePx(compareValue);
-    if (basePx === null || comparePx === null) return baseValue === compareValue;
+    if (basePx === null || comparePx === null) {return baseValue === compareValue;}
     return Math.abs(basePx - comparePx) <= tolerance;
   }
 
   _categorizeProperty(property) {
-    if (this._categories.layout.has(property))     return PROPERTY_CATEGORIES.LAYOUT;
-    if (this._categories.visual.has(property))     return PROPERTY_CATEGORIES.VISUAL;
-    if (this._categories.typography.has(property)) return PROPERTY_CATEGORIES.TYPOGRAPHY;
-    if (this._categories.spacing.has(property))    return PROPERTY_CATEGORIES.SPACING;
-    if (this._categories.position.has(property))   return PROPERTY_CATEGORIES.POSITION;
+    if (this._categories.layout.has(property))     {return PROPERTY_CATEGORIES.LAYOUT;}
+    if (this._categories.visual.has(property))     {return PROPERTY_CATEGORIES.VISUAL;}
+    if (this._categories.typography.has(property)) {return PROPERTY_CATEGORIES.TYPOGRAPHY;}
+    if (this._categories.spacing.has(property))    {return PROPERTY_CATEGORIES.SPACING;}
+    if (this._categories.position.has(property))   {return PROPERTY_CATEGORIES.POSITION;}
     return PROPERTY_CATEGORIES.OTHER;
   }
 }

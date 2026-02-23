@@ -51,8 +51,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  logger.warn('Unknown message type', { type });
-  sendResponse({ success: false, error: `Unknown message type: ${type}` });
+  logger.debug('Unknown message type — deferring to other listeners', { type });
   return false;
 });
 

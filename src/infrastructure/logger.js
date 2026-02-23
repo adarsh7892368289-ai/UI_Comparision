@@ -26,7 +26,7 @@ class Logger {
   }
 
   init() {
-    if (this.initialized) return this;
+    if (this.initialized) {return this;}
     
     this.level = get('logging.level', 'info');
     this.transports.push(new ConsoleTransport());
@@ -84,7 +84,7 @@ class Logger {
   }
 
   _log(level, message, meta) {
-    if (this._shouldSkip(level)) return;
+    if (this._shouldSkip(level)) {return;}
     
     const logEntry = {
       timestamp: new Date().toISOString(),

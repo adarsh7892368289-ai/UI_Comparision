@@ -7,7 +7,7 @@ import { countXPathMatches, ensureUniqueness, isUniqueXPath, escapeXPath } from 
 const TEST_ATTRS = ['data-testid', 'data-test', 'data-qa', 'data-cy', 'data-automation-id'];
 
 async function generateXPath(element) {
-  if (!element || !element.tagName) return _buildFallback(element);
+  if (!element || !element.tagName) {return _buildFallback(element);}
 
   const tag = getUniversalTag(element);
   const perStrategyTimeout = get('selectors.xpath.perStrategyTimeout', 80);
@@ -17,7 +17,7 @@ async function generateXPath(element) {
     strategies.filter(s => s.tier <= 5),
     strategies.filter(s => s.tier >= 6  && s.tier <= 10),
     strategies.filter(s => s.tier >= 11 && s.tier <= 15),
-    strategies.filter(s => s.tier >= 16 && s.tier <= 21),
+    strategies.filter(s => s.tier >= 16 && s.tier <= 21)
   ];
 
   for (const group of tierGroups) {
@@ -54,7 +54,7 @@ async function _tryGroup(element, tag, strategies, perStrategyTimeout) {
     .filter(s => s.status === 'fulfilled' && s.value !== null)
     .map(s => s.value);
 
-  if (successes.length === 0) return null;
+  if (successes.length === 0) {return null;}
   successes.sort((a, b) => a.tier - b.tier);
   return successes[0];
 }
@@ -73,13 +73,13 @@ function _runStrategy(element, tag, tier, fn, name, timeout) {
       }
 
       for (const candidate of candidates) {
-        if (!candidate || !candidate.xpath) continue;
+        if (!candidate || !candidate.xpath) {continue;}
 
         const matchCount = countXPathMatches(candidate.xpath);
-        if (matchCount === 0) continue;
+        if (matchCount === 0) {continue;}
 
         if (matchCount === 1) {
-          if (!isUniqueXPath(candidate.xpath, element)) continue;
+          if (!isUniqueXPath(candidate.xpath, element)) {continue;}
           clearTimeout(timer);
           resolve({ xpath: candidate.xpath, strategy: name, tier, robustness: TIER_ROBUSTNESS[tier] || 50 });
           return;
@@ -124,7 +124,7 @@ function _runStrategy(element, tag, tier, fn, name, timeout) {
 function _narrowByAncestor(xpath, element) {
   const elementTag = getUniversalTag(element);
   const predicate = _extractPredicate(xpath);
-  if (predicate === null) return null;
+  if (predicate === null) {return null;}
 
   let ancestor = element.parentElement;
   let depth = 0;
@@ -152,10 +152,10 @@ function _narrowByAncestor(xpath, element) {
 
 function _extractPredicate(xpath) {
   const match = xpath.match(/\/\/[a-zA-Z*][a-zA-Z0-9_:-]*(\[[\s\S]*\])?$/);
-  if (!match) return null;
+  if (!match) {return null;}
   const segment = match[0];
   const tagMatch = segment.match(/^\/\/[a-zA-Z*][a-zA-Z0-9_:-]*/);
-  if (!tagMatch) return null;
+  if (!tagMatch) {return null;}
   return segment.slice(tagMatch[0].length);
 }
 
@@ -168,7 +168,7 @@ function _buildFallback(element) {
 }
 
 function _buildPositionPath(element) {
-  if (!element || element.nodeType !== Node.ELEMENT_NODE) return '/html';
+  if (!element || element.nodeType !== Node.ELEMENT_NODE) {return '/html';}
 
   const path = [];
   let current = element;

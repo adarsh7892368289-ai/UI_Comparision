@@ -1,31 +1,27 @@
 import { get } from '../../config/defaults.js';
 import logger from '../../infrastructure/logger.js';
 
-function collectStyles(element) {
-  try {
-    const computed = window.getComputedStyle(element);
-    return collectStylesFromComputed(computed);
-  } catch (error) {
-    logger.error('Style collection failed', { 
-      tagName: element.tagName,
-      error: error.message 
-    });
-    return {};
-  }
-}
+const INITIAL_SENTINEL = '__initial__';
+
+const CONTEXT_SNAPSHOT_PROPERTIES = Object.freeze([
+  'font-size',
+  'line-height',
+  'width',
+  'height'
+]);
 
 function collectStylesFromComputed(computedStyle) {
+  if (!computedStyle) {
+    return {};
+  }
+
   try {
-    if (!computedStyle) return {};
-    
     const properties = get('extraction.cssProperties', []);
     const styles = {};
 
     for (const prop of properties) {
       const value = computedStyle.getPropertyValue(prop);
-      if (value) {
-        styles[prop] = value;
-      }
+      styles[prop] = value === '' ? INITIAL_SENTINEL : value.trim();
     }
 
     return styles;
@@ -35,21 +31,42 @@ function collectStylesFromComputed(computedStyle) {
   }
 }
 
-function isElementVisible(element) {
-  try {
-    const computed = window.getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-
-    return (
-      computed.display !== 'none' &&
-      computed.visibility !== 'hidden' &&
-      parseFloat(computed.opacity) > 0 &&
-      rect.width > 0 &&
-      rect.height > 0
-    );
-  } catch (error) {
-    return false;
+function buildContextSnapshot(computedStyle, rect, scrollX, scrollY) {
+  if (!computedStyle) {
+    return null;
   }
+
+  const snapshot = {
+    fontSize: computedStyle.getPropertyValue('font-size'),
+    lineHeight: computedStyle.getPropertyValue('line-height'),
+    parentFontSize: null,
+    parentWidth: null,
+    parentHeight: null,
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+    scrollX,
+    scrollY,
+    boundingRect: {
+      x: rect.x + scrollX,
+      y: rect.y + scrollY,
+      width: rect.width,
+      height: rect.height
+    }
+  };
+
+  return snapshot;
 }
 
-export { collectStyles, collectStylesFromComputed, isElementVisible };
+function enrichContextSnapshotWithParent(snapshot, parentComputedStyle) {
+  if (!snapshot || !parentComputedStyle) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    parentFontSize: parentComputedStyle.getPropertyValue('font-size'),
+    parentWidth: parentComputedStyle.getPropertyValue('width'),
+    parentHeight: parentComputedStyle.getPropertyValue('height')
+  };
+}
+
+export { collectStylesFromComputed, buildContextSnapshot, enrichContextSnapshotWithParent, INITIAL_SENTINEL };

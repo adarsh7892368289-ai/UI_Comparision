@@ -38,18 +38,18 @@ class SeverityAnalyzer {
   }
 
   _calculateSeverity({ property, baseValue, compareValue, category }) {
-    if (this._critical.includes(property))             return SEVERITY_LEVELS.CRITICAL;
-    if (this._isLayoutBreaking(property, baseValue, compareValue)) return SEVERITY_LEVELS.CRITICAL;
-    if (this._high.includes(property))                 return SEVERITY_LEVELS.HIGH;
-    if (this._hasHighVisualImpact(property, baseValue, compareValue)) return SEVERITY_LEVELS.HIGH;
-    if (this._medium.includes(property))               return SEVERITY_LEVELS.MEDIUM;
-    if (category === PROPERTY_CATEGORIES.LAYOUT)       return SEVERITY_LEVELS.MEDIUM;
+    if (this._critical.includes(property))             {return SEVERITY_LEVELS.CRITICAL;}
+    if (this._isLayoutBreaking(property, baseValue, compareValue)) {return SEVERITY_LEVELS.CRITICAL;}
+    if (this._high.includes(property))                 {return SEVERITY_LEVELS.HIGH;}
+    if (this._hasHighVisualImpact(property, baseValue, compareValue)) {return SEVERITY_LEVELS.HIGH;}
+    if (this._medium.includes(property))               {return SEVERITY_LEVELS.MEDIUM;}
+    if (category === PROPERTY_CATEGORIES.LAYOUT)       {return SEVERITY_LEVELS.MEDIUM;}
     return SEVERITY_LEVELS.LOW;
   }
 
   _isLayoutBreaking(property, baseValue, compareValue) {
     if (property === 'display') {
-      if (baseValue === 'none' || compareValue === 'none') return true;
+      if (baseValue === 'none' || compareValue === 'none') {return true;}
       const block = ['block', 'flex', 'grid', 'inline-block'];
       return block.includes(baseValue) !== block.includes(compareValue);
     }
@@ -73,7 +73,7 @@ class SeverityAnalyzer {
     if (property === 'opacity') {
       const b = parseFloat(baseValue);
       const c = parseFloat(compareValue);
-      if (!isNaN(b) && !isNaN(c)) return Math.abs(b - c) > 0.3;
+      if (!isNaN(b) && !isNaN(c)) {return Math.abs(b - c) > 0.3;}
     }
     if (property.includes('color')) {
       const baseRgba    = parseRgba(baseValue);
@@ -94,15 +94,15 @@ class SeverityAnalyzer {
 
   _countBySeverity(annotated) {
     const counts = { critical: 0, high: 0, medium: 0, low: 0 };
-    for (const d of annotated) counts[d.severity]++;
+    for (const d of annotated) {counts[d.severity]++;}
     return counts;
   }
 
   _determineOverallSeverity({ critical, high, medium, low }) {
-    if (critical > 0) return SEVERITY_LEVELS.CRITICAL;
-    if (high > 0)     return SEVERITY_LEVELS.HIGH;
-    if (medium > 0)   return SEVERITY_LEVELS.MEDIUM;
-    if (low > 0)      return SEVERITY_LEVELS.LOW;
+    if (critical > 0) {return SEVERITY_LEVELS.CRITICAL;}
+    if (high > 0)     {return SEVERITY_LEVELS.HIGH;}
+    if (medium > 0)   {return SEVERITY_LEVELS.MEDIUM;}
+    if (low > 0)      {return SEVERITY_LEVELS.LOW;}
     return null;
   }
 }

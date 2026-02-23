@@ -1082,3 +1082,76 @@ button, [role="button"], input, select {
 .reports-list::-webkit-scrollbar { width: 4px; }
 .reports-list::-webkit-scrollbar-track { background: transparent; }
 .reports-list::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: var(--radius-pill); }
+/* ─── Visual Diff Toggle ──────────────────────────────────────────────────── */
+.visual-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  margin-bottom: 8px;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.visual-toggle:hover { border-color: var(--accent); }
+
+.visual-toggle__track {
+  position: relative;
+  flex-shrink: 0;
+  width: 36px;
+  height: 20px;
+  margin-top: 1px;
+}
+.visual-toggle__track input[type="checkbox"] {
+  position: absolute;
+  width: 1px; height: 1px;
+  opacity: 0; pointer-events: none;
+}
+.visual-toggle__thumb {
+  position: absolute;
+  inset: 0;
+  background: var(--surface-3);
+  border-radius: var(--radius-pill);
+  transition: background var(--dur-fast) var(--ease);
+  cursor: pointer;
+}
+.visual-toggle__thumb::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 16px; height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform var(--dur-fast) var(--ease-spring);
+  box-shadow: 0 1px 3px rgba(0,0,0,.2);
+}
+.visual-toggle__track input:checked ~ .visual-toggle__thumb {
+  background: var(--accent);
+}
+.visual-toggle__track input:checked ~ .visual-toggle__thumb::after {
+  transform: translateX(16px);
+}
+.visual-toggle__track input:focus-visible ~ .visual-toggle__thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.visual-toggle__text { flex: 1; min-width: 0; }
+.visual-toggle__label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+.visual-toggle__hint {
+  display: block;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+  line-height: 1.4;
+}

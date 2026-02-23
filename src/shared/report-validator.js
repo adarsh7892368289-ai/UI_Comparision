@@ -121,7 +121,7 @@ function validateAllElements(report) {
 }
 
 function isValidTimestamp(timestamp) {
-  if (typeof timestamp !== 'string') return false;
+  if (typeof timestamp !== 'string') {return false;}
   
   const date = new Date(timestamp);
   return !isNaN(date.getTime());

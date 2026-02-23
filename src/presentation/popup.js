@@ -39,7 +39,7 @@ class ToastManager {
     this._root.appendChild(toast);
     requestAnimationFrame(() => toast.classList.add('toast-visible'));
 
-    if (duration > 0) setTimeout(() => this._dismiss(toast), duration);
+    if (duration > 0) {setTimeout(() => this._dismiss(toast), duration);}
 
     while (this._root.children.length > 3) {
       this._dismiss(this._root.firstChild);
@@ -47,7 +47,7 @@ class ToastManager {
   }
 
   _dismiss(toast) {
-    if (!toast?.isConnected) return;
+    if (!toast?.isConnected) {return;}
     toast.classList.remove('toast-visible');
     toast.addEventListener('transitionend', () => toast.remove(), { once: true });
   }
@@ -60,18 +60,18 @@ class ToastManager {
 
 class ModalManager {
   _init() {
-    if (this._ready) return;
+    if (this._ready) {return;}
     this._overlay = document.getElementById('modal-overlay');
     this._box     = document.getElementById('modal-box');
     this._resolve = null;
     this._ready   = true;
 
     this._overlay.addEventListener('click', e => {
-      if (e.target === this._overlay) this._close(false);
+      if (e.target === this._overlay) {this._close(false);}
     });
     document.addEventListener('keydown', e => {
-      if (!this._resolve) return;
-      if (e.key === 'Escape') this._close(false);
+      if (!this._resolve) {return;}
+      if (e.key === 'Escape') {this._close(false);}
     });
   }
 
@@ -106,7 +106,7 @@ class ModalManager {
 class ProgressManager {
   show(id, label = 'Working…') {
     const wrap = document.getElementById(`${id}-progress`);
-    if (wrap) wrap.classList.remove('hidden');
+    if (wrap) {wrap.classList.remove('hidden');}
     this.update(id, 0, label);
   }
 
@@ -115,13 +115,13 @@ class ProgressManager {
     const lbl   = document.getElementById(`${id}-progress-label`);
     const wrap  = document.getElementById(`${id}-progress`);
     if (bar)  { bar.style.width = `${pct}%`; bar.setAttribute('aria-valuenow', pct); }
-    if (lbl && label) lbl.textContent = label;
-    if (wrap) wrap.setAttribute('aria-valuenow', pct);
+    if (lbl && label) {lbl.textContent = label;}
+    if (wrap) {wrap.setAttribute('aria-valuenow', pct);}
   }
 
   hide(id) {
     const wrap = document.getElementById(`${id}-progress`);
-    if (wrap) wrap.classList.add('hidden');
+    if (wrap) {wrap.classList.add('hidden');}
     this.update(id, 0, '');
   }
 
@@ -141,7 +141,7 @@ class ProgressManager {
     this.show(id, activeStages[0].label);
 
     const tick = () => {
-      if (stopped) return;
+      if (stopped) {return;}
       frame = Math.min(frame + 1, 92);
       const stage = [...activeStages].reverse().find(s => frame >= s.at);
       this.update(id, frame, stage?.label ?? '');
@@ -172,19 +172,19 @@ function sanitize(value) {
 
 function relativeTime(isoString) {
   const mins = Math.floor((Date.now() - new Date(isoString).getTime()) / 60000);
-  if (mins < 1)   return 'just now';
-  if (mins < 60)  return `${mins}m ago`;
+  if (mins < 1)   {return 'just now';}
+  if (mins < 60)  {return `${mins}m ago`;}
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24)   return `${hrs}h ago`;
+  if (hrs < 24)   {return `${hrs}h ago`;}
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
 function getFilters() {
   const pick = id => document.getElementById(id)?.value.trim();
   const filters = {};
-  const cls = pick('filter-class'); if (cls) filters.class = cls;
-  const id  = pick('filter-id');    if (id)  filters.id    = id;
-  const tag = pick('filter-tag');   if (tag) filters.tag   = tag;
+  const cls = pick('filter-class'); if (cls) {filters.class = cls;}
+  const id  = pick('filter-id');    if (id)  {filters.id    = id;}
+  const tag = pick('filter-tag');   if (tag) {filters.tag   = tag;}
   return Object.keys(filters).length ? filters : null;
 }
 
@@ -203,7 +203,7 @@ async function pollForNewReport(knownIds, maxWaitMs = EXTRACTION_POLL_MAX_WAIT_M
     try {
       const reports = await loadAllReports();
       const newReport = reports.find(r => !knownIds.has(r.id));
-      if (newReport) return newReport;
+      if (newReport) {return newReport;}
     } catch {
       // continue polling
     }
@@ -218,7 +218,7 @@ async function handleExtraction() {
     { at: 20, label: 'Processing elements…'     },
     { at: 45, label: 'Generating selectors…'    },
     { at: 70, label: 'Normalizing styles…'      },
-    { at: 88, label: 'Saving report…'           },
+    { at: 88, label: 'Saving report…'           }
   ]);
   btn.disabled = true;
 
@@ -226,9 +226,9 @@ async function handleExtraction() {
     const response = await sendToBackground(
       MessageTypes.EXTRACT_ELEMENTS,
       { filters: getFilters() },
-      EXTRACTION_TIMEOUT_MS,
+      EXTRACTION_TIMEOUT_MS
     );
-    const report = response.data.report;
+    const {report} = response.data;
     sim.done();
     popupState.dispatch('EXTRACTION_COMPLETE', { report });
     await refreshReports();
@@ -271,35 +271,108 @@ async function handleComparison() {
   }
 
   const btn = document.getElementById('compare-btn');
-  const sim = Progress.simulate('compare', 3000, [
-    { at: 5,  label: 'Loading reports…' },
-    { at: 20, label: 'Matching elements…' },
-    { at: 60, label: 'Comparing properties…' },
-    { at: 82, label: 'Analyzing severity…' },
-    { at: 94, label: 'Building results…' }
-  ]);
   btn.disabled = true;
 
-  try {
-    const response = await sendToBackground(MessageTypes.START_COMPARISON, {
-      baselineId: state.selectedBaseline,
-      compareId:  state.selectedCompare,
-      mode:       state.compareMode
-    });
-    const result = response.data.result;
-    sim.done();
-    popupState.dispatch('COMPARISON_COMPLETE', { result, cachedAt: null });
-    const diffs = result.comparison.summary.totalDifferences;
-    Toast.success(`Done — ${diffs} difference${diffs !== 1 ? 's' : ''} found`);
-  } catch (err) {
-    sim.done();
-    popupState.dispatch('COMPARISON_FAILED', { error: err.message });
-    Toast.error(err.message);
-    logger.error('Comparison failed', { error: err.message });
-  } finally {
+  // ── Port-based architecture: chrome.runtime.connect() keeps SW alive ────────
+  //
+  // sendMessage creates a one-shot port Chrome closes after ~5min.
+  // connect() creates a persistent port — Chrome will NOT kill the SW while
+  // the port is open. The SW runs compareReports(), sends progress through the
+  // port, then sends the result. We close the port when done.
+  //
+  // This completely eliminates the "Background message timeout" error.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  Progress.show('compare', 'Connecting…');
+
+  let port = null;
+  let portDisconnected = false;
+
+  const cleanup = () => {
+    if (port) { try { port.disconnect(); } catch (_) {} port = null; }
     btn.disabled = false;
+  };
+
+  const fail = (msg) => {
+    cleanup();
+    Progress.hide('compare');
+    popupState.dispatch('COMPARISON_FAILED', { error: msg });
+    Toast.error(msg);
+    logger.error('Comparison failed', { error: msg });
+  };
+
+  try {
+    // Resolve tab IDs for CDP capture
+    const baselineReport = state.reports.find(r => r.id === state.selectedBaseline);
+    const compareReport  = state.reports.find(r => r.id === state.selectedCompare);
+    let baselineTabId = null, compareTabId = null;
+
+    if (baselineReport?.url || compareReport?.url) {
+      const allTabs = await chrome.tabs.query({ windowType: 'normal' });
+      if (baselineReport?.url) {
+        baselineTabId = allTabs.find(t => t.url === baselineReport.url)?.id ?? null;
+      }
+      if (compareReport?.url) {
+        compareTabId = allTabs.find(
+          t => t.url === compareReport.url && t.id !== baselineTabId
+        )?.id ?? allTabs.find(t => t.url === compareReport.url)?.id ?? null;
+      }
+    }
+
+    const includeScreenshots = document.getElementById('visual-diff-toggle')?.checked ?? true;
+
+    // Open persistent port — this is the SW keepalive signal
+    port = chrome.runtime.connect({ name: 'comparison' });
+
+    port.onDisconnect.addListener(() => {
+      portDisconnected = true;
+      if (btn.disabled) {
+        // Port closed before we received a result — SW may have crashed
+        fail('Connection to background lost. The comparison may still complete — check back in a moment.');
+      }
+    });
+
+    port.onMessage.addListener((msg) => {
+      if (msg.type === MessageTypes.COMPARISON_PROGRESS) {
+        Progress.update('compare', msg.pct ?? 50, msg.label ?? 'Working…');
+        return;
+      }
+
+      if (msg.type === MessageTypes.COMPARISON_COMPLETE) {
+        const {result} = msg;
+        cleanup();
+        Progress.update('compare', 100, 'Complete');
+        setTimeout(() => Progress.hide('compare'), 500);
+        popupState.dispatch('COMPARISON_COMPLETE', { result, cachedAt: null });
+        const diffs = result?.comparison?.summary?.totalDifferences ?? 0;
+        Toast.success(`Done — ${diffs} difference${diffs !== 1 ? 's' : ''} found`);
+        return;
+      }
+
+      if (msg.type === 'comparisonError') {
+        fail(msg.error || 'Comparison failed in background');
+        
+      }
+    });
+
+    // Send the start message through the port
+    port.postMessage({
+      type:             MessageTypes.START_COMPARISON,
+      baselineId:       state.selectedBaseline,
+      compareId:        state.selectedCompare,
+      mode:             state.compareMode,
+      baselineTabId,
+      compareTabId,
+      includeScreenshots
+    });
+
+    Progress.update('compare', 5, 'Loading reports…');
+
+  } catch (err) {
+    fail(err.message || String(err));
   }
 }
+
 
 async function handleDeleteAll() {
   const confirmed = await Modal.confirm(
@@ -307,7 +380,7 @@ async function handleDeleteAll() {
     'This permanently deletes all saved reports. This cannot be undone.',
     { confirmText: 'Delete All', destructive: true }
   );
-  if (!confirmed) return;
+  if (!confirmed) {return;}
 
   try {
     const result = await deleteAllReports();
@@ -328,7 +401,7 @@ async function handleDeleteReport(report) {
     `Delete "${report.title || 'Untitled'}"? This cannot be undone.`,
     { confirmText: 'Delete', destructive: true }
   );
-  if (!confirmed) return;
+  if (!confirmed) {return;}
 
   try {
     const result = await deleteReport(report.id);
@@ -371,15 +444,55 @@ async function handleExportReport(report, format) {
 }
 
 async function handleExportComparison() {
-  const result = popupState.get().comparisonResult;
+  const state  = popupState.get();
+  const result = state.comparisonResult;
   if (!result) { Toast.error('No comparison result to export'); return; }
 
   const format = document.getElementById('export-format-select')?.value ?? EXPORT_FORMATS.EXCEL;
-  const res    = await exportManager.export(result, format);
+
+  // HTML export runs in the Service Worker — screenshots are loaded directly from
+  // IndexedDB there, never serialized over IPC, so they always appear in the report.
+  if (format === EXPORT_FORMATS.HTML) {
+    await _exportHTMLViaBackground(state);
+    return;
+  }
+
+  const res = await exportManager.export(result, format);
   if (res.success) {
     Toast.success(`Exported as ${format.toUpperCase()}`);
   } else {
     Toast.error(`Export failed: ${res.error}`);
+  }
+}
+
+async function _exportHTMLViaBackground(state) {
+  if (!state.selectedBaseline || !state.selectedCompare) {
+    Toast.error('No comparison selected');
+    return;
+  }
+
+  const btn = document.getElementById('export-comparison-btn');
+  const vBtn = document.getElementById('view-report-btn');
+  if (btn)  {btn.disabled  = true;}
+  if (vBtn) {vBtn.disabled = true;}
+
+  try {
+    // sendToBackground rejects if the SW sends { success: false } (e.g. export threw).
+    // On success it resolves with { success: true, data: { success: true } }.
+    // Either way, no double-envelope check needed — just await and handle the catch.
+    await sendToBackground(MessageTypes.EXPORT_COMPARISON_HTML, {
+      baselineId: state.selectedBaseline,
+      compareId:  state.selectedCompare,
+      mode:       state.compareMode
+    }, 120000);
+    Toast.success('HTML report downloaded');
+  } catch (err) {
+    const msg = err.message || 'Export failed';
+    Toast.error(`Export failed: ${msg}`);
+    logger.error('HTML export via background failed', { error: msg });
+  } finally {
+    if (btn)  {btn.disabled  = false;}
+    if (vBtn) {vBtn.disabled = false;}
   }
 }
 
@@ -437,7 +550,7 @@ function renderReportCard(report) {
 function displayReports(reports, searchQuery) {
   const list  = document.getElementById('reports-list');
   const empty = document.getElementById('reports-empty');
-  if (!list) return;
+  if (!list) {return;}
 
   const q        = searchQuery?.toLowerCase() ?? '';
   const filtered = q
@@ -462,7 +575,7 @@ function displayReports(reports, searchQuery) {
 function populateReportSelectors(reports) {
   ['baseline-report', 'compare-report'].forEach(selId => {
     const sel = document.getElementById(selId);
-    if (!sel) return;
+    if (!sel) {return;}
     const current = sel.value;
     sel.textContent = '';
     const placeholder = new Option('Select report…', '');
@@ -472,7 +585,7 @@ function populateReportSelectors(reports) {
         `${r.title || 'Untitled'} · ${r.totalElements} el · ${relativeTime(r.timestamp)}`,
         r.id
       );
-      if (r.id === current) opt.selected = true;
+      if (r.id === current) {opt.selected = true;}
       sel.appendChild(opt);
     });
   });
@@ -481,7 +594,7 @@ function populateReportSelectors(reports) {
 
 function displayComparisonResults(result, cachedAt = null) {
   const container = document.getElementById('compare-results');
-  if (!container || !result) return;
+  if (!container || !result) {return;}
 
   const { matching, comparison, mode, duration } = result;
   const { summary: { severityCounts, totalDifferences, modifiedElements, unchangedElements } } = comparison;
@@ -540,7 +653,7 @@ function displayComparisonResults(result, cachedAt = null) {
           ${severityRow('High', high, 'high')}
           ${severityRow('Medium', medium, 'medium')}
           ${severityRow('Low', low, 'low')}
-        </div>` : `<div class="no-diffs">✓ No differences detected</div>`}
+        </div>` : '<div class="no-diffs">✓ No differences detected</div>'}
 
       <div class="result-actions">
         <div class="export-format-row">
@@ -559,24 +672,24 @@ function displayComparisonResults(result, cachedAt = null) {
   container.querySelector('#export-comparison-btn')
     ?.addEventListener('click', handleExportComparison);
   container.querySelector('#view-report-btn')
-    ?.addEventListener('click', () => exportManager.export(result, EXPORT_FORMATS.HTML));
+    ?.addEventListener('click', () => _exportHTMLViaBackground(popupState.get()));
 }
 
 function displayReportsFooter(count) {
   const footer = document.getElementById('reports-footer');
-  if (!footer) return;
+  if (!footer) {return;}
   footer.textContent = count === 0 ? '' : `${count} report${count !== 1 ? 's' : ''} saved`;
 }
 
 async function tryLoadCachedComparison() {
   const state = popupState.get();
-  if (!state.selectedBaseline || !state.selectedCompare) return;
+  if (!state.selectedBaseline || !state.selectedCompare) {return;}
 
   try {
     const response = await sendToBackground(MessageTypes.LOAD_CACHED_COMPARISON, {
       baselineId: state.selectedBaseline,
       compareId:  state.selectedCompare,
-      mode:       state.compareMode,
+      mode:       state.compareMode
     });
     const cached = response?.data?.cached;
 
@@ -590,10 +703,12 @@ async function tryLoadCachedComparison() {
         unmatchedElements: cached.unmatchedElements,
         duration:          cached.duration,
         timestamp:         cached.timestamp,
+        visualDiffs:       cached.visualDiffs ?? null,
+        visualDiffStatus:  cached.visualDiffStatus ?? null
       };
       popupState.dispatch('COMPARISON_COMPLETE', {
         result:   reconstructed,
-        cachedAt: cached.timestamp,
+        cachedAt: cached.timestamp
       });
     } else {
       popupState.dispatch('RESET_COMPARISON', {});
@@ -607,7 +722,7 @@ async function tryLoadCachedComparison() {
 function syncCompareButton() {
   const state = popupState.get();
   const btn   = document.getElementById('compare-btn');
-  if (btn) btn.disabled = !state.selectedBaseline || !state.selectedCompare;
+  if (btn) {btn.disabled = !state.selectedBaseline || !state.selectedCompare;}
 }
 
 function updateUIFromState(state, type) {
@@ -690,10 +805,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   document.addEventListener('keydown', e => {
     const inInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
-    if (inInput) return;
+    if (inInput) {return;}
 
-    if (e.key === '1') popupState.dispatch('TAB_CHANGED', { tab: 'extract' });
-    if (e.key === '2') popupState.dispatch('TAB_CHANGED', { tab: 'compare' });
+    if (e.key === '1') {popupState.dispatch('TAB_CHANGED', { tab: 'extract' });}
+    if (e.key === '2') {popupState.dispatch('TAB_CHANGED', { tab: 'compare' });}
     if (e.key === '/') {
       e.preventDefault();
       document.getElementById('search-reports')?.focus();

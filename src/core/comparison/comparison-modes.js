@@ -67,7 +67,7 @@ class BaseComparisonMode {
   _compareTextContent(baselineElement, compareElement) {
     const base    = (baselineElement.textContent ?? '').trim();
     const compare = (compareElement.textContent  ?? '').trim();
-    if (base === compare) return [];
+    if (base === compare) {return [];}
     return [{ property: 'textContent', baseValue: base, compareValue: compare, category: 'content', type: 'modified' }];
   }
 
@@ -78,8 +78,8 @@ class BaseComparisonMode {
     const diffs        = [];
 
     for (const key of allKeys) {
-      if (allowList && !allowList.has(key)) continue;
-      if (baseAttrs[key] === compareAttrs[key]) continue;
+      if (allowList && !allowList.has(key)) {continue;}
+      if (baseAttrs[key] === compareAttrs[key]) {continue;}
       diffs.push({
         property:     `attr:${key}`,
         baseValue:    baseAttrs[key]    ?? null,
@@ -92,8 +92,8 @@ class BaseComparisonMode {
   }
 
   _attrDiffType(baseVal, compareVal) {
-    if (baseVal == null && compareVal != null) return 'added';
-    if (baseVal != null && compareVal == null) return 'removed';
+    if (baseVal == null && compareVal != null) {return 'added';}
+    if (baseVal != null && compareVal == null) {return 'removed';}
     return 'modified';
   }
 

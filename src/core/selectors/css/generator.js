@@ -7,7 +7,7 @@ import { isUniqueCssSelector, isValidCssSelector, escapeCss } from './validator.
 const TEST_ATTRS = ['data-testid', 'data-test', 'data-qa', 'data-cy', 'data-automation-id'];
 
 async function generateCSS(element) {
-  if (!element || !element.tagName) return _buildFallback(element);
+  if (!element || !element.tagName) {return _buildFallback(element);}
 
   const tag = element.tagName.toLowerCase();
   const perStrategyTimeout = get('selectors.css.perStrategyTimeout', 50);
@@ -16,7 +16,7 @@ async function generateCSS(element) {
   const tierGroups = [
     strategies.filter(s => s.tier <= 4),
     strategies.filter(s => s.tier >= 5 && s.tier <= 8),
-    strategies.filter(s => s.tier >= 9 && s.tier <= 11),
+    strategies.filter(s => s.tier >= 9 && s.tier <= 11)
   ];
 
   for (const group of tierGroups) {
@@ -52,7 +52,7 @@ async function _tryGroup(element, tag, strategies, timeout) {
     .filter(s => s.status === 'fulfilled' && s.value !== null)
     .map(s => s.value);
 
-  if (successes.length === 0) return null;
+  if (successes.length === 0) {return null;}
   successes.sort((a, b) => a.tier - b.tier);
   return successes[0];
 }
@@ -71,8 +71,8 @@ function _runStrategy(element, tag, tier, fn, name, timeout) {
       }
 
       for (const candidate of candidates) {
-        if (!candidate || !candidate.selector) continue;
-        if (!isValidCssSelector(candidate.selector)) continue;
+        if (!candidate || !candidate.selector) {continue;}
+        if (!isValidCssSelector(candidate.selector)) {continue;}
 
         if (isUniqueCssSelector(candidate.selector, element)) {
           clearTimeout(timer);
@@ -109,7 +109,7 @@ function _anchorToStableAncestor(selector, element) {
 
     for (const attr of TEST_ATTRS) {
       const val = ancestor.getAttribute(attr);
-      if (val) return `[${attr}="${escapeCss(val)}"] ${selector}`;
+      if (val) {return `[${attr}="${escapeCss(val)}"] ${selector}`;}
     }
 
     ancestor = ancestor.parentElement;
@@ -128,7 +128,7 @@ function _buildFallback(element) {
 }
 
 function _buildPositionPath(element) {
-  if (!element || element.nodeType !== Node.ELEMENT_NODE) return 'html';
+  if (!element || element.nodeType !== Node.ELEMENT_NODE) {return 'html';}
 
   const path = [];
   let current = element;

@@ -1,12 +1,22 @@
 import logger from '../../infrastructure/logger.js';
 import { transformToGroupedReport, elementLabel } from './report-transformer.js';
 
-function exportToHTML(comparisonResult) {
+/**
+ * @param {object} comparisonResult
+ * @returns {{ success: boolean, error?: string }}
+ */
+async function exportToHTML(comparisonResult) {
   try {
-    const grouped = transformToGroupedReport(comparisonResult);
-    const html    = _buildDocument(grouped, comparisonResult);
-    _triggerDownload(html, `comparison-${Date.now()}.html`);
-    logger.info('HTML export complete', { elements: grouped.summary.totalMatched });
+    const grouped         = transformToGroupedReport(comparisonResult);
+    const diffUris        = _resolveVisualDiffUris(comparisonResult.visualDiffs ?? null);
+    const visualDiffStatus = comparisonResult.visualDiffStatus ?? null;
+    const html            = _buildDocument(grouped, comparisonResult, diffUris, visualDiffStatus);
+    await _triggerDownload(html, `comparison-${Date.now()}.html`);
+    logger.info('HTML export complete', {
+      elements:         grouped.summary.totalMatched,
+      visualDiffs:      Object.keys(diffUris).length,
+      visualDiffStatus: visualDiffStatus?.status ?? 'none'
+    });
     return { success: true };
   } catch (error) {
     logger.error('HTML export failed', { error: error.message });
@@ -14,17 +24,82 @@ function exportToHTML(comparisonResult) {
   }
 }
 
-function _triggerDownload(html, filename) {
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8;' });
-  const url  = URL.createObjectURL(blob);
-  const a    = Object.assign(document.createElement('a'), { href: url, download: filename });
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+/**
+ * Maps comparisonResult.visualDiffs into the DIFF_URIS payload.
+ * Values are already data URI strings serialized in the Service Worker —
+ * no async work needed.
+ *
+ * @param {Map<string,{baseline:string,compare:string,diff:string|null}>|null} visualDiffs
+ * @returns {Record<string,{baselineUri:string,compareUri:string,diffUri:string|null}>}
+ */
+function _resolveVisualDiffUris(visualDiffs) {
+  if (!visualDiffs) {return {};}
+
+  const out     = Object.create(null);
+  const entries = visualDiffs instanceof Map
+    ? visualDiffs.entries()
+    : Object.entries(visualDiffs);
+
+  for (const [key, { baseline, compare, diff }] of entries) {
+    if (!baseline && !compare) {continue;}
+    out[key] = {
+      baselineUri: baseline ?? null,
+      compareUri:  compare  ?? null,
+      diffUri:     diff     ?? null
+    };
+  }
+
+  return out;
 }
 
-function _buildDocument(grouped, raw) {
+/**
+ * Renders a sticky diagnostic banner when the visual capture phase did not
+ * produce screenshots. Only called when visualDiffStatus is non-null and
+ * status !== 'success'.
+ *
+ * @param {{ status: string, reason: string } | null} vds
+ * @returns {string}  HTML string (empty when no banner is needed)
+ */
+function _buildDiagnosticBanner(vds) {
+  if (!vds || vds.status === 'success') {return '';}
+
+  const isError   = vds.status === 'error';
+  const bg        = isError ? '#7f1d1d' : '#78350f';
+  const border    = isError ? '#ef4444' : '#f97316';
+  const iconLabel = isError ? '✖ Visual Diff Error' : '⚠ Visual Diff Skipped';
+  const safeReason = _esc(vds.reason || 'No reason provided.');
+
+  return `
+<div style="
+  position:sticky;top:0;z-index:9999;
+  background:${bg};border-bottom:3px solid ${border};
+  padding:10px 16px;display:flex;align-items:flex-start;gap:10px;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;
+">
+  <span style="font-weight:800;color:#fff;white-space:nowrap;">${iconLabel}</span>
+  <span style="color:#fecaca;flex:1;">${safeReason}</span>
+  <span style="color:#9ca3af;font-size:11px;white-space:nowrap;">
+    Screenshots not available — property diffs are still complete.
+  </span>
+</div>`;
+}
+
+function _htmlToDataUri(html) {
+  const bytes = new TextEncoder().encode(html);
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return `data:text/html;base64,${  btoa(binary)}`;
+}
+
+async function _triggerDownload(html, filename) {
+  const url = _htmlToDataUri(html);
+  await chrome.downloads.download({ url, filename, saveAs: false });
+}
+
+function _buildDocument(grouped, raw, diffUris, visualDiffStatus = null) {
   const { summary } = grouped;
   const title = `${raw.baseline?.url ?? ''} vs ${raw.compare?.url ?? ''}`;
   const date  = new Date(raw.timestamp ?? Date.now()).toLocaleString();
@@ -34,28 +109,28 @@ function _buildDocument(grouped, raw) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>UI Diff — ${_esc(title)}</title>
+<title>UI Diff \u2014 ${_esc(title)}</title>
 <style>${_css()}</style>
 </head>
 <body>
-<div class="app">
+${_buildDiagnosticBanner(visualDiffStatus)}<div class="app">
   <header class="topbar">
     <span class="topbar-title">UI Comparison Report</span>
     <span class="topbar-meta">${_esc(title)} &mdash; ${date}</span>
-    <div class="topbar-search"><input id="search" type="text" placeholder="Filter elements…" autocomplete="off"></div>
+    <div class="topbar-search"><input id="search" type="text" placeholder="Filter elements\u2026" autocomplete="off"></div>
   </header>
   <div class="layout">
     <aside class="sidebar">${_buildSidebar(summary)}</aside>
     <main class="panel-list" id="panel-list">
       <div class="list-loading" id="list-loading">
         <div class="list-spinner"></div>
-        <span>Rendering elements…</span>
+        <span>Rendering elements\u2026</span>
       </div>
     </main>
     <aside class="panel-detail" id="panel-detail"><div class="detail-placeholder">Select an element</div></aside>
   </div>
 </div>
-<script>${_js(grouped)}</script>
+<script>${_js(grouped, diffUris)}</script>
 </body>
 </html>`;
 }
@@ -75,10 +150,10 @@ function _buildSidebar(s) {
   <div class="stat-row sev-low"><span class="badge badge-low">${s.severityCounts.low}</span> Low</div>
 </div>
 <div class="sidebar-section">
-  <div class="stat-row"><span class="icon">✦</span> ${s.totalMatched} Matched</div>
-  <div class="stat-row"><span class="icon add">＋</span> ${s.added} Added</div>
-  <div class="stat-row"><span class="icon rem">－</span> ${s.removed} Removed</div>
-  <div class="stat-row"><span class="icon">○</span> ${s.unchanged} Unchanged</div>
+  <div class="stat-row"><span class="icon">\u2756</span> ${s.totalMatched} Matched</div>
+  <div class="stat-row"><span class="icon add">\uff0b</span> ${s.added} Added</div>
+  <div class="stat-row"><span class="icon rem">\uff0d</span> ${s.removed} Removed</div>
+  <div class="stat-row"><span class="icon">\u25cb</span> ${s.unchanged} Unchanged</div>
 </div>
 <div class="sidebar-section filter-buttons">
   <div class="filter-label">Severity filter</div>
@@ -98,22 +173,12 @@ function _buildSidebar(s) {
 </div>`;
 }
 
-
 function _esc(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
-}
-
-function _isColorProp(property) {
-  return property.includes('color') || property.includes('background');
-}
-
-function _colorSwatch(colorStr) {
-  if (!colorStr || colorStr === 'none' || colorStr === 'transparent') return '';
-  return `<span class="swatch" style="background:${_esc(colorStr)}" title="${_esc(colorStr)}"></span>`;
 }
 
 function _css() {
@@ -126,7 +191,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .topbar-meta{color:#8892b0;font-size:12px;flex:1}
 #search{background:#0f1117;border:1px solid #2d3148;border-radius:6px;padding:5px 10px;color:#e2e8f0;width:220px;outline:none}
 #search:focus{border-color:#7c3aed}
-.layout{display:grid;grid-template-columns:220px 1fr 340px;flex:1;overflow:hidden}
+.layout{display:grid;grid-template-columns:220px 1fr 380px;flex:1;overflow:hidden}
 .sidebar{overflow-y:auto;padding:12px;background:#1a1d27;border-right:1px solid #2d3148}
 .sidebar-section{margin-bottom:20px}
 .stat-headline{font-size:32px;font-weight:800;color:#fff}
@@ -167,6 +232,7 @@ details[open] .severity-header{border-radius:6px 6px 0 0;border-bottom:none}
 .card-meta{display:flex;gap:6px;align-items:center;flex-shrink:0}
 .diff-count{background:#312e81;color:#a5b4fc;border-radius:4px;padding:1px 6px;font-size:11px}
 .confidence{color:#6b7280;font-size:11px}
+.has-visual{background:#2d1a3e;color:#c084fc;border-radius:4px;padding:1px 6px;font-size:10px;letter-spacing:.03em}
 .card-breadcrumb{font-size:10px;color:#4a5568;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cat-pills{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
 .cat-pill{font-size:10px;padding:1px 6px;border-radius:10px;background:#1e2133;color:#6b7280}
@@ -196,15 +262,37 @@ details[open] .severity-header{border-radius:6px 6px 0 0;border-bottom:none}
 .sev-pip.medium{background:#eab308}
 .sev-pip.low{background:#6b7280}
 .swatch{display:inline-block;width:12px;height:12px;border-radius:2px;border:1px solid rgba(255,255,255,.2);vertical-align:middle;margin-right:3px}
+.vdiff-section{margin-top:16px;border:1px solid #2d3148;border-radius:8px;overflow:hidden}
+.vdiff-toggle{width:100%;display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#1e2133;border:none;color:#c084fc;font-size:12px;font-weight:600;cursor:pointer;letter-spacing:.04em;text-transform:uppercase}
+.vdiff-toggle:hover{background:#252840}
+.vdiff-toggle .vdiff-chevron{transition:transform .2s;font-style:normal;font-size:16px}
+.vdiff-toggle[aria-expanded=true] .vdiff-chevron{transform:rotate(180deg)}
+.vdiff-panes{display:none;grid-template-columns:repeat(3,1fr);gap:1px;background:#2d3148}
+.vdiff-panes.open{display:grid}
+.vdiff-pane{display:flex;flex-direction:column;background:#0f1117;min-width:0}
+.vdiff-pane-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:6px 8px;color:#4a5568;flex-shrink:0;font-weight:600}
+.vdiff-pane-label.label-baseline{color:#60a5fa}
+.vdiff-pane-label.label-diff{color:#c084fc}
+.vdiff-pane-label.label-compare{color:#4ade80}
+.vdiff-img{width:100%;height:auto;display:block;image-rendering:crisp-edges}
+.vdiff-missing{display:flex;align-items:center;justify-content:center;height:80px;color:#2d3148;font-size:11px}
+.vdiff-legend{display:flex;gap:12px;padding:8px 12px;background:#0f1117;font-size:10px;color:#6b7280;border-top:1px solid #1e2133}
+.vdiff-legend-item{display:flex;align-items:center;gap:5px}
+.legend-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.legend-dot.magenta{background:#ff00ff}
+.legend-dot.yellow{background:#ffff00;border:1px solid #666}
 @media(max-width:900px){.layout{grid-template-columns:1fr}.panel-detail{display:none}}
 `;
 }
 
-function _js(grouped) {
-  const data = JSON.stringify(grouped);
+function _js(grouped, diffUris) {
+  const data     = JSON.stringify(grouped);
+  const urisJson = JSON.stringify(diffUris ?? {});
+
   return `
 (function(){
-const GROUPED = ${data};
+const GROUPED   = ${data};
+const DIFF_URIS = ${urisJson};
 const listEl   = document.getElementById('panel-list');
 const detailEl = document.getElementById('panel-detail');
 const searchEl = document.getElementById('search');
@@ -216,9 +304,9 @@ const SEV_ORDER = [
   { key:'critical', label:'Critical', icon:'\u{1F534}', expanded:true  },
   { key:'high',     label:'High',     icon:'\u{1F7E0}', expanded:true  },
   { key:'medium',   label:'Medium',   icon:'\u{1F7E1}', expanded:false },
-  { key:'low',      label:'Low',      icon:'\u26AA',   expanded:false },
+  { key:'low',      label:'Low',      icon:'\u26AA',    expanded:false },
   { key:'added',    label:'Added',    icon:'\u{1F7E2}', expanded:true  },
-  { key:'removed',  label:'Removed',  icon:'\u2B1B',   expanded:true  }
+  { key:'removed',  label:'Removed',  icon:'\u2B1B',    expanded:true  }
 ];
 
 function ric(cb){
@@ -249,9 +337,10 @@ function buildCard(item,severity,index){
   const key=severity+'-'+index;
   const badge=item.totalDiffs!=null?'<span class="diff-count">'+item.totalDiffs+' diff'+(item.totalDiffs!==1?'s':'')+'</span>':'';
   const conf=item.matchConfidence!=null?'<span class="confidence">'+Math.round(item.matchConfidence*100)+'%</span>':'';
+  const visualBadge=DIFF_URIS[item.elementId]?'<span class="has-visual">\u{1F4F7} Visual</span>':'';
   return '<div class="element-card" data-key="'+esc(key)+'" data-sev="'+esc(severity)+'" role="button" tabindex="0">'
     +'<div class="card-header"><code class="element-label">'+esc(item.elementKey)+'</code>'
-    +'<div class="card-meta">'+badge+conf+'</div></div>'
+    +'<div class="card-meta">'+badge+visualBadge+conf+'</div></div>'
     +(item.breadcrumb?'<div class="card-breadcrumb">'+esc(item.breadcrumb)+'</div>':'')
     +buildCatPills(item.diffsByCategory)+'</div>';
 }
@@ -270,6 +359,37 @@ function buildGroup(spec){
     +'</summary>'
     +'<div class="severity-body">'+items.map((item,i)=>buildCard(item,spec.key,i)).join('')+'</div>';
   return el;
+}
+
+function buildVisualDiffSection(elementId){
+  const uris=DIFF_URIS[elementId];
+  if(!uris) return '';
+  const panelId='vd-'+String(elementId).replace(/[^a-zA-Z0-9-_]/g,'_');
+  const legendId='vd-legend-'+String(elementId).replace(/[^a-zA-Z0-9-_]/g,'_');
+  function pane(uri,label,labelCls){
+    const content=uri
+      ?'<img class="vdiff-img" src="'+uri+'" alt="'+label+'" loading="lazy">'
+      :'<div class="vdiff-missing">No capture</div>';
+    return '<div class="vdiff-pane">'
+      +'<div class="vdiff-pane-label '+labelCls+'">'+label+'</div>'
+      +content
+      +'</div>';
+  }
+  return '<div class="vdiff-section">'
+    +'<button class="vdiff-toggle" aria-expanded="false" aria-controls="'+panelId+'">'
+    +'\u{1F4F7} Visual Diff'
+    +'<i class="vdiff-chevron">\u2964</i>'
+    +'</button>'
+    +'<div class="vdiff-panes" id="'+panelId+'" role="region">'
+    +pane(uris.baselineUri,'Baseline','label-baseline')
+    +pane(uris.diffUri,'Diff','label-diff')
+    +pane(uris.compareUri,'Compare','label-compare')
+    +'</div>'
+    +'<div class="vdiff-legend" id="'+legendId+'" style="display:none">'
+    +'<span class="vdiff-legend-item"><span class="legend-dot magenta"></span>Real difference</span>'
+    +'<span class="vdiff-legend-item"><span class="legend-dot yellow"></span>Anti-alias artifact</span>'
+    +'</div>'
+    +'</div>';
 }
 
 function renderListAsync(){
@@ -310,12 +430,15 @@ function renderDetail(item){
     }).join('');
     return '<div class="detail-category"><div class="cat-title">'+esc(cat)+'</div>'+rows+'</div>';
   }).join('');
+
   detailEl.innerHTML='<div class="detail-header">'
     +'<div class="detail-tag">'+esc(item.elementKey)+'</div>'
     +(item.breadcrumb?'<div class="detail-breadcrumb">'+esc(item.breadcrumb)+'</div>':'')
     +'<div class="detail-selectors">'+selBtns+'</div>'
     +'</div>'
-    +(catBlocks||'<div class="detail-placeholder" style="margin-top:20px">No property diffs</div>');
+    +(catBlocks||'<div class="detail-placeholder" style="margin-top:20px">No property diffs</div>')
+    +buildVisualDiffSection(item.elementId);
+
   detailEl.querySelectorAll('[data-copy]').forEach(btn=>{
     btn.addEventListener('click',()=>{
       navigator.clipboard.writeText(btn.dataset.copy).then(()=>{
@@ -324,6 +447,22 @@ function renderDetail(item){
       });
     });
   });
+
+  const toggleBtn=detailEl.querySelector('.vdiff-toggle');
+  if(toggleBtn){
+    toggleBtn.addEventListener('click',()=>{
+      const expanded=toggleBtn.getAttribute('aria-expanded')==='true';
+      const panes=detailEl.querySelector('.vdiff-panes');
+      const key=toggleBtn.getAttribute('aria-controls').replace(/^vd-/,'');
+      const legend=detailEl.getElementById
+        ? null
+        : document.getElementById('vd-legend-'+key);
+      const legendEl=detailEl.querySelector('[id^="vd-legend-"]');
+      toggleBtn.setAttribute('aria-expanded',String(!expanded));
+      if(panes) panes.classList.toggle('open',!expanded);
+      if(legendEl) legendEl.style.display=expanded?'none':'flex';
+    });
+  }
 }
 
 function applyFilters(){
@@ -390,6 +529,5 @@ renderListAsync();
 })();
 `;
 }
-
 
 export { exportToHTML };

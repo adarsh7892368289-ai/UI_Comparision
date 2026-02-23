@@ -16,7 +16,7 @@ async function loadAllReports() {
     return reports
       .filter(report => {
         const v = isValidMeta(report);
-        if (!v.valid) logger.warn('Invalid report metadata', { id: report.id, errors: v.errors });
+        if (!v.valid) {logger.warn('Invalid report metadata', { id: report.id, errors: v.errors });}
         return v.valid;
       })
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
@@ -66,7 +66,7 @@ async function getReportById(reportId) {
   try {
     const reports = await storage.loadReports();
     const meta    = reports.find(r => r.id === reportId);
-    if (!meta) return null;
+    if (!meta) {return null;}
     const elements = await storage.loadReportElements(reportId);
     return { ...meta, elements };
   } catch (error) {
@@ -81,7 +81,7 @@ async function deleteAllReports() {
     const count   = reports.length;
     const result  = await storage.deleteAllReports();
 
-    if (!result.success) return result;
+    if (!result.success) {return result;}
 
     logger.info('All reports deleted', { count });
     return { success: true, count };
@@ -139,14 +139,14 @@ async function exportReportAsJson(report) {
 async function exportAllReportsAsJson() {
   try {
     const metas = await storage.loadReports();
-    if (metas.length === 0) return { success: false, error: 'No reports to export' };
+    if (metas.length === 0) {return { success: false, error: 'No reports to export' };}
 
     // Sequential load: prevents loading all element arrays into memory simultaneously.
     // Promise.all on N reports × 10k elements each = catastrophic memory spike.
     const full = [];
     for (const meta of metas) {
       const report = await getReportById(meta.id);
-      if (report) full.push(report);
+      if (report) {full.push(report);}
     }
 
     _triggerDownload(JSON.stringify(full, null, 2), 'application/json', `all-reports-${Date.now()}.json`);
@@ -175,14 +175,14 @@ async function exportReportAsCsv(report) {
 async function exportAllReportsAsCsv() {
   try {
     const metas = await storage.loadReports();
-    if (metas.length === 0) return { success: false, error: 'No reports to export' };
+    if (metas.length === 0) {return { success: false, error: 'No reports to export' };}
 
     // Sequential: see exportAllReportsAsJson for memory rationale
     const sections = [];
     for (let i = 0; i < metas.length; i++) {
       const report = await getReportById(metas[i].id);
       if (report) {
-        sections.push(`## ===== REPORT ${i + 1} of ${metas.length} =====\n` + _buildReportCsv(report));
+        sections.push(`## ===== REPORT ${i + 1} of ${metas.length} =====\n${  _buildReportCsv(report)}`);
       }
     }
 
@@ -259,8 +259,8 @@ function _buildReportCsv(report) {
 }
 
 function _csv(value) {
-  if (value === null || value === undefined) return '';
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null || value === undefined) {return '';}
+  if (typeof value === 'number' || typeof value === 'boolean') {return String(value);}
   const str  = String(value);
   const safe = /^[=+\-@]/.test(str) ? `'${str}` : str;
   if (safe.includes(',') || safe.includes('"') || safe.includes('\n') || safe.includes('\r')) {

@@ -5,7 +5,7 @@
  * Check if an xpath string is syntactically valid.
  */
 function isValidXPath(xpath) {
-  if (!xpath || typeof xpath !== 'string') return false;
+  if (!xpath || typeof xpath !== 'string') {return false;}
   try {
     document.evaluate(xpath, document, null, XPathResult.ANY_TYPE, null);
     return true;
@@ -43,7 +43,7 @@ function xpathPointsToElement(xpath, targetElement, context = document) {
       xpath, context, null,
       XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null
     );
-    if (result.snapshotLength === 0) return false;
+    if (result.snapshotLength === 0) {return false;}
     // We check the FIRST result — caller is responsible for ensuring uniqueness
     // before calling this, or for using isUniqueXPath.
     return result.snapshotItem(0) === targetElement;
@@ -82,7 +82,7 @@ function ensureUniqueness(xpath, targetElement, context = document) {
     for (let i = 0; i < result.snapshotLength; i++) {
       if (result.snapshotItem(i) === targetElement) {
         // Already unique — no predicate needed
-        if (result.snapshotLength === 1) return xpath;
+        if (result.snapshotLength === 1) {return xpath;}
         return `(${xpath})[${i + 1}]`;
       }
     }
@@ -97,12 +97,12 @@ function ensureUniqueness(xpath, targetElement, context = document) {
  * Handles strings containing both single and double quotes via concat().
  */
 function escapeXPath(str) {
-  if (str === null || str === undefined) return "''";
-  if (typeof str !== 'string') str = String(str);
-  if (str === '') return "''";
+  if (str === null || str === undefined) {return "''";}
+  if (typeof str !== 'string') {str = String(str);}
+  if (str === '') {return "''";}
 
-  if (!str.includes("'")) return `'${str}'`;
-  if (!str.includes('"')) return `"${str}"`;
+  if (!str.includes("'")) {return `'${str}'`;}
+  if (!str.includes('"')) {return `"${str}"`;}
 
   // String contains both ' and " — use concat()
   const parts = str.split("'");

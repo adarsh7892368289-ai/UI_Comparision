@@ -90,7 +90,7 @@ class Comparator {
   }
 
   _calculateMatchRate(matched, total) {
-    if (total === 0) return 0;
+    if (total === 0) {return 0;}
     return Math.round((matched / total) * 100);
   }
 }

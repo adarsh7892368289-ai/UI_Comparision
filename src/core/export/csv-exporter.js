@@ -93,8 +93,8 @@ function _generateCSV(result) {
 }
 
 function _escape(value) {
-  if (value === null || value === undefined) return '';
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null || value === undefined) {return '';}
+  if (typeof value === 'number' || typeof value === 'boolean') {return String(value);}
   const str  = String(value);
   const safe = /^[=+\-@]/.test(str) ? `'${str}` : str;
   if (safe.includes(',') || safe.includes('"') || safe.includes('\n') || safe.includes('\r')) {

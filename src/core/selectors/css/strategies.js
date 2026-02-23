@@ -11,8 +11,8 @@ const TEST_ATTRS = ['data-testid', 'data-test', 'data-qa', 'data-cy', 'data-auto
 class CSSStrategies {
 
   static tier1Id(element, tag) {
-    const id = element.id;
-    if (!id || !isStableId(id)) return [];
+    const {id} = element;
+    if (!id || !isStableId(id)) {return [];}
     const escaped = CSS.escape ? CSS.escape(id) : escapeCss(id);
     return [{ selector: `${tag}#${escaped}`, strategy: 'id', tier: 1 }];
   }
@@ -31,7 +31,7 @@ class CSSStrategies {
   static tier3DataAttributes(element, tag) {
     const results = [];
     for (const { name, value } of Array.from(element.attributes)) {
-      if (!name.startsWith('data-') || TEST_ATTRS.includes(name)) continue;
+      if (!name.startsWith('data-') || TEST_ATTRS.includes(name)) {continue;}
       if (value && isStableValue(value) && value.length < 100) {
         results.push({ selector: `${tag}[${name}="${escapeCss(value)}"]`, strategy: 'data-attr', tier: 3 });
       }
@@ -69,7 +69,7 @@ class CSSStrategies {
       ['title',       element.getAttribute('title')],
       ['name',        element.getAttribute('name')],
       ['value',       element.getAttribute('value')],
-      ['for',         element.getAttribute('for')],
+      ['for',         element.getAttribute('for')]
     ];
     for (const [attr, value] of checks) {
       if (value && isStableValue(value) && value.length > 0 && value.length < 120) {
@@ -82,7 +82,7 @@ class CSSStrategies {
   static tier7Classes(element, tag) {
     const results = [];
     const classList = Array.from(element.classList).filter(isStableClass);
-    if (classList.length === 0) return results;
+    if (classList.length === 0) {return results;}
 
     const escape = c => CSS.escape ? CSS.escape(c) : escapeCss(c);
 
@@ -133,11 +133,11 @@ class CSSStrategies {
 
   static tier9Pseudo(element, tag) {
     const pseudos = [];
-    if (element.disabled) pseudos.push(':disabled');
-    if (element.required) pseudos.push(':required');
-    if (element.checked)  pseudos.push(':checked');
-    if (element.readOnly) pseudos.push(':read-only');
-    if (pseudos.length === 0) return [];
+    if (element.disabled) {pseudos.push(':disabled');}
+    if (element.required) {pseudos.push(':required');}
+    if (element.checked)  {pseudos.push(':checked');}
+    if (element.readOnly) {pseudos.push(':read-only');}
+    if (pseudos.length === 0) {return [];}
     return [{ selector: `${tag}${pseudos.join('')}`, strategy: 'pseudo', tier: 9 }];
   }
 
@@ -156,11 +156,11 @@ class CSSStrategies {
 
   static tier11NthChildScoped(element, tag) {
     const parent = element.parentElement;
-    if (!parent) return [];
+    if (!parent) {return [];}
 
     const siblings = Array.from(parent.children);
     const index = siblings.indexOf(element);
-    if (index === -1) return [];
+    if (index === -1) {return [];}
 
     const nthSelector = `${tag}:nth-child(${index + 1})`;
     const ancestor = _findStableAncestor(element);
@@ -175,11 +175,11 @@ class CSSStrategies {
 
   static tier12NthTypeScoped(element, tag) {
     const parent = element.parentElement;
-    if (!parent) return [];
+    if (!parent) {return [];}
 
     const siblings = Array.from(parent.children).filter(el => el.tagName.toLowerCase() === tag);
     const index = siblings.indexOf(element);
-    if (index === -1) return [];
+    if (index === -1) {return [];}
 
     const nthSelector = `${tag}:nth-of-type(${index + 1})`;
     const ancestor = _findStableAncestor(element);
@@ -197,9 +197,9 @@ function _findStableAncestor(element) {
   let current = element.parentElement;
   let depth = 0;
   while (current && depth < 6) {
-    if (current.id && isStableId(current.id)) return current;
+    if (current.id && isStableId(current.id)) {return current;}
     for (const attr of TEST_ATTRS) {
-      if (current.getAttribute(attr)) return current;
+      if (current.getAttribute(attr)) {return current;}
     }
     current = current.parentElement;
     depth++;
@@ -214,7 +214,7 @@ function _buildAncestorSelector(ancestor) {
   }
   for (const attr of TEST_ATTRS) {
     const val = ancestor.getAttribute(attr);
-    if (val) return `[${attr}="${escapeCss(val)}"]`;
+    if (val) {return `[${attr}="${escapeCss(val)}"]`;}
   }
   return ancestor.tagName.toLowerCase();
 }
@@ -232,7 +232,7 @@ function getAllStrategies() {
     { tier: 9,  fn: (el, tag) => CSSStrategies.tier9Pseudo(el, tag),            name: 'pseudo' },
     { tier: 10, fn: (el, tag) => CSSStrategies.tier10HrefSrc(el, tag),          name: 'href-src' },
     { tier: 11, fn: (el, tag) => CSSStrategies.tier11NthChildScoped(el, tag),   name: 'nth-child' },
-    { tier: 12, fn: (el, tag) => CSSStrategies.tier12NthTypeScoped(el, tag),    name: 'nth-type' },
+    { tier: 12, fn: (el, tag) => CSSStrategies.tier12NthTypeScoped(el, tag),    name: 'nth-type' }
   ];
 }
 

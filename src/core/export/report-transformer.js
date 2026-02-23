@@ -3,8 +3,12 @@ const SEVERITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
 function elementLabel(el) {
   const tag = (el.tagName || 'unknown').toLowerCase();
   const id  = el.elementId ? `#${el.elementId}` : '';
-  const cls = el.className
-    ? '.' + String(el.className).trim().split(/\s+/).slice(0, 2).join('.')
+  const rawClass = el.className;
+  const classStr = typeof rawClass === 'string'
+    ? rawClass
+    : (rawClass?.baseVal ?? '');
+  const cls = classStr.trim()
+    ? `.${  classStr.trim().split(/\s+/).slice(0, 2).join('.')}`
     : '';
   return `${tag}${id}${cls}`;
 }
@@ -15,7 +19,7 @@ function elementBreadcrumb(el) {
 
 function getTopSeverity(annotatedDifferences) {
   for (const level of ['critical', 'high', 'medium', 'low']) {
-    if (annotatedDifferences.some(d => d.severity === level)) return level;
+    if (annotatedDifferences.some(d => d.severity === level)) {return level;}
   }
   return 'low';
 }
@@ -24,7 +28,7 @@ function buildDiffsByCategory(annotatedDifferences) {
   const map = {};
   for (const diff of annotatedDifferences) {
     const cat = diff.category || 'other';
-    if (!map[cat]) map[cat] = [];
+    if (!map[cat]) {map[cat] = [];}
     map[cat].push(diff);
   }
   for (const cat of Object.keys(map)) {

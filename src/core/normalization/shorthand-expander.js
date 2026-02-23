@@ -24,15 +24,15 @@ function expandShorthands(styles) {
     }
   }
 
-  if (expanded['border']) {
+  if (expanded.border) {
     expandBorderShorthand(expanded);
   }
 
-  if (expanded['background']) {
+  if (expanded.background) {
     expandBackgroundShorthand(expanded);
   }
 
-  if (expanded['font']) {
+  if (expanded.font) {
     expandFontShorthand(expanded);
   }
 
@@ -59,8 +59,8 @@ function expandShorthandValue(value, count) {
 }
 
 function expandBorderShorthand(styles) {
-  const border = styles['border'];
-  if (!border) return;
+  const {border} = styles;
+  if (!border) {return;}
 
   const parts = border.split(/\s+/);
   
@@ -103,8 +103,8 @@ function expandBorderShorthand(styles) {
 }
 
 function expandBackgroundShorthand(styles) {
-  const bg = styles['background'];
-  if (!bg) return;
+  const bg = styles.background;
+  if (!bg) {return;}
 
   const colorMatch = bg.match(/(#[0-9a-f]{3,8}|rgba?\([^)]+\)|hsla?\([^)]+\)|[a-z]+)/i);
   if (colorMatch && !styles['background-color']) {
@@ -118,16 +118,16 @@ function expandBackgroundShorthand(styles) {
 }
 
 function expandFontShorthand(styles) {
-  const font = styles['font'];
-  if (!font) return;
+  const {font} = styles;
+  if (!font) {return;}
 
   const parts = font.split(/\s+/);
   
   for (const part of parts) {
     if (part === 'italic' || part === 'oblique') {
-      if (!styles['font-style']) styles['font-style'] = part;
+      if (!styles['font-style']) {styles['font-style'] = part;}
     } else if (part === 'bold' || part === 'bolder' || part === 'lighter' || /^\d{3}$/.test(part)) {
-      if (!styles['font-weight']) styles['font-weight'] = part;
+      if (!styles['font-weight']) {styles['font-weight'] = part;}
     } else if (/^\d/.test(part)) {
       const sizeMatch = part.match(/^([^/]+)/);
       if (sizeMatch && !styles['font-size']) {
@@ -137,9 +137,7 @@ function expandFontShorthand(styles) {
       if (lineMatch && !styles['line-height']) {
         styles['line-height'] = lineMatch[1];
       }
-    } else {
-      if (!styles['font-family']) styles['font-family'] = part;
-    }
+    } else if (!styles['font-family']) {styles['font-family'] = part;}
   }
 }
 

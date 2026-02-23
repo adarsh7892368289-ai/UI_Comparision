@@ -34,7 +34,7 @@ const LINE_BREAKS_PATTERN = /[\r\n\t]+/g;
 // Removes line breaks and normalizes whitespace for single-line strings
 // Returns cleaned string; safe for null inputs
 export function cleanText(text) {
-  if (typeof text !== 'string') return '';
+  if (typeof text !== 'string') {return '';}
   return text.replace(LINE_BREAKS_PATTERN, ' ').replace(WHITESPACE_PATTERN, ' ').trim();
 }
 
@@ -43,7 +43,7 @@ export function cleanText(text) {
 // Extracts only data-* attributes for selector generation
 // Returns filtered attribute map; excludes non-data attributes
 export function getDataAttributes(element) {
-  if (!element) return {};
+  if (!element) {return {};}
   
   const dataAttrs = {};
   try {
@@ -138,7 +138,7 @@ function calculateCenterPoint(element) {
 }
 
 export function calculateDistance(elem1, elem2) {
-  if (!elem1 || !elem2) return Infinity;
+  if (!elem1 || !elem2) {return Infinity;}
 
   const center1 = calculateCenterPoint(elem1);
   const center2 = calculateCenterPoint(elem2);
@@ -154,7 +154,7 @@ export function calculateDistance(elem1, elem2) {
 // Contract: Returns false for numeric-only, UUID, framework-prefixed, or dynamic IDs
 export function isStableId(id) {
   // Length guard
-  if (!id || id.length < 2 || id.length > 200) return false;
+  if (!id || id.length < 2 || id.length > 200) {return false;}
   // Config-driven patterns — no hardcoded list here
   return !getIdPatterns().some(pattern => pattern.test(id));
 }
@@ -168,8 +168,8 @@ export function isStableValue(value) {
     /^[0-9]+:[0-9]+;[a-z]$/i, /-\d+-\d+$/
   ];
   
-  if (!value || typeof value !== 'string') return false;
-  if (value.length < 1 || value.length > 200) return false;
+  if (!value || typeof value !== 'string') {return false;}
+  if (value.length < 1 || value.length > 200) {return false;}
   return !UNSTABLE_VALUE_PATTERNS.some(pattern => pattern.test(value));
 }
 
@@ -189,8 +189,8 @@ export function isStableClass(className) {
 // Checks if text content is static (not dynamic like timestamps, UUIDs, currency)
 // Contract: Returns false for numeric-only, dates, loading indicators, money values
 export function isStaticText(text) {
-  if (!text || typeof text !== 'string') return false;
-  if (text.length < 2 || text.length > 200) return false;
+  if (!text || typeof text !== 'string') {return false;}
+  if (text.length < 2 || text.length > 200) {return false;}
   
   const dynamicPatterns = [
     /^\d+$/, /^[0-9]{8,}$/, /^[a-f0-9]{8}-[a-f0-9]{4}/i,
@@ -286,7 +286,7 @@ export function findBestSemanticAncestor(element) {
 
     if (SEMANTIC_TAGS.includes(tag)) {
       const attr = getBestAttribute(current);
-      if (attr) return current;
+      if (attr) {return current;}
     }
 
     current = current.parentElement;
@@ -309,10 +309,10 @@ export function findNearbyTextElements(element, maxDistance = 200) {
     const candidates = document.querySelectorAll('label, span, div, p, h1, h2, h3, h4, h5, h6, legend, button, a, td, th');
     
     for (const el of candidates) {
-      if (el === element || el.contains(element) || element.contains(el)) continue;
+      if (el === element || el.contains(element) || element.contains(el)) {continue;}
       
       const text = cleanText(el.textContent);
-      if (!text || text.length === 0 || text.length > 100) continue;
+      if (!text || text.length === 0 || text.length > 100) {continue;}
       
       const elRect = el.getBoundingClientRect();
       const elCenterX = elRect.left + elRect.width / 2;

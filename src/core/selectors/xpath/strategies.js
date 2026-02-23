@@ -24,8 +24,8 @@ class XPathStrategies {
   static tier0ExactText(element, tag) {
     const results = [];
     const text = cleanText(element.textContent);
-    if (!text || text.length === 0 || text.length > 150) return results;
-    if (!isStaticText(text)) return results;
+    if (!text || text.length === 0 || text.length > 150) {return results;}
+    if (!isStaticText(text)) {return results;}
     results.push({ xpath: `//${tag}[text()=${escapeXPath(text)}]`, strategy: 'exact-text', tier: 0 });
     return results;
   }
@@ -46,7 +46,7 @@ class XPathStrategies {
   // Tier 2: Stable ID
   static tier2StableId(element, tag) {
     const results = [];
-    const id = element.id;
+    const {id} = element;
     if (id && isStableId(id)) {
       results.push({ xpath: `//${tag}[@id=${escapeXPath(id)}]`, strategy: 'stable-id', tier: 2 });
     }
@@ -57,8 +57,8 @@ class XPathStrategies {
   static tier3NormalizedText(element, tag) {
     const results = [];
     const text = cleanText(element.textContent);
-    if (!text || text.length === 0 || text.length > 150) return results;
-    if (!isStaticText(text)) return results;
+    if (!text || text.length === 0 || text.length > 150) {return results;}
+    if (!isStaticText(text)) {return results;}
     results.push({ xpath: `//${tag}[normalize-space(.)=${escapeXPath(text)}]`, strategy: 'normalized-text', tier: 3 });
     return results;
   }
@@ -92,7 +92,7 @@ class XPathStrategies {
   static tier6SemanticAncestor(element, tag) {
     const results = [];
     const ancestor = findBestSemanticAncestor(element);
-    if (!ancestor) return results;
+    if (!ancestor) {return results;}
     const ancestorTag = getUniversalTag(ancestor);
     const ancestorId = ancestor.id;
     if (ancestorId && isStableId(ancestorId)) {
@@ -140,7 +140,7 @@ class XPathStrategies {
   static tier9AncestorChain(element, tag) {
     const results = [];
     const chain = getStableAncestorChain(element, 3); // [{element, attr, depth}]
-    if (chain.length === 0) return results;
+    if (chain.length === 0) {return results;}
     const ancestor = chain[0]; // closest ancestor with a stable attribute
     const ancTag = getUniversalTag(ancestor.element);
     if (ancestor.element.id && isStableId(ancestor.element.id)) {
@@ -176,8 +176,8 @@ class XPathStrategies {
   static tier12PartialText(element, tag) {
     const results = [];
     const text = cleanText(element.textContent);
-    if (!text || text.length < 5 || text.length > 200) return results;
-    if (!isStaticText(text)) return results;
+    if (!text || text.length < 5 || text.length > 200) {return results;}
+    if (!isStaticText(text)) {return results;}
     const words = text.split(/\s+/).filter(w => w.length > 0);
     if (words.length >= 2) {
       const partial = words.slice(0, Math.min(4, words.length)).join(' ');
@@ -192,7 +192,7 @@ class XPathStrategies {
   static tier13ParentWithId(element, tag) {
     const results = [];
     const parent = element.parentElement;
-    if (!parent) return results;
+    if (!parent) {return results;}
     const parentTag = getUniversalTag(parent);
     const parentId = parent.id;
     if (parentId && isStableId(parentId)) {
@@ -211,10 +211,10 @@ class XPathStrategies {
   static tier14ClassCombination(element, tag) {
     const results = [];
     const classAttr = element.getAttribute('class');
-    if (!classAttr || !classAttr.trim()) return results;
+    if (!classAttr || !classAttr.trim()) {return results;}
     const unstablePatterns = [/^Mui[A-Z]/, /^makeStyles-/, /^css-[a-z0-9]+$/i, /^jss\d+$/, /^sc-/, /^emotion-/, /lwc-/i, /^_[a-z0-9]{5,}$/i];
     const stable = classAttr.trim().split(/\s+/).filter(c => c.length >= 2 && !unstablePatterns.some(p => p.test(c)));
-    if (stable.length === 0) return results;
+    if (stable.length === 0) {return results;}
     results.push({ xpath: `//${tag}[contains(@class,${escapeXPath(stable[0])})]`, strategy: 'class-single', tier: 14 });
     if (stable.length >= 2) {
       results.push({ xpath: `//${tag}[contains(@class,${escapeXPath(stable[0])}) and contains(@class,${escapeXPath(stable[1])})]`, strategy: 'class-combo', tier: 14 });
@@ -313,7 +313,7 @@ class XPathStrategies {
   static tier20TagWithPosition(element, tag) {
     const results = [];
     const parent = element.parentElement;
-    if (!parent) return results;
+    if (!parent) {return results;}
     const directSameTag = Array.from(parent.children).filter(c => c.tagName === element.tagName);
     const index = directSameTag.indexOf(element);
     if (index !== -1) {
@@ -327,7 +327,7 @@ class XPathStrategies {
   static tier21TypePosition(element, tag) {
     const results = [];
     const parent = element.parentElement;
-    if (!parent || !parent.parentElement) return results;
+    if (!parent || !parent.parentElement) {return results;}
     const sameTag = Array.from(parent.children).filter(el => el.tagName === element.tagName);
     const index = sameTag.indexOf(element);
     if (index !== -1) {

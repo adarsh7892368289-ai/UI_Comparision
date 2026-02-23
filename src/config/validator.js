@@ -194,8 +194,8 @@ function validateConfig({ throwOnError = true } = {}) {
   const valid = errors.length === 0;
 
   if (!valid) {
-    const summary = `Config validation failed with ${errors.length} error(s):\n` +
-                    errors.map(e => `  • ${e}`).join('\n');
+    const summary = `Config validation failed with ${errors.length} error(s):\n${ 
+                    errors.map(e => `  • ${e}`).join('\n')}`;
 
     if (throwOnError) {
       throw new Error(summary);

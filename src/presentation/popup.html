@@ -167,6 +167,17 @@
           </label>
         </div>
 
+        <label class="visual-toggle" id="visual-toggle-wrap">
+          <div class="visual-toggle__track">
+            <input type="checkbox" id="visual-diff-toggle" checked aria-describedby="visual-toggle-hint">
+            <span class="visual-toggle__thumb" aria-hidden="true"></span>
+          </div>
+          <div class="visual-toggle__text">
+            <span class="visual-toggle__label">Include Visual Diff</span>
+            <span class="visual-toggle__hint" id="visual-toggle-hint">Captures screenshots via CDP — requires source tabs to be open</span>
+          </div>
+        </label>
+
         <button class="btn-primary" id="compare-btn" disabled>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true">
             <path d="M8 6l4-4 4 4M16 18l-4 4-4-4M12 2v20"/>

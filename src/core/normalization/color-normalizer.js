@@ -114,7 +114,7 @@ function hexToRgba(hex) {
 
 function standardizeRgba(rgba) {
   const match = rgba.match(/rgba?\s*\(\s*([^)]+)\s*\)/);
-  if (!match) return rgba;
+  if (!match) {return rgba;}
 
   const parts = match[1].split(',').map(p => p.trim());
   
@@ -128,7 +128,7 @@ function standardizeRgba(rgba) {
 
 function hslToRgba(hsl) {
   const match = hsl.match(/hsla?\s*\(\s*([^)]+)\s*\)/);
-  if (!match) return hsl;
+  if (!match) {return hsl;}
 
   const parts = match[1].split(',').map(p => p.trim());
   
@@ -137,8 +137,8 @@ function hslToRgba(hsl) {
   let l = parseFloat(parts[2].replace('%', '')) / 100;
   const a = parts[3] ? parseFloat(parts[3]) : 1;
 
-  h = h % 360;
-  if (h < 0) h += 360;
+  h %= 360;
+  if (h < 0) {h += 360;}
   
   s = Math.max(0, Math.min(1, s));
   l = Math.max(0, Math.min(1, l));

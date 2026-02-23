@@ -32,7 +32,7 @@ class NormalizerEngine {
   }
 
   normalize(styles, element = null) {
-    if (!styles || typeof styles !== 'object') return styles;
+    if (!styles || typeof styles !== 'object') {return styles;}
 
     try {
       const expanded   = expandShorthands(styles);
@@ -49,7 +49,7 @@ class NormalizerEngine {
   }
 
   normalizeProperty(property, value, element = null) {
-    if (!value || typeof value !== 'string') return value;
+    if (!value || typeof value !== 'string') {return value;}
 
     try {
       if (COLOR_PROPERTIES.has(property)) {
@@ -73,10 +73,10 @@ class NormalizerEngine {
   }
 
   _cached(property, value, ctxDependent, context, fn) {
-    if (!this.cache) return fn();
+    if (!this.cache) {return fn();}
 
     const hit = this.cache.get(property, value, ctxDependent, context);
-    if (hit !== undefined) return hit;
+    if (hit !== undefined) {return hit;}
 
     const result = fn();
     this.cache.set(property, value, result, ctxDependent, context);

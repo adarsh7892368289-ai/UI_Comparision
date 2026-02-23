@@ -84,7 +84,7 @@ async function safeExecute(fn, options = {}) {
   // Read timeout from config — caller may override for specific operations
   const timeout   = options.timeout   ?? get('infrastructure.timeout.default');
   const operation = options.operation ?? 'anonymous';
-  const fallback  = options.fallback;
+  const {fallback} = options;
 
   const circuitBreaker = getCircuitBreaker(operation);
 
