@@ -1,7 +1,7 @@
-import logger from '../infrastructure/logger.js';
-import { errorTracker, ERROR_CODES } from '../infrastructure/error-tracker.js';
-import { MessageTypes } from '../infrastructure/chrome-messaging.js';
 import { extract } from '../core/extraction/extractor.js';
+import { MessageTypes } from '../infrastructure/chrome-messaging.js';
+import { ERROR_CODES, errorTracker } from '../infrastructure/error-tracker.js';
+import logger from '../infrastructure/logger.js';
 
 logger.init();
 errorTracker.init();
@@ -24,10 +24,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (type === MessageTypes.EXTRACT_ELEMENTS) {
     handleExtraction(payload.filters)
       .then(report => {
-        logger.info('Extraction completed', { 
-          totalElements: report.totalElements,
-          duration: report.duration 
-        });
         sendResponse({ success: true, data: report });
       })
       .catch(error => {

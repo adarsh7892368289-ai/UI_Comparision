@@ -2,29 +2,30 @@ import logger from './logger.js';
 import { TabAdapter } from './chrome-tabs.js';
 
 export const MessageTypes = Object.freeze({
-  EXTRACT_ELEMENTS:      'extractElements',
-  EXTRACTION_PROGRESS:   'extractionProgress',
-  EXTRACTION_COMPLETE:   'extractionComplete',
-  
-  START_COMPARISON:      'startComparison',
-  COMPARISON_PROGRESS:   'comparisonProgress',
-  COMPARISON_COMPLETE:   'comparisonComplete',
-  
-  SAVE_REPORT:           'saveReport',
-  LOAD_REPORTS:          'loadReports',
-  LOAD_REPORT_ELEMENTS:  'loadReportElements',
-  DELETE_REPORT:         'deleteReport',
-  DELETE_ALL_REPORTS:          'deleteAllReports',
-  LOAD_CACHED_COMPARISON:      'loadCachedComparison',
-  EXPORT_COMPARISON_HTML:      'exportComparisonHtml',
-  
-  GET_STATE:             'getState',
-  WRITE_PROGRESS:        'writeProgress',
-  WRITE_COMPLETE:        'writeComplete',
-  WRITE_ERROR:           'writeError',
+  EXTRACT_ELEMENTS:       'extractElements',
+  EXTRACTION_PROGRESS:    'extractionProgress',
+  EXTRACTION_COMPLETE:    'extractionComplete',
 
-  VISUAL_PREPARE:        'VISUAL_PREPARE',
-  VISUAL_REVERT:         'VISUAL_REVERT'
+  START_COMPARISON:       'startComparison',
+  COMPARISON_PROGRESS:    'comparisonProgress',
+  COMPARISON_COMPLETE:    'comparisonComplete',
+  COMPARISON_ERROR:       'comparisonError',
+
+  SAVE_REPORT:            'saveReport',
+  LOAD_REPORTS:           'loadReports',
+  LOAD_REPORT_ELEMENTS:   'loadReportElements',
+  DELETE_REPORT:          'deleteReport',
+  DELETE_ALL_REPORTS:     'deleteAllReports',
+  LOAD_CACHED_COMPARISON: 'loadCachedComparison',
+  EXPORT_COMPARISON_HTML: 'exportComparisonHtml',
+
+  GET_STATE:              'getState',
+  WRITE_PROGRESS:         'writeProgress',
+  WRITE_COMPLETE:         'writeComplete',
+  WRITE_ERROR:            'writeError',
+
+  VISUAL_PREPARE:         'VISUAL_PREPARE',
+  VISUAL_REVERT:          'VISUAL_REVERT'
 });
 
 export function sendToBackground(type, payload = {}, timeoutMs = 30000) {
@@ -34,7 +35,7 @@ export function sendToBackground(type, payload = {}, timeoutMs = 30000) {
     }, timeoutMs);
 
     const message = { type, ...payload };
-    
+
     chrome.runtime.sendMessage(message, (response) => {
       clearTimeout(timer);
 
@@ -43,9 +44,9 @@ export function sendToBackground(type, payload = {}, timeoutMs = 30000) {
       }
 
       if (response && response.success === false) {
-        const errorMsg = typeof response.error === 'string' 
-          ? response.error 
-          : response.error?.message || 'Operation failed';
+        const errorMsg = typeof response.error === 'string'
+          ? response.error
+          : (response.error?.message ?? 'Operation failed');
         return reject(new Error(errorMsg));
       }
 
@@ -62,7 +63,7 @@ export function sendToTab(tabId, type, payload = {}, timeoutMs = 60000) {
 export function onMessage(handler) {
   const listener = (message, sender, sendResponse) => {
     const { type, ...payload } = message;
-    
+
     if (!type) {
       logger.warn('Message received without type', { message });
       sendResponse({ success: false, error: 'Missing message type' });
@@ -90,8 +91,8 @@ export function onMessage(handler) {
 export function broadcastToAllTabs(type, payload = {}) {
   return TabAdapter.query({})
     .then(tabs => {
-      const messages = tabs.map(tab => 
-        sendToTab(tab.id, type, payload).catch(err => null)
+      const messages = tabs.map(tab =>
+        sendToTab(tab.id, type, payload).catch(() => null)
       );
       return Promise.allSettled(messages);
     });

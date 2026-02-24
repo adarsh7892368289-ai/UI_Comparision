@@ -1,11 +1,10 @@
 import { get } from '../config/defaults.js';
-import logger from './logger.js';
 import errorTracker from './error-tracker.js';
+import logger from './logger.js';
 
 class CircuitBreaker {
   constructor(name, options = {}) {
     this.name = name;
-    // All defaults read from config — no hardcoded fallback literals
     this.failureThreshold = options.failureThreshold ?? get('infrastructure.circuitBreaker.failureThreshold');
     this.resetTimeout     = options.resetTimeout     ?? get('infrastructure.circuitBreaker.resetTimeout');
     this.cooldownPeriod   = options.cooldownPeriod   ?? get('infrastructure.circuitBreaker.cooldownPeriod');
@@ -81,7 +80,6 @@ function isTransientError(error) {
 }
 
 async function safeExecute(fn, options = {}) {
-  // Read timeout from config — caller may override for specific operations
   const timeout   = options.timeout   ?? get('infrastructure.timeout.default');
   const operation = options.operation ?? 'anonymous';
   const {fallback} = options;
@@ -155,4 +153,5 @@ async function safeExecuteWithRetry(fn, options = {}) {
   return { success: false, error: lastError };
 }
 
-export { safeExecute, safeExecuteWithRetry, CircuitBreaker, getCircuitBreaker };
+export { CircuitBreaker, getCircuitBreaker, safeExecute, safeExecuteWithRetry };
+

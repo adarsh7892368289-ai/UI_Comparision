@@ -2,59 +2,59 @@ import { ElementMatcher } from './matcher.js';
 import { StaticComparisonMode, DynamicComparisonMode } from './comparison-modes.js';
 
 class Comparator {
-  constructor({ matcher, modes, logger } = {}) {
-    this.matcher = matcher ?? new ElementMatcher();
-    this.modes = modes ?? {
-      static: new StaticComparisonMode(),
+  #matcher;
+  #modes;
+  #onProgress;
+
+  constructor({ matcher, modes, onProgress } = {}) {
+    this.#matcher = matcher ?? new ElementMatcher();
+    this.#modes = modes ?? {
+      static:  new StaticComparisonMode(),
       dynamic: new DynamicComparisonMode()
     };
-    this.logger = logger;
+    this.#onProgress = typeof onProgress === 'function' ? onProgress : null;
   }
 
   compare(baselineReport, compareReport, mode = 'static') {
     const startTime = performance.now();
 
-    if (this.logger) {
-      this.logger.info('Starting comparison', {
-        mode,
-        baselineUrl: baselineReport.url,
-        compareUrl: compareReport.url,
-        baselineElements: baselineReport.elements.length,
-        compareElements: compareReport.elements.length
-      });
-    }
+    this.#emit('Matching elements…', 15);
 
-    const matchingResult = this.matcher.matchElements(
+    const matchingResult = this.#matcher.matchElements(
       baselineReport.elements,
       compareReport.elements
     );
 
-    const comparisonMode = this.modes[mode] ?? this.modes.static;
+    this.#emit('Comparing properties…', 50);
+
+    const comparisonMode = this.#modes[mode] ?? this.#modes.static;
     const comparisonResult = comparisonMode.compare(matchingResult.matches);
+
+    this.#emit('Finalising results…', 90);
 
     const duration = performance.now() - startTime;
 
-    const finalResult = {
+    return {
       baseline: {
-        id: baselineReport.id,
-        url: baselineReport.url,
-        title: baselineReport.title,
-        timestamp: baselineReport.timestamp,
+        id:            baselineReport.id,
+        url:           baselineReport.url,
+        title:         baselineReport.title,
+        timestamp:     baselineReport.timestamp,
         totalElements: baselineReport.elements.length
       },
       compare: {
-        id: compareReport.id,
-        url: compareReport.url,
-        title: compareReport.title,
-        timestamp: compareReport.timestamp,
+        id:            compareReport.id,
+        url:           compareReport.url,
+        title:         compareReport.title,
+        timestamp:     compareReport.timestamp,
         totalElements: compareReport.elements.length
       },
       mode,
       matching: {
-        totalMatched: matchingResult.matches.length,
+        totalMatched:     matchingResult.matches.length,
         unmatchedBaseline: matchingResult.unmatchedBaseline.length,
-        unmatchedCompare: matchingResult.unmatchedCompare.length,
-        matchRate: this._calculateMatchRate(
+        unmatchedCompare:  matchingResult.unmatchedCompare.length,
+        matchRate:         this.#calculateMatchRate(
           matchingResult.matches.length,
           baselineReport.elements.length
         )
@@ -62,35 +62,27 @@ class Comparator {
       comparison: comparisonResult,
       unmatchedElements: {
         baseline: matchingResult.unmatchedBaseline.map(el => ({
-          id: el.id,
-          tagName: el.tagName,
-          elementId: el.elementId,
-          className: el.className
+          id: el.id, tagName: el.tagName, elementId: el.elementId, className: el.className
         })),
         compare: matchingResult.unmatchedCompare.map(el => ({
-          id: el.id,
-          tagName: el.tagName,
-          elementId: el.elementId,
-          className: el.className
+          id: el.id, tagName: el.tagName, elementId: el.elementId, className: el.className
         }))
       },
-      duration: Math.round(duration),
+      duration:  Math.round(duration),
       timestamp: new Date().toISOString()
     };
-
-    if (this.logger) {
-      this.logger.info('Comparison complete', {
-        duration: Math.round(duration),
-        matched: matchingResult.matches.length,
-        differences: comparisonResult.summary.totalDifferences
-      });
-    }
-
-    return finalResult;
   }
 
-  _calculateMatchRate(matched, total) {
-    if (total === 0) {return 0;}
+  #emit(label, pct) {
+    if (this.#onProgress) {
+      this.#onProgress(label, pct);
+    }
+  }
+
+  #calculateMatchRate(matched, total) {
+    if (total === 0) {
+      return 0;
+    }
     return Math.round((matched / total) * 100);
   }
 }

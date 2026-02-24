@@ -1,13 +1,17 @@
+import { get } from '../../config/defaults.js';
 import logger from '../../infrastructure/logger.js';
-import { hasSkeleton } from './element-classifier.js';
-
-const STABILITY_WINDOW_MS = 500;
-const HARD_TIMEOUT_MS = 5000;
 
 const CaptureQuality = Object.freeze({
-  STABLE: 'STABLE',
+  STABLE:   'STABLE',
   DEGRADED: 'DEGRADED'
 });
+
+// CSS selector delegated to the browser's C++ selector engine.
+// querySelector short-circuits on first match — O(k) where k is the
+// position of the first match.  No JS object allocation per element.
+// Replaces the previous querySelectorAll('*') + JS regex loop.
+const SKELETON_CSS =
+  '[class*="skeleton"],[class*="shimmer"],[class*="placeholder"],[class*="loading"],[class*="spinner"]';
 
 function hasUnloadedImages() {
   const images = document.querySelectorAll('img');
@@ -20,13 +24,7 @@ function hasUnloadedImages() {
 }
 
 function hasSkeletonElements() {
-  const allElements = document.querySelectorAll('*');
-  for (const el of allElements) {
-    if (hasSkeleton(el)) {
-      return true;
-    }
-  }
-  return false;
+  return document.querySelector(SKELETON_CSS) !== null;
 }
 
 function isDocumentReady() {
@@ -35,52 +33,54 @@ function isDocumentReady() {
 
 function waitForReadiness() {
   return new Promise(resolve => {
-    performance.mark('readiness-gate-start');
-
-    const hardDeadline = setTimeout(() => {
-      teardown();
-      performance.mark('readiness-gate-end');
-      performance.measure('readiness-gate', 'readiness-gate-start', 'readiness-gate-end');
-      logger.warn('Readiness gate hard timeout — proceeding with DEGRADED quality', {
-        url: window.location.href
-      });
-      resolve(CaptureQuality.DEGRADED);
-    }, HARD_TIMEOUT_MS);
+    const stabilityWindowMs = get('extraction.stabilityWindowMs');
+    const hardTimeoutMs     = get('extraction.hardTimeoutMs');
 
     let stabilityTimer = null;
+    let hardTimer      = null;
+    let observer       = null;
 
-    const onStable = () => {
+    function cleanup() {
+      clearTimeout(hardTimer);
+      clearTimeout(stabilityTimer);
+      if (observer) {
+        observer.disconnect();
+      }
+    }
+
+    function settle(quality) {
+      cleanup();
+      resolve(quality);
+    }
+
+    function checkAndSettle() {
       if (!isDocumentReady()) {
         return;
       }
-      teardown();
-      performance.mark('readiness-gate-end');
-      performance.measure('readiness-gate', 'readiness-gate-start', 'readiness-gate-end');
-      logger.debug('Readiness gate cleared', { url: window.location.href });
-      resolve(CaptureQuality.STABLE);
-    };
+      logger.debug('Readiness gate cleared', { quality: CaptureQuality.STABLE });
+      settle(CaptureQuality.STABLE);
+    }
 
-    const resetStabilityTimer = () => {
+    function scheduleCheck() {
       clearTimeout(stabilityTimer);
-      stabilityTimer = setTimeout(onStable, STABILITY_WINDOW_MS);
-    };
+      stabilityTimer = setTimeout(checkAndSettle, stabilityWindowMs);
+    }
 
-    const observer = new MutationObserver(resetStabilityTimer);
+    observer = new MutationObserver(scheduleCheck);
 
-    const teardown = () => {
-      clearTimeout(hardDeadline);
-      clearTimeout(stabilityTimer);
-      observer.disconnect();
-    };
+    hardTimer = setTimeout(() => {
+      logger.warn('Readiness gate hard timeout', { quality: CaptureQuality.DEGRADED });
+      settle(CaptureQuality.DEGRADED);
+    }, hardTimeoutMs);
 
     observer.observe(document.documentElement, {
-      childList: true,
-      subtree: true,
-      attributes: false,
-      characterData: false
+      childList:      true,
+      subtree:        true,
+      attributes:     false,
+      characterData:  false
     });
 
-    resetStabilityTimer();
+    scheduleCheck();
   });
 }
 

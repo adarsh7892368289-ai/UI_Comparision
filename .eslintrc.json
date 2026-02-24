@@ -187,12 +187,14 @@
       "files": [
         "**/*.test.js",
         "**/*.spec.js",
-        "**/benchmark*.js"
+        "**/benchmark*.js",
+        "**/sprint*-validator.js"
       ],
       "rules": {
         "no-console": "off",
         "max-lines-per-function": "off",
-        "max-params": "off"
+        "max-params": "off",
+        "no-underscore-dangle": "off"
       }
     }
   ]

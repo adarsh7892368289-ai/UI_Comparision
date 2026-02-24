@@ -205,7 +205,6 @@ async function pollForNewReport(knownIds, maxWaitMs = EXTRACTION_POLL_MAX_WAIT_M
       const newReport = reports.find(r => !knownIds.has(r.id));
       if (newReport) {return newReport;}
     } catch {
-      // continue polling
     }
   }
   return null;
@@ -273,16 +272,6 @@ async function handleComparison() {
   const btn = document.getElementById('compare-btn');
   btn.disabled = true;
 
-  // ── Port-based architecture: chrome.runtime.connect() keeps SW alive ────────
-  //
-  // sendMessage creates a one-shot port Chrome closes after ~5min.
-  // connect() creates a persistent port — Chrome will NOT kill the SW while
-  // the port is open. The SW runs compareReports(), sends progress through the
-  // port, then sends the result. We close the port when done.
-  //
-  // This completely eliminates the "Background message timeout" error.
-  // ─────────────────────────────────────────────────────────────────────────────
-
   Progress.show('compare', 'Connecting…');
 
   let port = null;
@@ -302,7 +291,6 @@ async function handleComparison() {
   };
 
   try {
-    // Resolve tab IDs for CDP capture
     const baselineReport = state.reports.find(r => r.id === state.selectedBaseline);
     const compareReport  = state.reports.find(r => r.id === state.selectedCompare);
     let baselineTabId = null, compareTabId = null;
@@ -321,13 +309,11 @@ async function handleComparison() {
 
     const includeScreenshots = document.getElementById('visual-diff-toggle')?.checked ?? true;
 
-    // Open persistent port — this is the SW keepalive signal
     port = chrome.runtime.connect({ name: 'comparison' });
 
     port.onDisconnect.addListener(() => {
       portDisconnected = true;
       if (btn.disabled) {
-        // Port closed before we received a result — SW may have crashed
         fail('Connection to background lost. The comparison may still complete — check back in a moment.');
       }
     });
@@ -355,7 +341,6 @@ async function handleComparison() {
       }
     });
 
-    // Send the start message through the port
     port.postMessage({
       type:             MessageTypes.START_COMPARISON,
       baselineId:       state.selectedBaseline,
@@ -450,8 +435,6 @@ async function handleExportComparison() {
 
   const format = document.getElementById('export-format-select')?.value ?? EXPORT_FORMATS.EXCEL;
 
-  // HTML export runs in the Service Worker — screenshots are loaded directly from
-  // IndexedDB there, never serialized over IPC, so they always appear in the report.
   if (format === EXPORT_FORMATS.HTML) {
     await _exportHTMLViaBackground(state);
     return;
@@ -477,9 +460,6 @@ async function _exportHTMLViaBackground(state) {
   if (vBtn) {vBtn.disabled = true;}
 
   try {
-    // sendToBackground rejects if the SW sends { success: false } (e.g. export threw).
-    // On success it resolves with { success: true, data: { success: true } }.
-    // Either way, no double-envelope check needed — just await and handle the catch.
     await sendToBackground(MessageTypes.EXPORT_COMPARISON_HTML, {
       baselineId: state.selectedBaseline,
       compareId:  state.selectedCompare,

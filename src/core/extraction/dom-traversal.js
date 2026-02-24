@@ -1,114 +1,95 @@
-import { isTierZero, matchesFilters } from './element-classifier.js';
+import { getT0Tags, matchesFilters } from './element-classifier.js';
 
-const SHADOW_ID_SEPARATOR = '::shadow::';
+const STACK_CAPACITY = 1024;
+const sharedStackNodes = new Array(STACK_CAPACITY);
+const sharedStackDepths = new Int32Array(STACK_CAPACITY);
+const sharedStackIds = new Int32Array(STACK_CAPACITY);
 
-function createVisitRecord(element, depth, shadowContext) {
-  return { element, depth, shadowContext };
-}
-
-function getSameTagSiblingIndex(element) {
-  if (!element.parentElement) {
-    return 0;
-  }
-  let index = 0;
-  const siblings = element.parentElement.children;
-  for (let i = 0; i < siblings.length; i++) {
-    if (siblings[i] === element) {
-      return index;
-    }
-    if (siblings[i].tagName === element.tagName) {
-      index++;
-    }
-  }
-  return index;
-}
-
-function buildTreeWalkerFilter(filters) {
+function buildFilter(t0Tags, filters) {
   return {
     acceptNode(node) {
-      if (isTierZero(node)) {
+      if (t0Tags.has(node.tagName)) {
         return NodeFilter.FILTER_REJECT;
       }
-      if (!matchesFilters(node, filters)) {
-        return NodeFilter.FILTER_SKIP;
-      }
-      return NodeFilter.FILTER_ACCEPT;
+      return matchesFilters(node, filters) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
     }
   };
 }
 
-function collectFromRoot(root, startDepth, filters, shadowContext, accumulator) {
-  const filter = buildTreeWalkerFilter(filters);
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, filter);
+function buildShadowContext(parentContext, hostElement) {
+  return {
+    inShadow: true,
+    hostElement,
+    shadowDepth: (parentContext?.shadowDepth ?? 0) + 1
+  };
+}
 
+function collectFromRoot(root, baseDepth, shadowContext, ctx, stackBase) {
+  const { filter, siblingMap, accumulator } = ctx;
+
+  sharedStackNodes[stackBase] = root;
+  sharedStackDepths[stackBase] = baseDepth - 1;
+  sharedStackIds[stackBase] = ctx.nextId++;
+  let stackTop = stackBase;
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, filter);
   let node = walker.nextNode();
+
   while (node) {
-    const depth = startDepth + computeRelativeDepth(node, root);
-    accumulator.push(createVisitRecord(node, depth, shadowContext));
+    const parent = node.parentNode;
+
+    while (stackTop > stackBase && sharedStackNodes[stackTop] !== parent) {
+      stackTop--;
+    }
+
+    const depth = sharedStackDepths[stackTop] + 1;
+    stackTop = Math.min(stackTop + 1, STACK_CAPACITY - 1);
+    sharedStackNodes[stackTop] = node;
+    sharedStackDepths[stackTop] = depth;
+    sharedStackIds[stackTop] = ctx.nextId++;
+
+    if (stackTop > ctx.maxStackTop) {
+      ctx.maxStackTop = stackTop;
+    }
+
+    const sibKey = `${sharedStackIds[stackTop - 1]}|${node.tagName}`;
+    const sameTagSiblingIndex = siblingMap.get(sibKey) ?? 0;
+    siblingMap.set(sibKey, sameTagSiblingIndex + 1);
+
+    accumulator.push({ element: node, depth, sameTagSiblingIndex, shadowContext });
 
     if (node.shadowRoot) {
-      const childShadowContext = {
-        inShadow: true,
-        hostId: shadowContext?.hostId ?? null,
-        shadowDepth: (shadowContext?.shadowDepth ?? 0) + 1
-      };
-      collectFromRoot(node.shadowRoot, depth + 1, filters, childShadowContext, accumulator);
+      const innerBase = Math.min(stackTop + 1, STACK_CAPACITY - 1);
+      collectFromRoot(
+        node.shadowRoot,
+        depth + 1,
+        buildShadowContext(shadowContext, node),
+        ctx,
+        innerBase
+      );
     }
 
     node = walker.nextNode();
   }
 }
 
-function computeRelativeDepth(node, root) {
-  let depth = 0;
-  let current = node.parentElement ?? node.parentNode;
-  while (current && current !== root) {
-    depth++;
-    current = current.parentElement ?? current.parentNode;
-  }
-  return depth;
-}
-
 function traverseDocument(filters) {
-  performance.mark('traversal-start');
+  const t0Tags = getT0Tags();
+  const filter = buildFilter(t0Tags, filters);
+  const siblingMap = new Map();
+  const accumulator = [];
+  const ctx = { filter, siblingMap, accumulator, nextId: 1, maxStackTop: 0 };
+  const root = document.body ?? document.documentElement;
 
-  const visits = [];
-  collectFromRoot(document.body ?? document.documentElement, 0, filters, null, visits);
+  collectFromRoot(root, 0, null, ctx, 0);
 
-  performance.mark('traversal-end');
-  performance.measure('dom-traversal', 'traversal-start', 'traversal-end');
-
-  return visits;
-}
-
-function traverseFilteredScoped(roots, filters) {
-  const visits = [];
-  const seen = new WeakSet();
-
-  for (const root of roots) {
-    if (seen.has(root)) {
-      continue;
-    }
-    seen.add(root);
-    collectFromRoot(root, computeDocumentDepth(root), filters, null, visits);
-
-    const descendants = root.querySelectorAll('*');
-    for (const desc of descendants) {
-      seen.add(desc);
-    }
+  for (let i = 0; i <= ctx.maxStackTop; i++) {
+    sharedStackNodes[i] = null;
   }
 
-  return visits;
-}
+  siblingMap.clear();
 
-function computeDocumentDepth(element) {
-  let depth = 0;
-  let current = element.parentElement;
-  while (current) {
-    depth++;
-    current = current.parentElement;
-  }
-  return depth;
+  return accumulator;
 }
 
 function buildShadowHostId(visit, captureIndex) {
@@ -116,7 +97,7 @@ function buildShadowHostId(visit, captureIndex) {
     return null;
   }
   const { shadowDepth } = visit.shadowContext;
-  return `${SHADOW_ID_SEPARATOR}${shadowDepth}-${captureIndex}`;
+  return `::shadow::${shadowDepth}-${captureIndex}`;
 }
 
-export { traverseDocument, traverseFilteredScoped, getSameTagSiblingIndex, buildShadowHostId };
+export { traverseDocument, buildShadowHostId };

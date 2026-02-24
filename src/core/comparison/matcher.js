@@ -1,21 +1,27 @@
 import { get } from '../../config/defaults.js';
 import logger from '../../infrastructure/logger.js';
 
-const MATCH_STRATEGIES = {
-  TEST_ATTRIBUTE: 'test-attribute',
-  ID:             'id',
-  CSS_SELECTOR:   'css-selector',
-  XPATH:          'xpath',
-  POSITION:       'position'
-};
+const MATCH_STRATEGIES = Object.freeze({
+  TEST_ATTRIBUTE:  'test-attribute',
+  SEMANTIC_KEY:    'semantic-key',
+  SEMANTIC_HASH:   'semantic-hash',
+  STRUCTURAL_HASH: 'structural-hash',
+  SELECTOR_PATH:   'selector-path',
+  ID:              'id',
+  POSITION:        'position'
+});
 
-const CONFIDENCE = {
-  TEST_ATTR: 1.00,
-  ID:        0.95,
-  CSS:       0.85,
-  XPATH:     0.80,
-  POSITION:  0.30
-};
+// Confidence weights per spec §5.2
+// sum of weights: 1.00 + 0.30 + 0.25 + 0.12 + 0.95 + 0.30 = these are individual hit confidences
+const CONFIDENCE = Object.freeze({
+  TEST_ATTR:       1.00,
+  SEMANTIC_KEY:    0.90,
+  SEMANTIC_HASH:   0.75,
+  STRUCTURAL_HASH: 0.60,
+  SELECTOR_PATH:   0.80,
+  ID:              0.95,
+  POSITION:        0.30
+});
 
 class ElementMatcher {
   constructor() {
@@ -33,9 +39,9 @@ class ElementMatcher {
 
     const maps = this._buildLookupMaps(compareElements);
 
-    const matches           = [];
-    const unmatchedBaseline = [];
-    const usedCompare       = new Set();
+    const matches            = [];
+    const unmatchedBaseline  = [];
+    const usedCompare        = new Set();
 
     for (let i = 0; i < baselineElements.length; i++) {
       const base = baselineElements[i];
@@ -56,7 +62,7 @@ class ElementMatcher {
       }
     }
 
-    const usedSet       = new Set(matches.map(m => m.compareIndex));
+    const usedSet          = new Set(matches.map(m => m.compareIndex));
     const unmatchedCompare = compareElements.filter((_, i) => !usedSet.has(i));
 
     logger.info('Matching complete', {
@@ -69,46 +75,71 @@ class ElementMatcher {
   }
 
   _buildLookupMaps(elements) {
-    const testAttr = new Map();
-    const byId     = new Map();
-    const byCss    = new Map();
-    const byXPath  = new Map();
-    const grid     = new Map();
-
-    const cellSize = this.positionTolerance;
+    const testAttr      = new Map();
+    const byId          = new Map();
+    const semanticKey   = new Map();
+    const semanticHash  = new Map();
+    const structHash    = new Map();
+    const selectorPath  = new Map();
+    const grid          = new Map();
+    const cellSize      = this.positionTolerance;
 
     for (let i = 0; i < elements.length; i++) {
       const el = elements[i];
 
+      // Priority test-attributes (data-testid etc.)
       for (const attr of this.priorityAttrs) {
         const v = el.attributes?.[attr];
-        if (v) { testAttr.set(`${attr}::${v}`, i); break; }
+        if (v) {
+          testAttr.set(`${attr}::${v}`, i);
+          break;
+        }
       }
 
-      if (el.elementId) {byId.set(el.elementId, i);}
-      if (el.selectors?.css)   {byCss.set(el.selectors.css, i);}
-      if (el.selectors?.xpath) {byXPath.set(el.selectors.xpath, i);}
+      // Legacy stable ID
+      if (el.elementId) {
+        byId.set(el.elementId, i);
+      }
 
-      if (el.position?.x != null && el.position?.y != null) {
-        const key = this._gridKey(el.position.x, el.position.y, el.tagName, cellSize);
-        if (!grid.has(key)) {grid.set(key, []);}
-        grid.get(key).push({ index: i, x: el.position.x, y: el.position.y });
+      // Fingerprint-based lookup (Sprint 2 extraction output)
+      const fp = el.fingerprint;
+      if (fp) {
+        if (fp.semanticKey)    { semanticKey.set(fp.semanticKey, i); }
+        if (fp.semanticHash)   { semanticHash.set(fp.semanticHash, i); }
+        if (fp.structuralHash) { structHash.set(fp.structuralHash, i); }
+        if (fp.selectorPath)   { selectorPath.set(fp.selectorPath, i); }
+      }
+
+      // Spatial grid — use boundingRect (extractor field), not legacy position
+      const rect = el.boundingRect;
+      if (rect?.x != null && rect?.y != null) {
+        const key = this._gridKey(rect.x, rect.y, el.tagName, cellSize);
+        if (!grid.has(key)) {
+          grid.set(key, []);
+        }
+        grid.get(key).push({ index: i, x: rect.x, y: rect.y });
       }
     }
 
-    return { testAttr, byId, byCss, byXPath, grid, cellSize };
+    return { testAttr, byId, semanticKey, semanticHash, structHash, selectorPath, grid, cellSize };
   }
 
-  _lookupMatch(base, { testAttr, byId, byCss, byXPath, grid, cellSize }, usedCompare) {
+  _lookupMatch(base, maps, usedCompare) {
+    const { testAttr, byId, semanticKey, semanticHash, structHash, selectorPath, grid, cellSize } = maps;
+
+    // 1. Priority test-attributes (highest confidence)
     for (const attr of this.priorityAttrs) {
       const v = base.attributes?.[attr];
-      if (!v) {continue;}
+      if (!v) {
+        continue;
+      }
       const idx = testAttr.get(`${attr}::${v}`);
       if (idx != null && !usedCompare.has(idx)) {
         return { index: idx, confidence: CONFIDENCE.TEST_ATTR, strategy: MATCH_STRATEGIES.TEST_ATTRIBUTE };
       }
     }
 
+    // 2. Stable DOM ID
     if (base.elementId) {
       const idx = byId.get(base.elementId);
       if (idx != null && !usedCompare.has(idx)) {
@@ -116,32 +147,51 @@ class ElementMatcher {
       }
     }
 
-    if (base.selectors?.css) {
-      const idx = byCss.get(base.selectors.css);
-      if (idx != null && !usedCompare.has(idx)) {
-        return { index: idx, confidence: CONFIDENCE.CSS, strategy: MATCH_STRATEGIES.CSS_SELECTOR };
+    const fp = base.fingerprint;
+    if (fp) {
+      // 3. Semantic key (aria-label / role composite — stable across rerenders)
+      if (fp.semanticKey) {
+        const idx = semanticKey.get(fp.semanticKey);
+        if (idx != null && !usedCompare.has(idx)) {
+          return { index: idx, confidence: CONFIDENCE.SEMANTIC_KEY, strategy: MATCH_STRATEGIES.SEMANTIC_KEY };
+        }
+      }
+
+      // 4. Selector path (CSS path built from stable anchors)
+      if (fp.selectorPath) {
+        const idx = selectorPath.get(fp.selectorPath);
+        if (idx != null && !usedCompare.has(idx)) {
+          return { index: idx, confidence: CONFIDENCE.SELECTOR_PATH, strategy: MATCH_STRATEGIES.SELECTOR_PATH };
+        }
+      }
+
+      // 5. Semantic hash (tag + content + semantic attrs — tolerates minor rewording)
+      if (fp.semanticHash) {
+        const idx = semanticHash.get(fp.semanticHash);
+        if (idx != null && !usedCompare.has(idx)) {
+          return { index: idx, confidence: CONFIDENCE.SEMANTIC_HASH, strategy: MATCH_STRATEGIES.SEMANTIC_HASH };
+        }
+      }
+
+      // 6. Structural hash (depth + parent + sibling index)
+      if (fp.structuralHash) {
+        const idx = structHash.get(fp.structuralHash);
+        if (idx != null && !usedCompare.has(idx)) {
+          return { index: idx, confidence: CONFIDENCE.STRUCTURAL_HASH, strategy: MATCH_STRATEGIES.STRUCTURAL_HASH };
+        }
       }
     }
 
-    if (base.selectors?.xpath) {
-      const idx = byXPath.get(base.selectors.xpath);
-      if (idx != null && !usedCompare.has(idx)) {
-        return { index: idx, confidence: CONFIDENCE.XPATH, strategy: MATCH_STRATEGIES.XPATH };
-      }
-    }
-
-    if (base.position?.x != null && base.position?.y != null) {
-      return this._positionFallback(base, grid, cellSize, usedCompare);
+    // 7. Positional fallback — use boundingRect
+    const rect = base.boundingRect;
+    if (rect?.x != null && rect?.y != null) {
+      return this._positionFallback(rect.x, rect.y, base.tagName, grid, cellSize, usedCompare);
     }
 
     return null;
   }
 
-  _positionFallback(base, grid, cellSize, usedCompare) {
-    const bx  = base.position.x;
-    const by  = base.position.y;
-    const tag = base.tagName;
-
+  _positionFallback(bx, by, tag, grid, cellSize, usedCompare) {
     let bestIdx  = null;
     let bestDist = Infinity;
 
@@ -150,12 +200,14 @@ class ElementMatcher {
 
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
-        const key      = `${cx + dx}:${cy + dy}:${tag}`;
-        const bucket   = grid.get(key);
-        if (!bucket) {continue;}
-
+        const bucket = grid.get(`${cx + dx}:${cy + dy}:${tag}`);
+        if (!bucket) {
+          continue;
+        }
         for (const { index, x, y } of bucket) {
-          if (usedCompare.has(index)) {continue;}
+          if (usedCompare.has(index)) {
+            continue;
+          }
           const dist = Math.hypot(bx - x, by - y);
           if (dist < this.positionTolerance && dist < bestDist) {
             bestDist = dist;
@@ -165,7 +217,9 @@ class ElementMatcher {
       }
     }
 
-    if (bestIdx === null) {return null;}
+    if (bestIdx === null) {
+      return null;
+    }
 
     const confidence = Math.max(0.1, 1 - bestDist / this.positionTolerance) * CONFIDENCE.POSITION;
     return { index: bestIdx, confidence, strategy: MATCH_STRATEGIES.POSITION };

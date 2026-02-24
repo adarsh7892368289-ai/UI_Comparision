@@ -1,10 +1,7 @@
 import { get } from '../../config/defaults.js';
-import  logger  from '../../infrastructure/logger.js';
 
-// Read rounding precision from config — was hardcoded as 2 everywhere
 const DECIMALS = get('normalization.rounding.decimals', 2);
 
-// Helper — all numeric→px conversions go through here
 function px(value) {
   return `${value.toFixed(DECIMALS)}px`;
 }
@@ -16,170 +13,129 @@ function pct(value) {
 const CONTEXT_DEPENDENT_UNITS = ['em', 'rem', '%', 'vw', 'vh', 'vmin', 'vmax'];
 
 function isContextDependent(value) {
-  if (!value || typeof value !== 'string') {return false;}
-  
+  if (!value || typeof value !== 'string') {
+    return false;
+  }
   const trimmed = value.trim().toLowerCase();
   return CONTEXT_DEPENDENT_UNITS.some(unit => trimmed.includes(unit));
 }
 
-function normalizeUnit(value, property, element) {
+function parseNumAndUnit(trimmed) {
+  const match = trimmed.match(/^([-+]?\d*\.?\d+)([a-z%]+)?$/);
+  if (!match) {
+    return null;
+  }
+  return { num: parseFloat(match[1]), unit: match[2] || '' };
+}
+
+const CSS_KEYWORDS = new Set(['auto', 'none', 'initial', 'inherit', 'unset', 'normal']);
+
+const DIMENSION_RESOLVERS = [
+  {
+    matches: (p) => p.includes('width') || p.includes('left') || p.includes('right') || p.includes('column'),
+    snapshotKey: 'parentWidth',
+    fallback: '0px'
+  },
+  {
+    matches: (p) => p.includes('height') || p.includes('top') || p.includes('bottom') || p.includes('row'),
+    snapshotKey: 'parentHeight',
+    fallback: '0px'
+  },
+  {
+    matches: (p) => p.includes('font') || p === 'line-height',
+    snapshotKey: 'parentFontSize',
+    fallback: '16px'
+  }
+];
+
+function getParentDimension(property, contextSnapshot) {
+  if (!contextSnapshot) {
+    return null;
+  }
+  const resolver = DIMENSION_RESOLVERS.find(r => r.matches(property));
+  return resolver ? parseFloat(contextSnapshot[resolver.snapshotKey] ?? resolver.fallback) : null;
+}
+
+function percentToPx(value, property, contextSnapshot) {
+  const ref = getParentDimension(property, contextSnapshot);
+  if (ref === null || isNaN(ref)) {
+    return pct(value);
+  }
+  return px((value / 100) * ref);
+}
+
+function resolveViewport(contextSnapshot) {
+  return {
+    w: contextSnapshot?.viewportWidth ?? 1024,
+    h: contextSnapshot?.viewportHeight ?? 768
+  };
+}
+
+const UNIT_CONVERTERS = new Map([
+  ['px',   (num) => px(num)],
+  ['em',   (num, _p, ctx) => {
+    const base = parseFloat(ctx?.parentFontSize ?? '16px');
+    return px(num * (isNaN(base) ? 16 : base));
+  }],
+  ['rem',  (num, _p, ctx) => {
+    const base = parseFloat(ctx?.rootFontSize ?? '16px');
+    return px(num * (isNaN(base) ? 16 : base));
+  }],
+  ['%',    (num, prop, ctx) => percentToPx(num, prop, ctx)],
+  ['vw',   (num, _p, ctx) => px(num * (resolveViewport(ctx).w / 100))],
+  ['vh',   (num, _p, ctx) => px(num * (resolveViewport(ctx).h / 100))],
+  ['vmin', (num, _p, ctx) => {
+    const { w, h } = resolveViewport(ctx);
+    return px(num * (Math.min(w, h) / 100));
+  }],
+  ['vmax', (num, _p, ctx) => {
+    const { w, h } = resolveViewport(ctx);
+    return px(num * (Math.max(w, h) / 100));
+  }],
+  ['pt',   (num) => px(num * 1.333333)],
+  ['pc',   (num) => px(num * 16)],
+  ['in',   (num) => px(num * 96)],
+  ['cm',   (num) => px(num * 37.7952755906)],
+  ['mm',   (num) => px(num * 3.77952755906)],
+  ['q',    (num) => px(num * 0.94488188976)]
+]);
+
+function convertUnit(num, unit, property, contextSnapshot) {
+  const converter = UNIT_CONVERTERS.get(unit);
+  return converter ? converter(num, property, contextSnapshot) : null;
+}
+
+function resolveStaticValue(trimmed) {
+  if (CSS_KEYWORDS.has(trimmed)) {
+    return trimmed;
+  }
+  if (trimmed === '0' || trimmed === '0px') {
+    return '0px';
+  }
+  return null;
+}
+
+function normalizeUnit(value, property, contextSnapshot) {
   if (!value || typeof value !== 'string') {
     return value;
   }
 
   const trimmed = value.trim().toLowerCase();
-
-  if (trimmed === 'auto' || trimmed === 'none' || trimmed === 'initial' || 
-      trimmed === 'inherit' || trimmed === 'unset') {
-    return trimmed;
+  const staticResult = resolveStaticValue(trimmed);
+  if (staticResult !== null) {
+    return staticResult;
   }
 
-  if (trimmed === '0' || trimmed === '0px') {
-    return '0px';
-  }
-
-  const match = trimmed.match(/^([-+]?\d*\.?\d+)([a-z%]+)?$/);
-  if (!match) {
+  const parsed = parseNumAndUnit(trimmed);
+  if (!parsed) {
     return value;
   }
 
-  const numValue = parseFloat(match[1]);
-  const unit = match[2] || '';
-
-  if (!unit) {
-    return px(numValue);
+  if (!parsed.unit) {
+    return px(parsed.num);
   }
 
-  switch (unit) {
-    case 'px':
-      return px(numValue);
-
-    case 'em':
-      return emToPx(numValue, element);
-
-    case 'rem':
-      return remToPx(numValue);
-
-    case '%':
-      return percentToPx(numValue, property, element);
-
-    case 'vw':
-      return vwToPx(numValue);
-
-    case 'vh':
-      return vhToPx(numValue);
-
-    case 'vmin':
-      return vminToPx(numValue);
-
-    case 'vmax':
-      return vmaxToPx(numValue);
-
-    case 'pt':
-      return px((numValue * 1.333333));
-
-    case 'pc':
-      return px((numValue * 16));
-
-    case 'in':
-      return px((numValue * 96));
-
-    case 'cm':
-      return px((numValue * 37.7952755906));
-
-    case 'mm':
-      return px((numValue * 3.77952755906));
-
-    case 'q':
-      return px((numValue * 0.94488188976));
-
-    default:
-      return value;
-  }
-}
-
-function emToPx(value, element) {
-  if (!element) {
-    return px((value * 16));
-  }
-
-  try {
-    const parent = element.parentElement;
-    if (!parent) {
-      return px((value * 16));
-    }
-
-    const parentFontSize = window.getComputedStyle(parent).fontSize;
-    const parentPx = parseFloat(parentFontSize);
-    
-    return px((value * parentPx));
-  } catch (error) {
-    logger.warn('Failed to convert em to px', { error: error.message });
-    return px((value * 16));
-  }
-}
-
-function remToPx(value) {
-  try {
-    const rootFontSize = window.getComputedStyle(document.documentElement).fontSize;
-    const rootPx = parseFloat(rootFontSize);
-    
-    return px((value * rootPx));
-  } catch (error) {
-    logger.warn('Failed to convert rem to px', { error: error.message });
-    return px((value * 16));
-  }
-}
-
-function percentToPx(value, property, element) {
-  if (!element) {
-    return pct(value);
-  }
-
-  try {
-    const parent = element.parentElement;
-    if (!parent) {
-      return pct(value);
-    }
-
-    const computed = window.getComputedStyle(parent);
-    let referenceValue;
-
-    if (property.includes('width') || property.includes('left') || property.includes('right')) {
-      referenceValue = parseFloat(computed.width);
-    } else if (property.includes('height') || property.includes('top') || property.includes('bottom')) {
-      referenceValue = parseFloat(computed.height);
-    } else if (property.includes('font')) {
-      referenceValue = parseFloat(computed.fontSize);
-    } else {
-      return pct(value);
-    }
-
-    return px(((value / 100) * referenceValue));
-  } catch (error) {
-    logger.warn('Failed to convert % to px', { error: error.message });
-    return pct(value);
-  }
-}
-
-function vwToPx(value) {
-  const vw = window.innerWidth / 100;
-  return px((value * vw));
-}
-
-function vhToPx(value) {
-  const vh = window.innerHeight / 100;
-  return px((value * vh));
-}
-
-function vminToPx(value) {
-  const vmin = Math.min(window.innerWidth, window.innerHeight) / 100;
-  return px((value * vmin));
-}
-
-function vmaxToPx(value) {
-  const vmax = Math.max(window.innerWidth, window.innerHeight) / 100;
-  return px((value * vmax));
+  return convertUnit(parsed.num, parsed.unit, property, contextSnapshot) ?? value;
 }
 
 export { normalizeUnit, isContextDependent };

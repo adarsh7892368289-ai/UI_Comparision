@@ -25,90 +25,76 @@ const SIZE_PROPERTIES = new Set([
 ]);
 
 class NormalizerEngine {
+  #cache;
+
   constructor() {
     const cacheEnabled = get('normalization.cache.enabled');
-    const maxEntries   = get('normalization.cache.maxEntries');
-    this.cache         = cacheEnabled ? new NormalizationCache(maxEntries) : null;
+    const maxEntries = get('normalization.cache.maxEntries');
+    this.#cache = cacheEnabled ? new NormalizationCache(maxEntries) : null;
   }
 
-  normalize(styles, element = null) {
-    if (!styles || typeof styles !== 'object') {return styles;}
-
+  normalize(styles, contextSnapshot = null) {
+    if (!styles || typeof styles !== 'object') {
+      return styles;
+    }
     try {
-      const expanded   = expandShorthands(styles);
+      const expanded = expandShorthands(styles);
       const normalized = {};
-
       for (const [property, value] of Object.entries(expanded)) {
-        normalized[property] = this.normalizeProperty(property, value, element);
+        normalized[property] = this.normalizeProperty(property, value, contextSnapshot);
       }
-
       return normalized;
     } catch {
       return styles;
     }
   }
 
-  normalizeProperty(property, value, element = null) {
-    if (!value || typeof value !== 'string') {return value;}
-
+  normalizeProperty(property, value, contextSnapshot = null) {
+    if (!value || typeof value !== 'string') {
+      return value;
+    }
     try {
       if (COLOR_PROPERTIES.has(property)) {
-        return this._cached(property, value, false, null, () => normalizeColor(value));
+        return this.#cached(property, value, false, null, () => normalizeColor(value));
       }
-
       if (SIZE_PROPERTIES.has(property)) {
         const ctxDependent = isContextDependent(value);
-        const context      = ctxDependent && element ? this._getContext(element) : null;
-        return this._cached(property, value, ctxDependent, context, () => normalizeUnit(value, property, element));
+        const context = ctxDependent ? contextSnapshot : null;
+        return this.#cached(
+          property, value, ctxDependent, context,
+          () => normalizeUnit(value, property, contextSnapshot)
+        );
       }
-
       if (property === 'font-family') {
-        return this._cached(property, value, false, null, () => normalizeFont(value));
+        return this.#cached(property, value, false, null, () => normalizeFont(value));
       }
-
       return value;
     } catch {
       return value;
     }
   }
 
-  _cached(property, value, ctxDependent, context, fn) {
-    if (!this.cache) {return fn();}
-
-    const hit = this.cache.get(property, value, ctxDependent, context);
-    if (hit !== undefined) {return hit;}
-
+  #cached(property, value, ctxDependent, context, fn) {
+    if (!this.#cache) {
+      return fn();
+    }
+    const hit = this.#cache.get(property, value, ctxDependent, context);
+    if (hit !== undefined) {
+      return hit;
+    }
     const result = fn();
-    this.cache.set(property, value, result, ctxDependent, context);
+    this.#cache.set(property, value, result, ctxDependent, context);
     return result;
   }
 
-  _getContext(element) {
-    try {
-      const computed       = window.getComputedStyle(element);
-      const parentComputed = element.parentElement
-        ? window.getComputedStyle(element.parentElement)
-        : null;
-
-      return {
-        fontSize:       computed.fontSize,
-        parentFontSize: parentComputed?.fontSize ?? '16px',
-        parentWidth:    parentComputed?.width    ?? '0px',
-        parentHeight:   parentComputed?.height   ?? '0px',
-        viewportWidth:  window.innerWidth,
-        viewportHeight: window.innerHeight
-      };
-    } catch {
-      return null;
-    }
-  }
-
   getCacheStats() {
-    return this.cache ? { cacheEnabled: true, ...this.cache.getStats() } : { cacheEnabled: false };
+    return this.#cache
+      ? { cacheEnabled: true, ...this.#cache.getStats() }
+      : { cacheEnabled: false };
   }
 
   clearCache() {
-    this.cache?.clear();
+    this.#cache?.clear();
   }
 }
 

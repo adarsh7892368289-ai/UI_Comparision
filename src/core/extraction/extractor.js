@@ -1,75 +1,22 @@
 import { get } from '../../config/defaults.js';
 import logger from '../../infrastructure/logger.js';
-import { safeExecute } from '../../infrastructure/safe-execute.js';
 import { performanceMonitor } from '../../infrastructure/performance-monitor.js';
-import { generateSelectors } from '../selectors/selector-engine.js';
-import { collectAttributes, getPriorityAttributes } from './attribute-collector.js';
-import { classifyTier, isVisible, shouldSkipTag } from './element-classifier.js';
-import { collectStylesFromComputed, buildContextSnapshot } from './style-collector.js';
-import { traverseDocument, traverseFilteredScoped, buildShadowHostId } from './dom-traversal.js';
+import { safeExecute } from '../../infrastructure/safe-execute.js';
+import { collectAttributes } from './attribute-collector.js';
+import { buildShadowHostId, traverseDocument } from './dom-traversal.js';
+import { classifyTier, isTierZero, isVisible } from './element-classifier.js';
 import { buildFingerprint } from './fingerprint.js';
 import { waitForReadiness } from './readiness-gate.js';
+import { buildContextSnapshot, collectStylesFromComputed } from './style-collector.js';
 
-const MC = new MessageChannel();
-MC.port1.start();
+const yieldChannel = new MessageChannel();
+yieldChannel.port1.start();
 
 function yieldToEventLoop() {
   return new Promise(resolve => {
-    MC.port1.onmessage = resolve;
-    MC.port2.postMessage(null);
+    yieldChannel.port1.onmessage = resolve;
+    yieldChannel.port2.postMessage(null);
   });
-}
-
-function collectFilteredRoots(filters) {
-  const matched = new Set();
-
-  const addWithDescendants = el => {
-    matched.add(el);
-    for (const desc of el.querySelectorAll('*')) {
-      matched.add(desc);
-    }
-  };
-
-  if (filters.class) {
-    for (const cls of filters.class.split(',').map(c => c.trim()).filter(Boolean)) {
-      const selector = cls.startsWith('.') ? cls : `.${cls}`;
-      try {
-        for (const el of document.querySelectorAll(selector)) {
-          addWithDescendants(el);
-        }
-      } catch (error) {
-        logger.warn('Invalid class filter', { cls, error: error.message });
-      }
-    }
-  }
-
-  if (filters.id) {
-    for (const id of filters.id.split(',').map(i => i.trim()).filter(Boolean)) {
-      const selector = id.startsWith('#') ? id : `#${id}`;
-      try {
-        const el = document.querySelector(selector);
-        if (el) {
-          addWithDescendants(el);
-        }
-      } catch (error) {
-        logger.warn('Invalid id filter', { id, error: error.message });
-      }
-    }
-  }
-
-  if (filters.tag) {
-    for (const tag of filters.tag.split(',').map(t => t.trim()).filter(Boolean)) {
-      try {
-        for (const el of document.querySelectorAll(tag)) {
-          addWithDescendants(el);
-        }
-      } catch (error) {
-        logger.warn('Invalid tag filter', { tag, error: error.message });
-      }
-    }
-  }
-
-  return Array.from(matched);
 }
 
 function executePass1(visits) {
@@ -77,21 +24,31 @@ function executePass1(visits) {
 
   const scrollX = window.scrollX;
   const scrollY = window.scrollY;
+  const rootFontSize = window.getComputedStyle(document.documentElement).fontSize;
   const readings = new Array(visits.length);
 
   for (let i = 0; i < visits.length; i++) {
     const { element } = visits[i];
     try {
-      const rect = element.getBoundingClientRect();
-      const computedStyle = window.getComputedStyle(element);
-      readings[i] = { rect, computedStyle, scrollX, scrollY, isConnected: element.isConnected };
+      const parentEl = element.parentElement;
+      readings[i] = {
+        rect:                element.getBoundingClientRect(),
+        computedStyle:       window.getComputedStyle(element),
+        parentComputedStyle: parentEl ? window.getComputedStyle(parentEl) : null,
+        rootFontSize,
+        isConnected:         element.isConnected,
+        scrollX,
+        scrollY
+      };
     } catch {
       readings[i] = {
-        rect: { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 },
-        computedStyle: null,
+        rect:                { x: 0, y: 0, width: 0, height: 0 },
+        computedStyle:       null,
+        parentComputedStyle: null,
+        rootFontSize,
+        isConnected:         false,
         scrollX,
-        scrollY,
-        isConnected: false
+        scrollY
       };
     }
   }
@@ -103,8 +60,7 @@ function executePass1(visits) {
 }
 
 function applyVisibilityFilter(visits, readings) {
-  const skipInvisible = get('extraction.skipInvisible');
-  if (!skipInvisible) {
+  if (!get('extraction.skipInvisible')) {
     return { filteredVisits: visits, filteredReadings: readings };
   }
 
@@ -115,7 +71,7 @@ function applyVisibilityFilter(visits, readings) {
     if (!readings[i].isConnected) {
       continue;
     }
-    if (shouldSkipTag(visits[i].element)) {
+    if (isTierZero(visits[i].element)) {
       continue;
     }
     if (isVisible(readings[i].computedStyle, readings[i].rect)) {
@@ -125,6 +81,54 @@ function applyVisibilityFilter(visits, readings) {
   }
 
   return { filteredVisits, filteredReadings };
+}
+
+function buildBoundingRect(rect, scrollX, scrollY) {
+  if (!rect) {
+    return null;
+  }
+  return { x: rect.x + scrollX, y: rect.y + scrollY, width: rect.width, height: rect.height };
+}
+
+function buildElementRecord(visit, captureIndex, reading) {
+  const { element, depth, sameTagSiblingIndex, shadowContext } = visit;
+  const { rect, computedStyle, parentComputedStyle, rootFontSize, scrollX, scrollY } = reading;
+
+  return {
+    captureIndex,
+    tagName:         element.tagName,
+    elementId:       element.id || null,
+    className:       element.getAttribute('class') || '',
+    textContent:     (element.textContent ?? '').trim().substring(0, 500),
+    tier:            classifyTier(element),
+    depth,
+    fingerprint:     buildFingerprint(element, depth, sameTagSiblingIndex),
+    selectors:       null,
+    styles:          collectStylesFromComputed(computedStyle),
+    attributes:      collectAttributes(element),
+    contextSnapshot: buildContextSnapshot(
+      computedStyle, rect, scrollX, scrollY, parentComputedStyle, rootFontSize
+    ),
+    shadowContext:   shadowContext ?? null,
+    shadowId:        buildShadowHostId(visit, captureIndex),
+    boundingRect:    buildBoundingRect(rect, scrollX, scrollY)
+  };
+}
+
+async function processElement(visit, captureIndex, reading, timeout) {
+  const result = await safeExecute(
+    () => buildElementRecord(visit, captureIndex, reading),
+    { timeout, operation: 'element-extraction' }
+  );
+  return result.success ? result.data : null;
+}
+
+function buildBatchPromises(visits, readings, batchStart, batchEnd, timeout) {
+  const promises = [];
+  for (let j = batchStart; j < batchEnd; j++) {
+    promises.push(processElement(visits[j], j, readings[j], timeout));
+  }
+  return promises;
 }
 
 async function executePass2Batched(visits, readings) {
@@ -137,9 +141,7 @@ async function executePass2Batched(visits, readings) {
   for (let i = 0; i < visits.length; i += batchSize) {
     const batchEnd = Math.min(i + batchSize, visits.length);
     const settled = await Promise.allSettled(
-      visits.slice(i, batchEnd).map((visit, j) =>
-        _processElement(visit, i + j, readings[i + j], perElementTimeout)
-      )
+      buildBatchPromises(visits, readings, i, batchEnd, perElementTimeout)
     );
 
     for (const outcome of settled) {
@@ -159,60 +161,19 @@ async function executePass2Batched(visits, readings) {
   return results;
 }
 
-async function _processElement(visit, captureIndex, reading, timeout) {
-  const result = await safeExecute(
-    () => _buildElementRecord(visit, captureIndex, reading),
-    { timeout, operation: 'element-extraction' }
-  );
-  return result.success ? result.data : null;
-}
-
-async function _buildElementRecord(visit, captureIndex, reading) {
-  const { element, depth, shadowContext } = visit;
-  const { rect, computedStyle, scrollX, scrollY } = reading;
-
-  const tier = classifyTier(element);
-  const fingerprint = buildFingerprint(element, depth);
-  const styles = collectStylesFromComputed(computedStyle);
-  const attributes = collectAttributes(element);
-  const contextSnapshot = buildContextSnapshot(computedStyle, rect, scrollX, scrollY);
-  const selectors = await generateSelectors(element);
-  const shadowId = buildShadowHostId(visit, captureIndex);
-
-  return {
-    captureIndex,
-    tagName: element.tagName,
-    elementId: element.id || null,
-    className: element.getAttribute('class') || '',
-    textContent: (element.textContent ?? '').trim().substring(0, 500),
-    tier,
-    depth,
-    fingerprint,
-    selectors,
-    styles,
-    attributes,
-    contextSnapshot,
-    shadowContext: shadowContext ?? null,
-    shadowId: shadowId ?? null,
-    boundingRect: contextSnapshot.boundingRect
-  };
-}
-
 async function extract(filters = null) {
   const perfHandle = performanceMonitor.start('extraction-total');
   const startTime = performance.now();
 
-  logger.info('Extraction requested', { url: window.location.href, hasFilters: filters !== null });
+  logger.info('Extraction started', { url: window.location.href, hasFilters: Boolean(filters) });
 
   try {
     const captureQuality = await waitForReadiness();
 
-    performance.mark('extraction-traversal-start');
-
-    const visits = _collectVisits(filters);
-
-    performance.mark('extraction-traversal-end');
-    performance.measure('extraction-traversal', 'extraction-traversal-start', 'extraction-traversal-end');
+    performance.mark('traversal-start');
+    const visits = traverseDocument(filters);
+    performance.mark('traversal-end');
+    performance.measure('extraction-traversal', 'traversal-start', 'traversal-end');
 
     logger.debug('Traversal complete', { rawCount: visits.length });
 
@@ -220,62 +181,36 @@ async function extract(filters = null) {
     const { filteredVisits, filteredReadings } = applyVisibilityFilter(visits, readings);
 
     const maxElements = get('extraction.maxElements');
-    const clampedVisits = filteredVisits.length > maxElements
-      ? filteredVisits.slice(0, maxElements)
-      : filteredVisits;
-    const clampedReadings = filteredVisits.length > maxElements
-      ? filteredReadings.slice(0, maxElements)
-      : filteredReadings;
+    const overflow = filteredVisits.length > maxElements;
+    const clampedVisits = overflow ? filteredVisits.slice(0, maxElements) : filteredVisits;
+    const clampedReadings = overflow ? filteredReadings.slice(0, maxElements) : filteredReadings;
 
-    if (filteredVisits.length > maxElements) {
-      logger.warn(`Element count truncated`, { original: filteredVisits.length, limit: maxElements });
+    if (overflow) {
+      logger.warn('Element count truncated', { original: filteredVisits.length, limit: maxElements });
     }
-
-    logger.debug('Starting Pass 2 (async)', { elementCount: clampedVisits.length });
 
     const elements = await executePass2Batched(clampedVisits, clampedReadings);
     const duration = Math.round(performance.now() - startTime);
 
     performanceMonitor.end(perfHandle);
 
-    logger.info('Extraction complete', {
-      elementCount: elements.length,
-      duration,
-      msPerElement: elements.length > 0
-        ? Math.round((duration / elements.length) * 100) / 100
-        : 0,
-      captureQuality
-    });
-
-    if (elements.length >= 100) {
-      performanceMonitor.logImprovement();
-    }
+    logger.info('Extraction complete', { elementCount: elements.length, duration, captureQuality });
 
     return {
-      url: window.location.href,
-      title: document.title,
-      timestamp: new Date().toISOString(),
+      url:           window.location.href,
+      title:         document.title,
+      timestamp:     new Date().toISOString(),
       captureQuality,
       totalElements: elements.length,
       duration,
-      filters: filters ?? null,
+      filters:       filters ?? null,
       elements
     };
-  } catch (error) {
+  } catch (err) {
     performanceMonitor.end(perfHandle);
-    logger.error('Extraction failed', { error: error.message, url: window.location.href });
-    throw error;
+    logger.error('Extraction failed', { error: err.message, url: window.location.href });
+    throw err;
   }
-}
-
-function _collectVisits(filters) {
-  const hasExplicitFilter = filters && (filters.class || filters.id || filters.tag);
-  if (!hasExplicitFilter) {
-    return traverseDocument(filters);
-  }
-
-  const rootElements = collectFilteredRoots(filters);
-  return traverseFilteredScoped(rootElements, filters);
 }
 
 export { extract };

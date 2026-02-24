@@ -1,11 +1,5 @@
 import { get } from '../../config/defaults.js';
 
-const T0_TAGS = new Set([
-  'SCRIPT', 'STYLE', 'META', 'LINK', 'NOSCRIPT', 'BR', 'HR',
-  'HEAD', 'TITLE', 'BASE', 'TEMPLATE', 'SLOT', 'WBR', 'PARAM',
-  'TRACK', 'SOURCE', 'AREA', 'COL', 'COLGROUP'
-]);
-
 const T3_TAGS = new Set([
   'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL', 'A', 'DIALOG',
   'DETAILS', 'OUTPUT', 'METER', 'PROGRESS', 'OPTION', 'OPTGROUP'
@@ -26,32 +20,37 @@ const T2_TAGS = new Set([
   'SMALL', 'SUB', 'SUP', 'DL', 'DT', 'DD', 'IFRAME'
 ]);
 
-const SKELETON_CLASS_PATTERNS = /\b(?:skeleton|shimmer|placeholder|loading|spinner)\b/i;
+const SKELETON_PATTERN = /\b(?:skeleton|shimmer|placeholder|loading|spinner)\b/i;
+
+let t0TagsCache = null;
+
+function getT0Tags() {
+  if (!t0TagsCache) {
+    t0TagsCache = new Set(get('extraction.irrelevantTags'));
+  }
+  return t0TagsCache;
+}
 
 function isTierZero(element) {
-  return T0_TAGS.has(element.tagName);
+  return getT0Tags().has(element.tagName);
 }
 
 function classifyTier(element) {
-  const tag = element.tagName;
+  const { tagName } = element;
 
-  if (T0_TAGS.has(tag)) {
+  if (getT0Tags().has(tagName)) {
     return 'T0';
   }
-
-  if (T3_TAGS.has(tag)) {
+  if (T3_TAGS.has(tagName)) {
     return 'T3';
   }
-
   const role = element.getAttribute('role');
   if (role && T3_ROLES.has(role)) {
     return 'T3';
   }
-
-  if (T2_TAGS.has(tag)) {
+  if (T2_TAGS.has(tagName)) {
     return 'T2';
   }
-
   return 'T1';
 }
 
@@ -70,7 +69,7 @@ function isVisible(computedStyle, rect) {
 
 function hasSkeleton(element) {
   const cls = element.getAttribute('class') ?? '';
-  return SKELETON_CLASS_PATTERNS.test(cls);
+  return SKELETON_PATTERN.test(cls);
 }
 
 function matchesFilters(element, filters) {
@@ -81,18 +80,17 @@ function matchesFilters(element, filters) {
   const { class: classFilter, id: idFilter, tag: tagFilter } = filters;
 
   if (classFilter) {
-    const filterClasses = classFilter.split(',').map(c => c.trim().replace(/^\./, '')).filter(Boolean);
+    const filterClasses = classFilter.split(',').map(c => c.trim().replace(/^\./u, '')).filter(Boolean);
     if (filterClasses.length > 0) {
-      const elementClasses = (element.getAttribute('class') ?? '').split(/\s+/);
-      const hasMatch = filterClasses.some(fc => elementClasses.includes(fc));
-      if (!hasMatch) {
+      const elementClasses = (element.getAttribute('class') ?? '').split(/\s+/u);
+      if (!filterClasses.some(fc => elementClasses.includes(fc))) {
         return false;
       }
     }
   }
 
   if (idFilter) {
-    const filterIds = idFilter.split(',').map(i => i.trim().replace(/^#/, '')).filter(Boolean);
+    const filterIds = idFilter.split(',').map(i => i.trim().replace(/^#/u, '')).filter(Boolean);
     if (filterIds.length > 0 && !filterIds.includes(element.id)) {
       return false;
     }
@@ -108,9 +106,4 @@ function matchesFilters(element, filters) {
   return true;
 }
 
-function shouldSkipTag(element) {
-  const irrelevantTags = get('extraction.irrelevantTags');
-  return irrelevantTags.includes(element.tagName.toUpperCase());
-}
-
-export { isTierZero, classifyTier, isVisible, hasSkeleton, matchesFilters, shouldSkipTag, T0_TAGS };
+export { isTierZero, classifyTier, isVisible, hasSkeleton, matchesFilters, getT0Tags };

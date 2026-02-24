@@ -165,23 +165,10 @@ class PerformanceMonitor {
     
     return improvements;
   }
-
-  logImprovement() {
-    const improvements = this.estimateImprovement();
-    console.group('🚀 WEEK 6 PERFORMANCE IMPROVEMENTS');
-    
-    for (const [op, data] of Object.entries(improvements)) {
-      console.log(
-        `${op}: ${data.baseline}ms → ${data.current}ms ` +
-        `(${data.improvement > 0 ? '+' : ''}${data.improvement}% faster, ${data.speedup}x speedup)`
-      );
-    }
-    
-    console.groupEnd();
-  }
 }
 
 // Export singleton instance
 const performanceMonitor = new PerformanceMonitor();
 
 export { PerformanceMonitor, performanceMonitor };
+

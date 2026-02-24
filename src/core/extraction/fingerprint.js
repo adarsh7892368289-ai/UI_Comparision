@@ -1,10 +1,14 @@
 import { isStableId, isStableClass, cleanText } from '../../shared/dom-utils.js';
 import { get } from '../../config/defaults.js';
 
-const TEXT_IDENTITY_MAX_CHARS = 120;
-const SELECTOR_PATH_MAX_DEPTH = 8;
+let stateClassRegex = null;
 
-const DYNAMIC_CLASS_PATTERNS = /\b(?:is-|has-|active|open|closed|loading|hidden|visible|selected|disabled|hover|focus|expanded|collapsed|checked)\b/g;
+function getStateClassRegex() {
+  if (!stateClassRegex) {
+    stateClassRegex = new RegExp(get('fingerprint.stateClassPattern'), 'u');
+  }
+  return stateClassRegex;
+}
 
 function djb2(str) {
   let hash = 5381;
@@ -15,11 +19,7 @@ function djb2(str) {
   return hash >>> 0;
 }
 
-function normalizeTextForIdentity(rawText) {
-  return cleanText(rawText).slice(0, TEXT_IDENTITY_MAX_CHARS);
-}
-
-function extractPathOnly(url) {
+function extractUrlPath(url) {
   if (!url) {
     return '';
   }
@@ -30,21 +30,7 @@ function extractPathOnly(url) {
   }
 }
 
-function buildSemanticInputs(element) {
-  const testAttr = _resolveTestAttribute(element);
-  const ariaLabel = element.getAttribute('aria-label') ?? '';
-  const role = element.getAttribute('role') ?? '';
-  const inputType = element.getAttribute('type') ?? '';
-  const formName = element.getAttribute('name') ?? '';
-  const hrefPath = extractPathOnly(element.getAttribute('href'));
-  const srcPath = extractPathOnly(element.getAttribute('src'));
-  const alt = element.getAttribute('alt') ?? '';
-  const text = normalizeTextForIdentity(element.textContent ?? '');
-
-  return `${element.tagName}|${testAttr}|${ariaLabel}|${role}|${inputType}|${formName}|${hrefPath}|${srcPath}|${alt}|${text}`;
-}
-
-function _resolveTestAttribute(element) {
+function resolveTestAttribute(element) {
   const priorityAttrs = get('attributes.priority');
   for (const attr of priorityAttrs) {
     const value = element.getAttribute(attr);
@@ -55,36 +41,40 @@ function _resolveTestAttribute(element) {
   return '';
 }
 
+function resolveTestAttributeName(element) {
+  const priorityAttrs = get('attributes.priority');
+  for (const attr of priorityAttrs) {
+    if (element.hasAttribute(attr)) {
+      return attr;
+    }
+  }
+  return 'data-testid';
+}
+
+function buildSemanticInputs(element) {
+  const testAttr = resolveTestAttribute(element);
+  const ariaLabel = element.getAttribute('aria-label') ?? '';
+  const role = element.getAttribute('role') ?? '';
+  const inputType = element.getAttribute('type') ?? '';
+  const formName = element.getAttribute('name') ?? '';
+  const hrefPath = extractUrlPath(element.getAttribute('href'));
+  const srcPath = extractUrlPath(element.getAttribute('src'));
+  const alt = element.getAttribute('alt') ?? '';
+  const text = cleanText(element.textContent ?? '').slice(0, get('fingerprint.textMaxChars'));
+
+  return `${element.tagName}|${testAttr}|${ariaLabel}|${role}|${inputType}|${formName}|${hrefPath}|${srcPath}|${alt}|${text}`;
+}
+
 function buildStructuralInputs(element, depth, sameTagSiblingIndex) {
   const parentTag = element.parentElement?.tagName ?? 'root';
   const parentRole = element.parentElement?.getAttribute('role') ?? '';
-  const childCount = element.childElementCount;
-
-  return `${depth}|${element.tagName}|${parentTag}|${parentRole}|${sameTagSiblingIndex}|${childCount}`;
+  return `${depth}|${element.tagName}|${parentTag}|${parentRole}|${sameTagSiblingIndex}|${element.childElementCount}`;
 }
 
-function computeSameTagSiblingIndex(element) {
-  if (!element.parentElement) {
-    return 0;
-  }
-  let index = 0;
-  const siblings = element.parentElement.children;
-  for (let i = 0; i < siblings.length; i++) {
-    if (siblings[i] === element) {
-      return index;
-    }
-    if (siblings[i].tagName === element.tagName) {
-      index++;
-    }
-  }
-  return index;
-}
-
-function buildStableSelectorSegment(element) {
-  const testAttr = _resolveTestAttribute(element);
+function buildSelectorSegment(element) {
+  const testAttr = resolveTestAttribute(element);
   if (testAttr) {
-    const attrName = _resolveTestAttributeName(element);
-    return `[${attrName}="${CSS.escape(testAttr)}"]`;
+    return `[${resolveTestAttributeName(element)}="${CSS.escape(testAttr)}"]`;
   }
 
   const id = element.getAttribute('id');
@@ -102,7 +92,12 @@ function buildStableSelectorSegment(element) {
     return `${element.tagName.toLowerCase()}[role="${role}"]`;
   }
 
-  const stableClasses = _extractStableClasses(element);
+  const rawClass = element.getAttribute('class') ?? '';
+  const regex = getStateClassRegex();
+  const stableClasses = rawClass
+    .split(/\s+/u)
+    .filter(cls => cls.length > 0 && isStableClass(cls) && !regex.test(cls));
+
   if (stableClasses.length > 0) {
     return `${element.tagName.toLowerCase()}.${stableClasses.slice(0, 2).join('.')}`;
   }
@@ -110,37 +105,18 @@ function buildStableSelectorSegment(element) {
   return element.tagName.toLowerCase();
 }
 
-function _resolveTestAttributeName(element) {
-  const priorityAttrs = get('attributes.priority');
-  for (const attr of priorityAttrs) {
-    if (element.hasAttribute(attr)) {
-      return attr;
-    }
-  }
-  return 'data-testid';
-}
-
-function _extractStableClasses(element) {
-  const raw = element.getAttribute('class') ?? '';
-  return raw
-    .split(/\s+/)
-    .filter(cls => cls.length > 0 && isStableClass(cls) && !DYNAMIC_CLASS_PATTERNS.test(cls));
-}
-
-function buildStableSelectorPath(element) {
+function buildSelectorPath(element) {
   const segments = [];
   let current = element;
   let depth = 0;
+  const maxDepth = get('fingerprint.selectorMaxDepth');
 
-  while (current && current.tagName !== 'BODY' && current.tagName !== 'HTML' && depth < SELECTOR_PATH_MAX_DEPTH) {
-    const segment = buildStableSelectorSegment(current);
+  while (current && current.tagName !== 'BODY' && current.tagName !== 'HTML' && depth < maxDepth) {
+    const segment = buildSelectorSegment(current);
     segments.unshift(segment);
-
-    const isAnchorSegment = segment.includes('[') || segment.startsWith('#');
-    if (isAnchorSegment) {
+    if (segment.includes('[') || segment.startsWith('#')) {
       break;
     }
-
     current = current.parentElement;
     depth++;
   }
@@ -149,7 +125,7 @@ function buildStableSelectorPath(element) {
 }
 
 function resolveSemanticKey(element) {
-  const testAttr = _resolveTestAttribute(element);
+  const testAttr = resolveTestAttribute(element);
   if (testAttr) {
     return testAttr;
   }
@@ -163,24 +139,13 @@ function resolveSemanticKey(element) {
   return null;
 }
 
-function buildFingerprint(element, depth) {
-  performance.mark('fingerprint-start');
-
-  const sameTagSiblingIndex = computeSameTagSiblingIndex(element);
-  const semanticInputs = buildSemanticInputs(element);
-  const structuralInputs = buildStructuralInputs(element, depth, sameTagSiblingIndex);
-
-  const fingerprint = {
+function buildFingerprint(element, depth, sameTagSiblingIndex) {
+  return {
     semanticKey: resolveSemanticKey(element),
-    semanticHash: djb2(semanticInputs),
-    structuralHash: djb2(structuralInputs),
-    selectorPath: buildStableSelectorPath(element)
+    semanticHash: djb2(buildSemanticInputs(element)),
+    structuralHash: djb2(buildStructuralInputs(element, depth, sameTagSiblingIndex)),
+    selectorPath: buildSelectorPath(element)
   };
-
-  performance.mark('fingerprint-end');
-  performance.measure('fingerprint', 'fingerprint-start', 'fingerprint-end');
-
-  return fingerprint;
 }
 
-export { buildFingerprint, djb2, buildStableSelectorPath, resolveSemanticKey };
+export { buildFingerprint, djb2, buildSelectorPath, resolveSemanticKey, buildSemanticInputs };
