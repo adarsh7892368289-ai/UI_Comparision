@@ -45,7 +45,9 @@ const rawConfig = {
   fingerprint: {
     textMaxChars: 120,
     selectorMaxDepth: 8,
-    stateClassPattern: '^(?:is-|has-)\\S+$|^(?:active|open|closed|loading|hidden|visible|selected|disabled|hover|focus|expanded|collapsed|checked)$'
+    stateClassPattern: '^(?:is-|has-)\\S+$|^(?:active|open|closed|loading|hidden|visible|selected|disabled|hover|focus|expanded|collapsed|checked)$',
+    childTagDepthLimit: 8,
+    childTagSentinel: '__LEAF__'
   },
 
   selectors: {
@@ -61,14 +63,17 @@ const rawConfig = {
       enableFallback: true,
       parallelExecution: true
     },
-    minRobustnessScore: 50
+    minRobustnessScore: 50,
+    batchConcurrency:   8
   },
 
   comparison: {
     matching: {
       strategies: ['testid', 'id', 'css', 'xpath', 'position'],
       confidenceThreshold: 0.5,
-      positionTolerance: 50
+      positionTolerance: 50,
+      minMatchThreshold: 0.70,
+      ambiguityWindow: 0.12
     },
 
     tolerances: {

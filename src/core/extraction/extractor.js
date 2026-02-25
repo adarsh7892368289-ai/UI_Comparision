@@ -8,6 +8,7 @@ import { classifyTier, isTierZero, isVisible } from './element-classifier.js';
 import { buildFingerprint } from './fingerprint.js';
 import { waitForReadiness } from './readiness-gate.js';
 import { buildContextSnapshot, collectStylesFromComputed } from './style-collector.js';
+import { generateSelectorsForElements } from '../selectors/selector-engine.js';
 
 const yieldChannel = new MessageChannel();
 yieldChannel.port1.start();
@@ -64,7 +65,7 @@ function applyVisibilityFilter(visits, readings) {
     return { filteredVisits: visits, filteredReadings: readings };
   }
 
-  const filteredVisits = [];
+  const filteredVisits   = [];
   const filteredReadings = [];
 
   for (let i = 0; i < visits.length; i++) {
@@ -134,9 +135,9 @@ function buildBatchPromises(visits, readings, batchStart, batchEnd, timeout) {
 async function executePass2Batched(visits, readings) {
   performance.mark('pass2-start');
 
-  const batchSize = get('extraction.batchSize');
+  const batchSize        = get('extraction.batchSize');
   const perElementTimeout = get('extraction.perElementTimeout');
-  const results = [];
+  const results          = [];
 
   for (let i = 0; i < visits.length; i += batchSize) {
     const batchEnd = Math.min(i + batchSize, visits.length);
@@ -161,9 +162,42 @@ async function executePass2Batched(visits, readings) {
   return results;
 }
 
+function buildVisitIndex(visits) {
+  const index = new Map();
+  for (let i = 0; i < visits.length; i++) {
+    index.set(i, visits[i].element);
+  }
+  return index;
+}
+
+async function executePass3SelectorEnrichment(elements, visits) {
+  performance.mark('pass3-start');
+
+  const visitIndex = buildVisitIndex(visits);
+  const liveElements = elements.map(record => visitIndex.get(record.captureIndex) ?? null);
+
+  const selectorResults = await generateSelectorsForElements(liveElements.filter(Boolean));
+
+  let selectorIdx = 0;
+  for (let i = 0; i < elements.length; i++) {
+    if (liveElements[i] !== null) {
+      elements[i].selectors = selectorResults[selectorIdx] ?? null;
+      selectorIdx++;
+    }
+  }
+
+  performance.mark('pass3-end');
+  performance.measure('extraction-pass3', 'pass3-start', 'pass3-end');
+
+  logger.debug('Pass 3 selector enrichment complete', {
+    enriched: selectorIdx,
+    total:    elements.length
+  });
+}
+
 async function extract(filters = null) {
   const perfHandle = performanceMonitor.start('extraction-total');
-  const startTime = performance.now();
+  const startTime  = performance.now();
 
   logger.info('Extraction started', { url: window.location.href, hasFilters: Boolean(filters) });
 
@@ -180,9 +214,9 @@ async function extract(filters = null) {
     const readings = executePass1(visits);
     const { filteredVisits, filteredReadings } = applyVisibilityFilter(visits, readings);
 
-    const maxElements = get('extraction.maxElements');
-    const overflow = filteredVisits.length > maxElements;
-    const clampedVisits = overflow ? filteredVisits.slice(0, maxElements) : filteredVisits;
+    const maxElements    = get('extraction.maxElements');
+    const overflow       = filteredVisits.length > maxElements;
+    const clampedVisits  = overflow ? filteredVisits.slice(0, maxElements) : filteredVisits;
     const clampedReadings = overflow ? filteredReadings.slice(0, maxElements) : filteredReadings;
 
     if (overflow) {
@@ -190,8 +224,10 @@ async function extract(filters = null) {
     }
 
     const elements = await executePass2Batched(clampedVisits, clampedReadings);
-    const duration = Math.round(performance.now() - startTime);
 
+    await executePass3SelectorEnrichment(elements, clampedVisits);
+
+    const duration = Math.round(performance.now() - startTime);
     performanceMonitor.end(perfHandle);
 
     logger.info('Extraction complete', { elementCount: elements.length, duration, captureQuality });

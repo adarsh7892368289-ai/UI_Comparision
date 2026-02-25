@@ -1,11 +1,13 @@
 import { validateConfig } from '../config/validator.js';
 import { MessageTypes, onMessage } from '../infrastructure/chrome-messaging.js';
 import logger from '../infrastructure/logger.js';
+import { StorageTransport } from '../infrastructure/storage-transport.js';
 import storage from '../infrastructure/storage.js';
 import { compareReports, exportComparisonAsHTML, getCachedComparison } from './compare-workflow.js';
 import { extractFromActiveTab } from './extract-workflow.js';
 
 logger.init();
+logger.addTransport(new StorageTransport());
 
 try {
   validateConfig({ throwOnError: true });
@@ -26,11 +28,11 @@ const handlers = {
   [MessageTypes.DELETE_REPORT]:          handleDeleteReport
 };
 
-onMessage(async (type, payload, sender) => {
-  const handler = handlers[type];
+onMessage(async (msgType, payload, sender) => {
+  const handler = handlers[msgType];
   if (!handler) {
-    logger.warn('Unknown message type', { type });
-    throw new Error(`Unknown message type: ${type}`);
+    logger.warn('Unknown message type', { msgType });
+    throw new Error(`Unknown message type: ${msgType}`);
   }
   return handler(payload, sender);
 });
@@ -55,12 +57,12 @@ chrome.runtime.onConnect.addListener((port) => {
     const { baselineId, compareId, mode, baselineTabId, compareTabId, includeScreenshots } = msg;
     logger.info('Comparison port connected', { baselineId, compareId, mode });
 
-    const send = (type, data = {}) => {
+    const send = (msgType, data = {}) => {
       if (aborted) {
         return;
       }
       try {
-        port.postMessage({ type, ...data });
+        port.postMessage({ type: msgType, ...data });
       } catch {
         aborted = true;
       }

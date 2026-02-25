@@ -5,12 +5,12 @@ const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 class ConsoleTransport {
   write(logEntry) {
     const { level, message, timestamp, ...meta } = logEntry;
-    const consoleFn = console[level] || console.log;
-    const prefix = `[${timestamp}] ${level.toUpperCase()}:`;
+    const consoleFn  = console[level] ?? console.log;
+    const prefix     = `[${timestamp}] ${level.toUpperCase()}:`;
     const hasMetadata = Object.keys(meta).length > 0;
-    
+
     if (hasMetadata) {
-      consoleFn(prefix, message, meta);
+      consoleFn(prefix, message, JSON.stringify(meta, null, 2));
     } else {
       consoleFn(prefix, message);
     }
@@ -19,19 +19,21 @@ class ConsoleTransport {
 
 class Logger {
   constructor() {
-    this.transports = [];
-    this.level = 'info';
-    this.context = {};
-    this.initialized = false;
+    this.transports   = [];
+    this.level        = 'info';
+    this.context      = {};
+    this.initialized  = false;
   }
 
   init() {
-    if (this.initialized) {return this;}
-    
+    if (this.initialized) {
+      return this;
+    }
+
     this.level = get('logging.level', 'info');
     this.transports.push(new ConsoleTransport());
     this.initialized = true;
-    
+
     return this;
   }
 
@@ -59,19 +61,19 @@ class Logger {
   }
 
   debug(message, meta = {}) {
-    this._log('debug', message, meta);
+    this.emitLog('debug', message, meta);
   }
 
   info(message, meta = {}) {
-    this._log('info', message, meta);
+    this.emitLog('info', message, meta);
   }
 
   warn(message, meta = {}) {
-    this._log('warn', message, meta);
+    this.emitLog('warn', message, meta);
   }
 
   error(message, meta = {}) {
-    this._log('error', message, meta);
+    this.emitLog('error', message, meta);
   }
 
   perf(operation, durationMs, data = {}) {
@@ -83,9 +85,11 @@ class Logger {
     }
   }
 
-  _log(level, message, meta) {
-    if (this._shouldSkip(level)) {return;}
-    
+  emitLog(level, message, meta) {
+    if (this.isLevelSuppressed(level)) {
+      return;
+    }
+
     const logEntry = {
       timestamp: new Date().toISOString(),
       level,
@@ -101,15 +105,15 @@ class Logger {
     for (const transport of this.transports) {
       try {
         transport.write(logEntry);
-      } catch (error) {
-        console.error('[Logger] Transport write failed:', error);
+      } catch (transportError) {
+        console.error('[Logger] Transport write failed:', transportError);
       }
     }
   }
 
-  _shouldSkip(level) {
-    const configLevel = LEVELS[this.level] ?? 1;
-    const messageLevel = LEVELS[level] ?? 1;
+  isLevelSuppressed(level) {
+    const configLevel   = LEVELS[this.level]   ?? 1;
+    const messageLevel  = LEVELS[level]        ?? 1;
     return messageLevel < configLevel;
   }
 

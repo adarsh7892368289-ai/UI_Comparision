@@ -2,6 +2,7 @@ import { get } from '../../config/defaults.js';
 import logger from '../../infrastructure/logger.js';
 import { PropertyDiffer } from './differ.js';
 import { SeverityAnalyzer } from './severity-analyzer.js';
+import { yieldToEventLoop, YIELD_CHUNK_SIZE } from '../../shared/async-utils.js';
 
 const STATIC_FILTER = {
   ignoredProperties:        new Set(get('comparison.modes.static.ignoredProperties')),
@@ -20,37 +21,43 @@ const DYNAMIC_FILTER = {
   tolerances:               get('comparison.modes.dynamic.tolerances')
 };
 
+function progressFrame(label, pct) {
+  return { type: 'progress', label, pct };
+}
+
+function resultFrame(payload) {
+  return { type: 'result', payload };
+}
+
 class BaseComparisonMode {
-  /**
-   * @param {Object} [deps]
-   * @param {PropertyDiffer}    [deps.differ]           - injectable for testing
-   * @param {SeverityAnalyzer}  [deps.severityAnalyzer] - injectable for testing
-   */
+  #differ;
+  #severityAnalyzer;
+
   constructor({ differ, severityAnalyzer } = {}) {
-    this.differ           = differ           ?? new PropertyDiffer();
-    this.severityAnalyzer = severityAnalyzer ?? new SeverityAnalyzer();
+    this.#differ           = differ           ?? new PropertyDiffer();
+    this.#severityAnalyzer = severityAnalyzer ?? new SeverityAnalyzer();
   }
 
-  _compareMatch(match, filter) {
+  compareMatch(match, filter) {
     const { baselineElement, compareElement } = match;
 
-    const styleResult = this.differ.compareElements(baselineElement, compareElement, {
+    const styleResult = this.#differ.compareElements(baselineElement, compareElement, {
       ignoredProperties: filter.ignoredProperties,
       tolerances:        filter.tolerances
     });
 
     const textDiffs = filter.compareTextContent
-      ? this._compareTextContent(baselineElement, compareElement)
+      ? this.compareTextContent(baselineElement, compareElement)
       : [];
 
-    const attrDiffs = this._compareAttributes(
+    const attrDiffs = this.compareAttributes(
       baselineElement,
       compareElement,
       filter.structuralAttributesOnly ? filter.structuralAttributes : null
     );
 
     const allDiffs = [...styleResult.differences, ...textDiffs, ...attrDiffs];
-    const severity = this.severityAnalyzer.analyzeDifferences(allDiffs);
+    const severity = this.#severityAnalyzer.analyzeDifferences(allDiffs);
 
     return {
       ...match,
@@ -64,78 +71,126 @@ class BaseComparisonMode {
     };
   }
 
-  _compareTextContent(baselineElement, compareElement) {
-    const base    = (baselineElement.textContent ?? '').trim();
-    const compare = (compareElement.textContent  ?? '').trim();
-    if (base === compare) {return [];}
-    return [{ property: 'textContent', baseValue: base, compareValue: compare, category: 'content', type: 'modified' }];
+  compareTextContent(baselineElement, compareElement) {
+    const baseText    = (baselineElement.textContent ?? '').trim();
+    const compareText = (compareElement.textContent  ?? '').trim();
+    if (baseText === compareText) {
+      return [];
+    }
+    return [{
+      property:     'textContent',
+      baseValue:    baseText,
+      compareValue: compareText,
+      category:     'content',
+      type:         'modified'
+    }];
   }
 
-  _compareAttributes(baselineElement, compareElement, allowList = null) {
+  compareAttributes(baselineElement, compareElement, allowList = null) {
     const baseAttrs    = baselineElement.attributes ?? {};
     const compareAttrs = compareElement.attributes  ?? {};
     const allKeys      = new Set([...Object.keys(baseAttrs), ...Object.keys(compareAttrs)]);
     const diffs        = [];
 
     for (const key of allKeys) {
-      if (allowList && !allowList.has(key)) {continue;}
-      if (baseAttrs[key] === compareAttrs[key]) {continue;}
+      if (allowList && !allowList.has(key)) {
+        continue;
+      }
+      if (baseAttrs[key] === compareAttrs[key]) {
+        continue;
+      }
       diffs.push({
         property:     `attr:${key}`,
         baseValue:    baseAttrs[key]    ?? null,
         compareValue: compareAttrs[key] ?? null,
         category:     'attribute',
-        type:         this._attrDiffType(baseAttrs[key], compareAttrs[key])
+        type:         this.attrDiffType(baseAttrs[key], compareAttrs[key])
       });
     }
     return diffs;
   }
 
-  _attrDiffType(baseVal, compareVal) {
-    if (baseVal == null && compareVal != null) {return 'added';}
-    if (baseVal != null && compareVal == null) {return 'removed';}
+  attrDiffType(baseVal, compareVal) {
+    if (baseVal == null && compareVal != null) {
+      return 'added';
+    }
+    if (baseVal != null && compareVal == null) {
+      return 'removed';
+    }
     return 'modified';
   }
 
-  _generateSummary(results, mode) {
-    const totalElements     = results.length;
-    const unchangedElements = results.filter(r => r.totalDifferences === 0).length;
-    const modifiedElements  = results.filter(r => r.totalDifferences > 0).length;
-    const totalDifferences  = results.reduce((sum, r) => sum + r.totalDifferences, 0);
+  generateSummary(diffResults, ambiguous, modeName) {
+    const totalElements     = diffResults.length;
+    const unchangedElements = diffResults.filter(r => r.totalDifferences === 0).length;
+    const modifiedElements  = diffResults.filter(r => r.totalDifferences > 0).length;
+    const totalDifferences  = diffResults.reduce((sum, r) => sum + r.totalDifferences, 0);
+    const ambiguousCount    = ambiguous.length;
 
     const severityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
-    for (const r of results) {
-      if (r.severityCounts) {
-        severityCounts.critical += r.severityCounts.critical;
-        severityCounts.high     += r.severityCounts.high;
-        severityCounts.medium   += r.severityCounts.medium;
-        severityCounts.low      += r.severityCounts.low;
+    for (const resultItem of diffResults) {
+      if (resultItem.severityCounts) {
+        severityCounts.critical += resultItem.severityCounts.critical;
+        severityCounts.high     += resultItem.severityCounts.high;
+        severityCounts.medium   += resultItem.severityCounts.medium;
+        severityCounts.low      += resultItem.severityCounts.low;
       }
     }
 
-    logger.info(`${mode} comparison summary`, {
-      totalElements, unchangedElements, modifiedElements, totalDifferences, severityCounts
+    logger.info(`${modeName} comparison summary`, {
+      totalElements, unchangedElements, modifiedElements,
+      totalDifferences, ambiguousCount, severityCounts
     });
 
-    return { totalElements, unchangedElements, modifiedElements, totalDifferences, severityCounts };
+    return {
+      totalElements,
+      unchangedElements,
+      modifiedElements,
+      totalDifferences,
+      ambiguousCount,
+      severityCounts
+    };
+  }
+
+  async* compareChunked(matches, ambiguous, filter, modeName) {
+    const total       = matches.length;
+    const diffResults = [];
+
+    for (let start = 0; start < total; start += YIELD_CHUNK_SIZE) {
+      const end = Math.min(start + YIELD_CHUNK_SIZE, total);
+      for (let i = start; i < end; i++) {
+        diffResults.push(this.compareMatch(matches[i], filter));
+      }
+      await yieldToEventLoop();
+      yield progressFrame('Comparing properties…', end);
+    }
+
+    yield resultFrame({
+      modeName,
+      results:  diffResults,
+      ambiguous,
+      summary:  this.generateSummary(diffResults, ambiguous, modeName)
+    });
   }
 }
 
 class StaticComparisonMode extends BaseComparisonMode {
-  constructor(deps = {}) { super(deps); }
+  constructor(deps = {}) {
+    super(deps);
+  }
 
-  compare(matches) {
-    const results = matches.map(match => this._compareMatch(match, STATIC_FILTER));
-    return { mode: 'static', results, summary: this._generateSummary(results, 'static') };
+  async* compare(matches, ambiguous = []) {
+    yield* this.compareChunked(matches, ambiguous, STATIC_FILTER, 'static');
   }
 }
 
 class DynamicComparisonMode extends BaseComparisonMode {
-  constructor(deps = {}) { super(deps); }
+  constructor(deps = {}) {
+    super(deps);
+  }
 
-  compare(matches) {
-    const results = matches.map(match => this._compareMatch(match, DYNAMIC_FILTER));
-    return { mode: 'dynamic', results, summary: this._generateSummary(results, 'dynamic') };
+  async* compare(matches, ambiguous = []) {
+    yield* this.compareChunked(matches, ambiguous, DYNAMIC_FILTER, 'dynamic');
   }
 }
 

@@ -4,8 +4,14 @@ class Storage {
   #repo;
   #initialized;
 
-  constructor(repo = new IDBRepository()) {
-    this.#repo = repo;
+  constructor(repo) {
+    if (!repo || typeof repo.saveReport !== 'function') {
+      throw new TypeError(
+        'Storage requires a repository instance. ' +
+        'Pass new IDBRepository() for production or a mock for tests.'
+      );
+    }
+    this.#repo        = repo;
     this.#initialized = false;
   }
 
@@ -67,5 +73,7 @@ class Storage {
   }
 }
 
-const storage = new Storage();
+const storage = new Storage(new IDBRepository());
+
+export { Storage };
 export default storage;

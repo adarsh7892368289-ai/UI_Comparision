@@ -3,6 +3,10 @@ import logger from '../../infrastructure/logger.js';
 import { generateCSS } from './css/generator.js';
 import { generateXPath } from './xpath/generator.js';
 
+const SHADOW_TEST_ATTRS = Object.freeze([
+  'data-testid', 'data-test', 'data-qa', 'data-cy', 'data-automation-id'
+]);
+
 class BoundedQueue {
   #concurrency;
   #queue;
@@ -10,8 +14,8 @@ class BoundedQueue {
 
   constructor(concurrency) {
     this.#concurrency = concurrency;
-    this.#queue = [];
-    this.#active = 0;
+    this.#queue       = [];
+    this.#active      = 0;
   }
 
   enqueue(task) {
@@ -48,23 +52,61 @@ class BoundedQueue {
   }
 }
 
-const NULL_SELECTORS = {
-  xpath:          null,
-  css:            null,
+const NULL_SELECTORS = Object.freeze({
+  xpath:           null,
+  css:             null,
+  shadowPath:      null,
   xpathConfidence: 0,
   cssConfidence:   0,
-  xpathStrategy:  null,
-  cssStrategy:    null
-};
+  xpathStrategy:   null,
+  cssStrategy:     null
+});
 
-function buildSelectors(xpathResult, cssResult) {
+function buildHostSelector(host) {
+  for (const attr of SHADOW_TEST_ATTRS) {
+    const val = host.getAttribute(attr);
+    if (val) {
+      return `[${attr}="${val.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`;
+    }
+  }
+
+  if (host.id) {
+    const escaped = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(host.id) : host.id;
+    return `#${escaped}`;
+  }
+
+  return host.tagName.toLowerCase();
+}
+
+function buildShadowPath(element) {
+  if (typeof ShadowRoot === 'undefined') {
+    return null;
+  }
+
+  const hostSelectors = [];
+  let current         = element;
+
+  while (current) {
+    const root = current.getRootNode({ composed: false });
+    if (!(root instanceof ShadowRoot)) {
+      break;
+    }
+    hostSelectors.unshift(buildHostSelector(root.host));
+    current = root.host;
+  }
+
+  return hostSelectors.length > 0 ? hostSelectors : null;
+}
+
+function assembleSelectors(xpathResult, cssResult, shadowPath) {
   return {
-    xpath:           xpathResult?.xpath || null,
-    css:             cssResult?.css || null,
-    xpathConfidence: xpathResult?.confidence || 0,
-    cssConfidence:   cssResult?.confidence || 0,
-    xpathStrategy:   xpathResult?.strategy || null,
-    cssStrategy:     cssResult?.strategy || null
+    xpath:           xpathResult?.xpath ?? null,
+    css:             cssResult?.css ?? null,
+    shadowPath,
+    xpathConfidence: xpathResult?.confidence ?? 0,
+    cssConfidence:   cssResult?.confidence ?? 0,
+    xpathStrategy:   xpathResult?.strategy ?? null,
+    cssStrategy:     cssResult?.strategy ?? null
   };
 }
 
@@ -74,42 +116,42 @@ async function generateSelectors(element) {
     return { ...NULL_SELECTORS };
   }
 
-  const parallel = get('selectors.xpath.parallelExecution', true) &&
-                   get('selectors.css.parallelExecution', true);
+  const shadowPath = buildShadowPath(element);
+  const parallel   = get('selectors.xpath.parallelExecution', true) &&
+                     get('selectors.css.parallelExecution', true);
 
   if (parallel) {
     const [xpathOutcome, cssOutcome] = await Promise.allSettled([
       generateXPath(element),
       generateCSS(element)
     ]);
-
-    return buildSelectors(
+    return assembleSelectors(
       xpathOutcome.status === 'fulfilled' ? xpathOutcome.value : null,
-      cssOutcome.status === 'fulfilled' ? cssOutcome.value : null
+      cssOutcome.status === 'fulfilled'   ? cssOutcome.value   : null,
+      shadowPath
     );
   }
 
   const xpathResult = await generateXPath(element);
-  const cssResult = await generateCSS(element);
-  return buildSelectors(xpathResult, cssResult);
+  const cssResult   = await generateCSS(element);
+  return assembleSelectors(xpathResult, cssResult, shadowPath);
 }
 
 async function generateSelectorsForElements(elements) {
-  const results = [];
+  const concurrency = get('selectors.batchConcurrency', 8);
+  const queue       = new BoundedQueue(concurrency);
+  const results     = new Array(elements.length);
 
-  for (const element of elements) {
-    try {
-      const selectors = await generateSelectors(element);
-      results.push(selectors);
-    } catch (error) {
-      logger.error('Selector generation failed for element', {
-        tagName: element.tagName,
-        error:   error.message
-      });
-      results.push({ ...NULL_SELECTORS });
-    }
-  }
+  const promises = elements.map((element, i) =>
+    queue.enqueue(() => generateSelectors(element))
+      .then(selectors => { results[i] = selectors; })
+      .catch(error => {
+        logger.error('Selector generation failed', { tagName: element.tagName, error: error.message });
+        results[i] = { ...NULL_SELECTORS };
+      })
+  );
 
+  await Promise.all(promises);
   return results;
 }
 

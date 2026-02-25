@@ -1,233 +1,486 @@
-import { get } from '../../config/defaults.js';
 import logger from '../../infrastructure/logger.js';
+import { get } from '../../config/defaults.js';
+import { yieldToEventLoop, YIELD_CHUNK_SIZE } from '../../shared/async-utils.js';
 
 const MATCH_STRATEGIES = Object.freeze({
   TEST_ATTRIBUTE:  'test-attribute',
+  ID:              'id',
   SEMANTIC_KEY:    'semantic-key',
-  SEMANTIC_HASH:   'semantic-hash',
   STRUCTURAL_HASH: 'structural-hash',
   SELECTOR_PATH:   'selector-path',
-  ID:              'id',
+  TOPOLOGICAL:     'topological',
   POSITION:        'position'
 });
 
-// Confidence weights per spec §5.2
-// sum of weights: 1.00 + 0.30 + 0.25 + 0.12 + 0.95 + 0.30 = these are individual hit confidences
+const MatchType = Object.freeze({
+  DEFINITIVE:         'definitive',
+  AMBIGUOUS:          'ambiguous',
+  POSITIONAL:         'positional',
+  UNMATCHED_BASELINE: 'unmatched-baseline',
+  UNMATCHED_COMPARE:  'unmatched-compare'
+});
+
+const MUTATION_TYPE = Object.freeze({
+  STRUCTURAL:       'structural-modification',
+  SELECTOR_CHANGED: 'selector-changed',
+  TOPOLOGICAL_MOVE: 'topological-move'
+});
+
 const CONFIDENCE = Object.freeze({
   TEST_ATTR:       1.00,
-  SEMANTIC_KEY:    0.90,
-  SEMANTIC_HASH:   0.75,
-  STRUCTURAL_HASH: 0.60,
-  SELECTOR_PATH:   0.80,
   ID:              0.95,
+  SEMANTIC_KEY:    0.90,
+  STRUCTURAL_HASH: 0.80,
+  SELECTOR_PATH:   0.72,
+  TOPOLOGICAL:     0.65,
   POSITION:        0.30
 });
 
-class ElementMatcher {
-  constructor() {
-    this.minConfidence     = get('comparison.confidence.min');
-    this.highThreshold     = get('comparison.confidence.high');
-    this.positionTolerance = get('comparison.matching.positionTolerance');
-    this.priorityAttrs     = get('attributes.priority').slice(0, 4);
-  }
+const PASS_PCT = Object.freeze({
+  ANCHOR_END:      25,
+  STRUCTURAL_END:  40,
+  TOPOLOGICAL_END: 47,
+  POSITION_END:    50
+});
 
-  matchElements(baselineElements, compareElements) {
-    logger.info('Building lookup maps', {
-      baseline: baselineElements.length,
-      compare:  compareElements.length
-    });
+function progressFrame(label, pct) {
+  return { type: 'progress', label, pct };
+}
 
-    const maps = this._buildLookupMaps(compareElements);
+function resultFrame(payload) {
+  return { type: 'result', payload };
+}
 
-    const matches            = [];
-    const unmatchedBaseline  = [];
-    const usedCompare        = new Set();
-
-    for (let i = 0; i < baselineElements.length; i++) {
-      const base = baselineElements[i];
-      const hit  = this._lookupMatch(base, maps, usedCompare);
-
-      if (hit && hit.confidence >= this.minConfidence) {
-        usedCompare.add(hit.index);
-        matches.push({
-          baselineIndex:   i,
-          compareIndex:    hit.index,
-          confidence:      hit.confidence,
-          strategy:        hit.strategy,
-          baselineElement: base,
-          compareElement:  compareElements[hit.index]
-        });
-      } else {
-        unmatchedBaseline.push(base);
-      }
+function getTestAttrKey(el, priorityAttrs) {
+  for (const attr of priorityAttrs) {
+    const attrVal = el.attributes?.[attr];
+    if (attrVal) {
+      return `${attr}::${attrVal}`;
     }
-
-    const usedSet          = new Set(matches.map(m => m.compareIndex));
-    const unmatchedCompare = compareElements.filter((_, i) => !usedSet.has(i));
-
-    logger.info('Matching complete', {
-      matched:          matches.length,
-      unmatchedBaseline: unmatchedBaseline.length,
-      unmatchedCompare:  unmatchedCompare.length
-    });
-
-    return { matches, unmatchedBaseline, unmatchedCompare };
   }
+  return null;
+}
 
-  _buildLookupMaps(elements) {
-    const testAttr      = new Map();
-    const byId          = new Map();
-    const semanticKey   = new Map();
-    const semanticHash  = new Map();
-    const structHash    = new Map();
-    const selectorPath  = new Map();
-    const grid          = new Map();
-    const cellSize      = this.positionTolerance;
-
-    for (let i = 0; i < elements.length; i++) {
-      const el = elements[i];
-
-      // Priority test-attributes (data-testid etc.)
-      for (const attr of this.priorityAttrs) {
-        const v = el.attributes?.[attr];
-        if (v) {
-          testAttr.set(`${attr}::${v}`, i);
-          break;
-        }
-      }
-
-      // Legacy stable ID
-      if (el.elementId) {
-        byId.set(el.elementId, i);
-      }
-
-      // Fingerprint-based lookup (Sprint 2 extraction output)
-      const fp = el.fingerprint;
-      if (fp) {
-        if (fp.semanticKey)    { semanticKey.set(fp.semanticKey, i); }
-        if (fp.semanticHash)   { semanticHash.set(fp.semanticHash, i); }
-        if (fp.structuralHash) { structHash.set(fp.structuralHash, i); }
-        if (fp.selectorPath)   { selectorPath.set(fp.selectorPath, i); }
-      }
-
-      // Spatial grid — use boundingRect (extractor field), not legacy position
-      const rect = el.boundingRect;
-      if (rect?.x != null && rect?.y != null) {
-        const key = this._gridKey(rect.x, rect.y, el.tagName, cellSize);
-        if (!grid.has(key)) {
-          grid.set(key, []);
-        }
-        grid.get(key).push({ index: i, x: rect.x, y: rect.y });
-      }
+function buildMultiMap(items, availableIdxs, keyFn) {
+  const map = new Map();
+  for (const i of availableIdxs) {
+    const key = keyFn(items[i]);
+    if (key == null) {
+      continue;
     }
-
-    return { testAttr, byId, semanticKey, semanticHash, structHash, selectorPath, grid, cellSize };
+    if (!map.has(key)) {
+      map.set(key, []);
+    }
+    map.get(key).push(i);
   }
+  return map;
+}
 
-  _lookupMatch(base, maps, usedCompare) {
-    const { testAttr, byId, semanticKey, semanticHash, structHash, selectorPath, grid, cellSize } = maps;
+function buildAnchorMaps(compareElements, allIdxs, priorityAttrs) {
+  return {
+    testAttr:    buildMultiMap(compareElements, allIdxs, el => getTestAttrKey(el, priorityAttrs)),
+    byId:        buildMultiMap(compareElements, allIdxs, el => el.elementId || null),
+    semanticKey: buildMultiMap(compareElements, allIdxs, el => el.fingerprint?.semanticKey ?? null)
+  };
+}
 
-    // 1. Priority test-attributes (highest confidence)
-    for (const attr of this.priorityAttrs) {
-      const v = base.attributes?.[attr];
-      if (!v) {
+function buildStructuralMaps(compareElements, availableIdxs) {
+  return {
+    structuralHash: buildMultiMap(compareElements, availableIdxs, el => el.fingerprint?.structuralHash ?? null),
+    selectorPath:   buildMultiMap(compareElements, availableIdxs, el => el.fingerprint?.selectorPath ?? null)
+  };
+}
+
+function buildSemanticHashMap(compareElements, availableIdxs) {
+  return buildMultiMap(compareElements, availableIdxs, el => el.fingerprint?.semanticHash ?? null);
+}
+
+function gridCellKey(x, y, tag, cellSize) {
+  return `${Math.floor(x / cellSize)}:${Math.floor(y / cellSize)}:${tag}`;
+}
+
+function buildPositionGrid(compareElements, availableIdxs, cellSize) {
+  const grid = new Map();
+  for (const i of availableIdxs) {
+    const { boundingRect, tagName } = compareElements[i];
+    if (!boundingRect || boundingRect.x == null || boundingRect.y == null) {
+      continue;
+    }
+    const key = gridCellKey(boundingRect.x, boundingRect.y, tagName, cellSize);
+    if (!grid.has(key)) {
+      grid.set(key, []);
+    }
+    grid.get(key).push({ index: i, x: boundingRect.x, y: boundingRect.y });
+  }
+  return grid;
+}
+
+function pickFromGrid(bx, by, gridCtx, usedCompare) {
+  const { grid, cellSize, tag } = gridCtx;
+  const cx     = Math.floor(bx / cellSize);
+  const cy     = Math.floor(by / cellSize);
+  let bestIdx  = null;
+  let bestDist = Infinity;
+
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const bucket = grid.get(`${cx + dx}:${cy + dy}:${tag}`);
+      if (!bucket) {
         continue;
       }
-      const idx = testAttr.get(`${attr}::${v}`);
-      if (idx != null && !usedCompare.has(idx)) {
-        return { index: idx, confidence: CONFIDENCE.TEST_ATTR, strategy: MATCH_STRATEGIES.TEST_ATTRIBUTE };
-      }
-    }
-
-    // 2. Stable DOM ID
-    if (base.elementId) {
-      const idx = byId.get(base.elementId);
-      if (idx != null && !usedCompare.has(idx)) {
-        return { index: idx, confidence: CONFIDENCE.ID, strategy: MATCH_STRATEGIES.ID };
-      }
-    }
-
-    const fp = base.fingerprint;
-    if (fp) {
-      // 3. Semantic key (aria-label / role composite — stable across rerenders)
-      if (fp.semanticKey) {
-        const idx = semanticKey.get(fp.semanticKey);
-        if (idx != null && !usedCompare.has(idx)) {
-          return { index: idx, confidence: CONFIDENCE.SEMANTIC_KEY, strategy: MATCH_STRATEGIES.SEMANTIC_KEY };
-        }
-      }
-
-      // 4. Selector path (CSS path built from stable anchors)
-      if (fp.selectorPath) {
-        const idx = selectorPath.get(fp.selectorPath);
-        if (idx != null && !usedCompare.has(idx)) {
-          return { index: idx, confidence: CONFIDENCE.SELECTOR_PATH, strategy: MATCH_STRATEGIES.SELECTOR_PATH };
-        }
-      }
-
-      // 5. Semantic hash (tag + content + semantic attrs — tolerates minor rewording)
-      if (fp.semanticHash) {
-        const idx = semanticHash.get(fp.semanticHash);
-        if (idx != null && !usedCompare.has(idx)) {
-          return { index: idx, confidence: CONFIDENCE.SEMANTIC_HASH, strategy: MATCH_STRATEGIES.SEMANTIC_HASH };
-        }
-      }
-
-      // 6. Structural hash (depth + parent + sibling index)
-      if (fp.structuralHash) {
-        const idx = structHash.get(fp.structuralHash);
-        if (idx != null && !usedCompare.has(idx)) {
-          return { index: idx, confidence: CONFIDENCE.STRUCTURAL_HASH, strategy: MATCH_STRATEGIES.STRUCTURAL_HASH };
-        }
-      }
-    }
-
-    // 7. Positional fallback — use boundingRect
-    const rect = base.boundingRect;
-    if (rect?.x != null && rect?.y != null) {
-      return this._positionFallback(rect.x, rect.y, base.tagName, grid, cellSize, usedCompare);
-    }
-
-    return null;
-  }
-
-  _positionFallback(bx, by, tag, grid, cellSize, usedCompare) {
-    let bestIdx  = null;
-    let bestDist = Infinity;
-
-    const cx = Math.floor(bx / cellSize);
-    const cy = Math.floor(by / cellSize);
-
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        const bucket = grid.get(`${cx + dx}:${cy + dy}:${tag}`);
-        if (!bucket) {
+      for (const { index, x, y } of bucket) {
+        if (usedCompare.has(index)) {
           continue;
         }
-        for (const { index, x, y } of bucket) {
-          if (usedCompare.has(index)) {
-            continue;
-          }
-          const dist = Math.hypot(bx - x, by - y);
-          if (dist < this.positionTolerance && dist < bestDist) {
-            bestDist = dist;
-            bestIdx  = index;
-          }
+        const dist = Math.hypot(bx - x, by - y);
+        if (dist < cellSize && dist < bestDist) {
+          bestDist = dist;
+          bestIdx  = index;
         }
       }
     }
-
-    if (bestIdx === null) {
-      return null;
-    }
-
-    const confidence = Math.max(0.1, 1 - bestDist / this.positionTolerance) * CONFIDENCE.POSITION;
-    return { index: bestIdx, confidence, strategy: MATCH_STRATEGIES.POSITION };
   }
 
-  _gridKey(x, y, tag, cellSize) {
-    return `${Math.floor(x / cellSize)}:${Math.floor(y / cellSize)}:${tag}`;
+  if (bestIdx === null) {
+    return null;
+  }
+  return { index: bestIdx, confidence: Math.max(0.1, 1 - bestDist / cellSize) * CONFIDENCE.POSITION };
+}
+
+function resolveFromMultiMap(indices, confidence, usedCompare, minMatchThreshold, ambiguityWindow) {
+  if (!indices) {
+    return { verdict: 'no_match' };
+  }
+  const available = indices.filter(i => !usedCompare.has(i));
+  if (available.length === 0) {
+    return { verdict: 'no_match' };
+  }
+  if (available.length === 1) {
+    if (confidence >= minMatchThreshold) {
+      return { verdict: 'definitive', index: available[0], confidence };
+    }
+    return { verdict: 'below_threshold', index: available[0], confidence };
+  }
+  if (confidence >= minMatchThreshold) {
+    return {
+      verdict:    'ambiguous',
+      confidence,
+      candidates: available.map(compareIndex => ({ compareIndex, confidence, deltaFromBest: 0 }))
+    };
+  }
+  return { verdict: 'no_match' };
+}
+
+function detectMutations(baselineEl, compareEl, isTopological) {
+  const mutations = [];
+  const baseFp    = baselineEl.fingerprint;
+  const cmpFp     = compareEl.fingerprint;
+  if (!baseFp || !cmpFp) {
+    return mutations;
+  }
+  if (baseFp.structuralHash !== cmpFp.structuralHash) {
+    mutations.push(MUTATION_TYPE.STRUCTURAL);
+  }
+  if (baseFp.selectorPath && cmpFp.selectorPath && baseFp.selectorPath !== cmpFp.selectorPath) {
+    mutations.push(MUTATION_TYPE.SELECTOR_CHANGED);
+  }
+  if (isTopological) {
+    mutations.push(MUTATION_TYPE.TOPOLOGICAL_MOVE);
+  }
+  return mutations;
+}
+
+function makeDefinitiveMatch({ bi, ci, conf, strat, matchType, nodeCtx }) {
+  const { baseline, compareElements } = nodeCtx;
+  return {
+    baselineIndex:       bi,
+    compareIndex:        ci,
+    confidence:          conf,
+    strategy:            strat,
+    matchType,
+    isAmbiguous:         false,
+    ambiguousCandidates: null,
+    baselineElement:     baseline[bi],
+    compareElement:      compareElements[ci],
+    mutations:           detectMutations(baseline[bi], compareElements[ci], strat === MATCH_STRATEGIES.TOPOLOGICAL)
+  };
+}
+
+function makeAmbiguousMatch(bi, conf, strat, candidates, baseline) {
+  return {
+    baselineIndex:       bi,
+    compareIndex:        null,
+    confidence:          conf,
+    strategy:            strat,
+    matchType:           MatchType.AMBIGUOUS,
+    isAmbiguous:         true,
+    ambiguousCandidates: candidates.map(candidate => ({ ...candidate, strategy: strat })),
+    baselineElement:     baseline[bi],
+    compareElement:      null,
+    mutations:           []
+  };
+}
+
+async function* runChunkedPass(indices, classifyFn, progressCtx) {
+  const { label, startPct, endPct } = progressCtx;
+  const total     = indices.length;
+  const matches   = [];
+  const ambiguous = [];
+  const orphans   = [];
+
+  for (let start = 0; start < total; start += YIELD_CHUNK_SIZE) {
+    const end = Math.min(start + YIELD_CHUNK_SIZE, total);
+    for (let i = start; i < end; i++) {
+      const hit = classifyFn(indices[i]);
+      if (hit.kind === 'match') {
+        matches.push(hit.match);
+      } else if (hit.kind === 'ambiguous') {
+        ambiguous.push(hit.entry);
+      } else {
+        orphans.push(indices[i]);
+      }
+    }
+    await yieldToEventLoop();
+    yield progressFrame(label, Math.round(startPct + (end / total) * (endPct - startPct)));
+  }
+
+  if (total === 0) {
+    yield progressFrame(label, endPct);
+  }
+
+  yield resultFrame({ matches, ambiguous, orphans });
+}
+
+function buildAnchorClassifier(anchorMaps, passCtx, nodeCtx) {
+  const { usedCompare, matchConfig } = passCtx;
+  const { baseline } = nodeCtx;
+  const { priorityAttrs, minMatchThreshold, ambiguityWindow } = matchConfig;
+
+  return (bi) => {
+    const el      = baseline[bi];
+    const testKey = getTestAttrKey(el, priorityAttrs);
+
+    if (testKey) {
+      const res = resolveFromMultiMap(anchorMaps.testAttr.get(testKey), CONFIDENCE.TEST_ATTR, usedCompare, minMatchThreshold, ambiguityWindow);
+      if (res.verdict === 'definitive') {
+        usedCompare.add(res.index);
+        return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: MATCH_STRATEGIES.TEST_ATTRIBUTE, matchType: MatchType.DEFINITIVE, nodeCtx }) };
+      }
+      if (res.verdict === 'ambiguous') {
+        return { kind: 'ambiguous', entry: makeAmbiguousMatch(bi, res.confidence, MATCH_STRATEGIES.TEST_ATTRIBUTE, res.candidates, baseline) };
+      }
+    }
+
+    if (el.elementId) {
+      const res = resolveFromMultiMap(anchorMaps.byId.get(el.elementId), CONFIDENCE.ID, usedCompare, minMatchThreshold, ambiguityWindow);
+      if (res.verdict === 'definitive') {
+        usedCompare.add(res.index);
+        return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: MATCH_STRATEGIES.ID, matchType: MatchType.DEFINITIVE, nodeCtx }) };
+      }
+      if (res.verdict === 'ambiguous') {
+        return { kind: 'ambiguous', entry: makeAmbiguousMatch(bi, res.confidence, MATCH_STRATEGIES.ID, res.candidates, baseline) };
+      }
+    }
+
+    const semanticKey = el.fingerprint?.semanticKey;
+    if (semanticKey) {
+      const res = resolveFromMultiMap(anchorMaps.semanticKey.get(semanticKey), CONFIDENCE.SEMANTIC_KEY, usedCompare, minMatchThreshold, ambiguityWindow);
+      if (res.verdict === 'definitive') {
+        usedCompare.add(res.index);
+        return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: MATCH_STRATEGIES.SEMANTIC_KEY, matchType: MatchType.DEFINITIVE, nodeCtx }) };
+      }
+      if (res.verdict === 'ambiguous') {
+        return { kind: 'ambiguous', entry: makeAmbiguousMatch(bi, res.confidence, MATCH_STRATEGIES.SEMANTIC_KEY, res.candidates, baseline) };
+      }
+    }
+
+    return { kind: 'orphan' };
+  };
+}
+
+function buildStructuralClassifier(orphanCmpIdxs, passCtx, nodeCtx) {
+  const { usedCompare, matchConfig } = passCtx;
+  const { baseline } = nodeCtx;
+  const { minMatchThreshold, ambiguityWindow } = matchConfig;
+  const structMaps = buildStructuralMaps(nodeCtx.compareElements, orphanCmpIdxs);
+
+  return (bi) => {
+    const fp = baseline[bi].fingerprint;
+
+    if (fp?.structuralHash != null) {
+      const res = resolveFromMultiMap(structMaps.structuralHash.get(fp.structuralHash), CONFIDENCE.STRUCTURAL_HASH, usedCompare, minMatchThreshold, ambiguityWindow);
+      if (res.verdict === 'definitive') {
+        usedCompare.add(res.index);
+        return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: MATCH_STRATEGIES.STRUCTURAL_HASH, matchType: MatchType.DEFINITIVE, nodeCtx }) };
+      }
+      if (res.verdict === 'ambiguous') {
+        return { kind: 'ambiguous', entry: makeAmbiguousMatch(bi, res.confidence, MATCH_STRATEGIES.STRUCTURAL_HASH, res.candidates, baseline) };
+      }
+    }
+
+    if (fp?.selectorPath) {
+      const res = resolveFromMultiMap(structMaps.selectorPath.get(fp.selectorPath), CONFIDENCE.SELECTOR_PATH, usedCompare, minMatchThreshold, ambiguityWindow);
+      if (res.verdict === 'definitive') {
+        usedCompare.add(res.index);
+        return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: MATCH_STRATEGIES.SELECTOR_PATH, matchType: MatchType.DEFINITIVE, nodeCtx }) };
+      }
+      if (res.verdict === 'ambiguous') {
+        return { kind: 'ambiguous', entry: makeAmbiguousMatch(bi, res.confidence, MATCH_STRATEGIES.SELECTOR_PATH, res.candidates, baseline) };
+      }
+    }
+
+    return { kind: 'orphan' };
+  };
+}
+
+function buildTopologicalClassifier(orphanCmpIdxs, passCtx, nodeCtx) {
+  const { usedCompare, minConf } = passCtx;
+  const { baseline } = nodeCtx;
+  const semanticMap  = buildSemanticHashMap(nodeCtx.compareElements, orphanCmpIdxs);
+
+  return (bi) => {
+    const hash = baseline[bi].fingerprint?.semanticHash;
+    if (hash == null) {
+      return { kind: 'orphan' };
+    }
+    const indices   = semanticMap.get(hash);
+    if (!indices) {
+      return { kind: 'orphan' };
+    }
+    const available = indices.filter(i => !usedCompare.has(i));
+    if (available.length !== 1 || CONFIDENCE.TOPOLOGICAL < minConf) {
+      return { kind: 'orphan' };
+    }
+    const ci = available[0];
+    usedCompare.add(ci);
+    return { kind: 'match', match: makeDefinitiveMatch({ bi, ci, conf: CONFIDENCE.TOPOLOGICAL, strat: MATCH_STRATEGIES.TOPOLOGICAL, matchType: MatchType.DEFINITIVE, nodeCtx }) };
+  };
+}
+
+function buildPositionClassifier(orphanCmpIdxs, passCtx, nodeCtx) {
+  const { usedCompare, minConf, cellSize } = passCtx;
+  const { baseline } = nodeCtx;
+  const grid         = buildPositionGrid(nodeCtx.compareElements, orphanCmpIdxs, cellSize);
+  const usedLocal    = new Set();
+
+  return (bi) => {
+    const rect = baseline[bi].boundingRect;
+    if (rect?.x == null || rect?.y == null) {
+      return { kind: 'orphan' };
+    }
+    const gridCtx = { grid, cellSize, tag: baseline[bi].tagName };
+    const hit     = pickFromGrid(rect.x, rect.y, gridCtx, usedCompare);
+    if (hit && hit.confidence >= minConf && !usedLocal.has(hit.index)) {
+      usedLocal.add(hit.index);
+      usedCompare.add(hit.index);
+      return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: hit.index, conf: hit.confidence, strat: MATCH_STRATEGIES.POSITION, matchType: MatchType.POSITIONAL, nodeCtx }) };
+    }
+    return { kind: 'orphan' };
+  };
+}
+
+class ElementMatcher {
+  #minConf;
+  #minMatchThreshold;
+  #ambiguityWindow;
+  #cellSize;
+  #priorityAttrs;
+
+  constructor() {
+    this.#minConf           = get('comparison.matching.confidenceThreshold', 0.5);
+    this.#minMatchThreshold = get('comparison.matching.minMatchThreshold', 0.70);
+    this.#ambiguityWindow   = get('comparison.matching.ambiguityWindow', 0.12);
+    this.#cellSize          = get('comparison.matching.positionTolerance', 50);
+    this.#priorityAttrs     = get('attributes.priority').slice(0, 4);
+  }
+
+  async* matchElements(baseline, compareElements) {
+    logger.info('Multi-pass matching start', { baseline: baseline.length, compare: compareElements.length });
+
+    const usedCompare = new Set();
+    const allCmpIdxs  = Array.from({ length: compareElements.length }, (_, i) => i);
+    const allBaseIdxs = Array.from({ length: baseline.length }, (_, i) => i);
+    const anchorMaps  = buildAnchorMaps(compareElements, allCmpIdxs, this.#priorityAttrs);
+    const nodeCtx     = { baseline, compareElements };
+    const matchConfig = {
+      priorityAttrs:     this.#priorityAttrs,
+      minMatchThreshold: this.#minMatchThreshold,
+      ambiguityWindow:   this.#ambiguityWindow
+    };
+    const passCtx = { usedCompare, matchConfig, minConf: this.#minConf, cellSize: this.#cellSize };
+
+    let p1 = null;
+    const anchorGen = runChunkedPass(
+      allBaseIdxs,
+      buildAnchorClassifier(anchorMaps, passCtx, nodeCtx),
+      { label: 'Anchoring elements…', startPct: 0, endPct: PASS_PCT.ANCHOR_END }
+    );
+    for await (const frame of anchorGen) {
+      if (frame.type === 'result') { p1 = frame.payload; }
+      else { yield frame; }
+    }
+
+    const p1CmpOrphans = allCmpIdxs.filter(i => !usedCompare.has(i));
+    let p2 = null;
+    const structGen = runChunkedPass(
+      p1.orphans,
+      buildStructuralClassifier(p1CmpOrphans, passCtx, nodeCtx),
+      { label: 'Structural matching…', startPct: PASS_PCT.ANCHOR_END, endPct: PASS_PCT.STRUCTURAL_END }
+    );
+    for await (const frame of structGen) {
+      if (frame.type === 'result') { p2 = frame.payload; }
+      else { yield frame; }
+    }
+
+    const p2CmpOrphans = p1CmpOrphans.filter(i => !usedCompare.has(i));
+    let p3 = null;
+    const topoGen = runChunkedPass(
+      p2.orphans,
+      buildTopologicalClassifier(p2CmpOrphans, passCtx, nodeCtx),
+      { label: 'Topological matching…', startPct: PASS_PCT.STRUCTURAL_END, endPct: PASS_PCT.TOPOLOGICAL_END }
+    );
+    for await (const frame of topoGen) {
+      if (frame.type === 'result') { p3 = frame.payload; }
+      else { yield frame; }
+    }
+
+    const p3CmpOrphans = p2CmpOrphans.filter(i => !usedCompare.has(i));
+    let p4 = null;
+    const posGen = runChunkedPass(
+      p3.orphans,
+      buildPositionClassifier(p3CmpOrphans, passCtx, nodeCtx),
+      { label: 'Positional matching…', startPct: PASS_PCT.TOPOLOGICAL_END, endPct: PASS_PCT.POSITION_END }
+    );
+    for await (const frame of posGen) {
+      if (frame.type === 'result') { p4 = frame.payload; }
+      else { yield frame; }
+    }
+
+    const allMatches   = [...p1.matches,   ...p2.matches,  ...p3.matches,  ...p4.matches];
+    const allAmbiguous = [...p1.ambiguous, ...p2.ambiguous];
+
+    const reservedByAmbiguous = new Set(
+      allAmbiguous.flatMap(entry => (entry.ambiguousCandidates ?? []).map(c => c.compareIndex))
+    );
+
+    const unmatchedBaseline = p4.orphans.map(i => baseline[i]);
+    const unmatchedCompare  = p3CmpOrphans
+      .filter(i => !usedCompare.has(i) && !reservedByAmbiguous.has(i))
+      .map(i => compareElements[i]);
+
+    logger.info('Multi-pass matching complete', {
+      matched:           allMatches.length,
+      ambiguous:         allAmbiguous.length,
+      unmatchedBaseline: unmatchedBaseline.length,
+      unmatchedCompare:  unmatchedCompare.length,
+      pass1Anchors:      p1.matches.length,
+      pass2Structural:   p2.matches.length,
+      pass3Topological:  p3.matches.length,
+      pass4Position:     p4.matches.length
+    });
+
+    yield resultFrame({ matches: allMatches, ambiguous: allAmbiguous, unmatchedBaseline, unmatchedCompare });
   }
 }
 
-export { ElementMatcher, MATCH_STRATEGIES };
+export { ElementMatcher, MATCH_STRATEGIES, MatchType, MUTATION_TYPE };

@@ -1,19 +1,16 @@
 import logger from '../../infrastructure/logger.js';
 import { transformToGroupedReport, elementLabel } from './report-transformer.js';
 
-/**
- * @param {object} comparisonResult
- * @returns {{ success: boolean, error?: string }}
- */
 async function exportToHTML(comparisonResult) {
   try {
-    const grouped         = transformToGroupedReport(comparisonResult);
-    const diffUris        = _resolveVisualDiffUris(comparisonResult.visualDiffs ?? null);
+    const grouped          = transformToGroupedReport(comparisonResult);
+    const diffUris         = resolveVisualDiffUris(comparisonResult.visualDiffs ?? null);
     const visualDiffStatus = comparisonResult.visualDiffStatus ?? null;
-    const html            = _buildDocument(grouped, comparisonResult, diffUris, visualDiffStatus);
-    await _triggerDownload(html, `comparison-${Date.now()}.html`);
+    const html             = buildDocument(grouped, comparisonResult, diffUris, visualDiffStatus);
+    await triggerDownload(html, `comparison-${Date.now()}.html`);
     logger.info('HTML export complete', {
       elements:         grouped.summary.totalMatched,
+      ambiguous:        grouped.summary.ambiguous,
       visualDiffs:      Object.keys(diffUris).length,
       visualDiffStatus: visualDiffStatus?.status ?? 'none'
     });
@@ -24,16 +21,10 @@ async function exportToHTML(comparisonResult) {
   }
 }
 
-/**
- * Maps comparisonResult.visualDiffs into the DIFF_URIS payload.
- * Values are already data URI strings serialized in the Service Worker —
- * no async work needed.
- *
- * @param {Map<string,{baseline:string,compare:string,diff:string|null}>|null} visualDiffs
- * @returns {Record<string,{baselineUri:string,compareUri:string,diffUri:string|null}>}
- */
-function _resolveVisualDiffUris(visualDiffs) {
-  if (!visualDiffs) {return {};}
+function resolveVisualDiffUris(visualDiffs) {
+  if (!visualDiffs) {
+    return {};
+  }
 
   const out     = Object.create(null);
   const entries = visualDiffs instanceof Map
@@ -41,7 +32,9 @@ function _resolveVisualDiffUris(visualDiffs) {
     : Object.entries(visualDiffs);
 
   for (const [key, { baseline, compare, diff }] of entries) {
-    if (!baseline && !compare) {continue;}
+    if (!baseline && !compare) {
+      continue;
+    }
     out[key] = {
       baselineUri: baseline ?? null,
       compareUri:  compare  ?? null,
@@ -52,22 +45,16 @@ function _resolveVisualDiffUris(visualDiffs) {
   return out;
 }
 
-/**
- * Renders a sticky diagnostic banner when the visual capture phase did not
- * produce screenshots. Only called when visualDiffStatus is non-null and
- * status !== 'success'.
- *
- * @param {{ status: string, reason: string } | null} vds
- * @returns {string}  HTML string (empty when no banner is needed)
- */
-function _buildDiagnosticBanner(vds) {
-  if (!vds || vds.status === 'success') {return '';}
+function buildDiagnosticBanner(vds) {
+  if (!vds || vds.status === 'success') {
+    return '';
+  }
 
   const isError   = vds.status === 'error';
   const bg        = isError ? '#7f1d1d' : '#78350f';
   const border    = isError ? '#ef4444' : '#f97316';
   const iconLabel = isError ? '✖ Visual Diff Error' : '⚠ Visual Diff Skipped';
-  const safeReason = _esc(vds.reason || 'No reason provided.');
+  const safeReason = esc(vds.reason || 'No reason provided.');
 
   return `
 <div style="
@@ -84,43 +71,75 @@ function _buildDiagnosticBanner(vds) {
 </div>`;
 }
 
-function _htmlToDataUri(html) {
-  const bytes = new TextEncoder().encode(html);
+function buildPreFlightBanner(preFlightWarning) {
+  if (!preFlightWarning || preFlightWarning.classification !== 'CAUTION') {
+    return '';
+  }
+
+  const { mismatchDelta, estimatedFalseNegatives } = preFlightWarning;
+  const parts = [];
+
+  if (mismatchDelta.hash) {
+    parts.push(`SPA hash mismatch: <code>${esc(mismatchDelta.hash.baseline)}</code> vs <code>${esc(mismatchDelta.hash.compare)}</code>`);
+  }
+  if (mismatchDelta.queryParams) {
+    const keyList = mismatchDelta.queryParams.map(p => esc(p.key)).join(', ');
+    parts.push(`Query parameter differences: ${keyList}`);
+  }
+
+  const fnNote = estimatedFalseNegatives != null
+    ? ` Estimated false negatives: ~${estimatedFalseNegatives} elements.`
+    : '';
+
+  return `
+<div style="
+  position:sticky;top:0;z-index:9998;
+  background:#1e3a5f;border-bottom:3px solid #3b82f6;
+  padding:10px 16px;display:flex;align-items:flex-start;gap:10px;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;
+">
+  <span style="font-weight:800;color:#93c5fd;white-space:nowrap;">⚠ Page State Mismatch</span>
+  <span style="color:#bfdbfe;flex:1;">${parts.join(' · ')}${fnNote} Results may contain false positives.</span>
+</div>`;
+}
+
+function htmlToDataUri(html) {
+  const bytes     = new TextEncoder().encode(html);
   const chunkSize = 0x8000;
   let binary = '';
   for (let i = 0; i < bytes.length; i += chunkSize) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
   }
-  return `data:text/html;base64,${  btoa(binary)}`;
+  return `data:text/html;base64,${btoa(binary)}`;
 }
 
-async function _triggerDownload(html, filename) {
-  const url = _htmlToDataUri(html);
+async function triggerDownload(html, filename) {
+  const url = htmlToDataUri(html);
   await chrome.downloads.download({ url, filename, saveAs: false });
 }
 
-function _buildDocument(grouped, raw, diffUris, visualDiffStatus = null) {
+function buildDocument(grouped, raw, diffUris, visualDiffStatus = null) {
   const { summary } = grouped;
-  const title = `${raw.baseline?.url ?? ''} vs ${raw.compare?.url ?? ''}`;
-  const date  = new Date(raw.timestamp ?? Date.now()).toLocaleString();
+  const title        = `${raw.baseline?.url ?? ''} vs ${raw.compare?.url ?? ''}`;
+  const date         = new Date(raw.timestamp ?? Date.now()).toLocaleString();
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>UI Diff \u2014 ${_esc(title)}</title>
-<style>${_css()}</style>
+<title>UI Diff \u2014 ${esc(title)}</title>
+<style>${buildCss()}</style>
 </head>
 <body>
-${_buildDiagnosticBanner(visualDiffStatus)}<div class="app">
+${buildDiagnosticBanner(visualDiffStatus)}${buildPreFlightBanner(raw.preFlightWarning ?? null)}<div class="app">
   <header class="topbar">
     <span class="topbar-title">UI Comparison Report</span>
-    <span class="topbar-meta">${_esc(title)} &mdash; ${date}</span>
+    <span class="topbar-meta">${esc(title)} &mdash; ${date}</span>
     <div class="topbar-search"><input id="search" type="text" placeholder="Filter elements\u2026" autocomplete="off"></div>
   </header>
   <div class="layout">
-    <aside class="sidebar">${_buildSidebar(summary)}</aside>
+    <aside class="sidebar">${buildSidebar(summary)}</aside>
     <main class="panel-list" id="panel-list">
       <div class="list-loading" id="list-loading">
         <div class="list-spinner"></div>
@@ -130,12 +149,12 @@ ${_buildDiagnosticBanner(visualDiffStatus)}<div class="app">
     <aside class="panel-detail" id="panel-detail"><div class="detail-placeholder">Select an element</div></aside>
   </div>
 </div>
-<script>${_js(grouped, diffUris)}</script>
+<script>${buildJs(grouped, diffUris)}</script>
 </body>
 </html>`;
 }
 
-function _buildSidebar(s) {
+function buildSidebar(s) {
   const bar = Math.round(s.matchRate);
   return `
 <div class="sidebar-section">
@@ -154,6 +173,7 @@ function _buildSidebar(s) {
   <div class="stat-row"><span class="icon add">\uff0b</span> ${s.added} Added</div>
   <div class="stat-row"><span class="icon rem">\uff0d</span> ${s.removed} Removed</div>
   <div class="stat-row"><span class="icon">\u25cb</span> ${s.unchanged} Unchanged</div>
+  <div class="stat-row"><span class="icon amb">\u25c6</span> ${s.ambiguous} Ambiguous</div>
 </div>
 <div class="sidebar-section filter-buttons">
   <div class="filter-label">Severity filter</div>
@@ -162,6 +182,7 @@ function _buildSidebar(s) {
   <button class="filter-btn" data-sev="high">High</button>
   <button class="filter-btn" data-sev="medium">Medium</button>
   <button class="filter-btn" data-sev="low">Low</button>
+  <button class="filter-btn" data-sev="ambiguous">Ambiguous</button>
 </div>
 <div class="sidebar-section filter-buttons">
   <div class="filter-label">Category</div>
@@ -173,7 +194,7 @@ function _buildSidebar(s) {
 </div>`;
 }
 
-function _esc(str) {
+function esc(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -181,7 +202,7 @@ function _esc(str) {
     .replace(/"/g, '&quot;');
 }
 
-function _css() {
+function buildCss() {
   return `
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e2e8f0;font-size:13px;height:100vh;overflow:hidden}
@@ -210,7 +231,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .filter-btn{background:#2d3148;border:1px solid #3d4165;border-radius:4px;color:#a0aec0;font-size:11px;padding:3px 8px;cursor:pointer}
 .filter-btn.active{background:#7c3aed;border-color:#7c3aed;color:#fff}
 .icon{width:16px;display:inline-block;text-align:center}
-.icon.add{color:#10b981}.icon.rem{color:#ef4444}
+.icon.add{color:#10b981}.icon.rem{color:#ef4444}.icon.amb{color:#f59e0b}
 .panel-list{overflow-y:auto;padding:8px}
 .list-loading{display:flex;align-items:center;gap:10px;padding:20px;color:#4a5568;font-size:12px}
 .list-spinner{width:16px;height:16px;border:2px solid #2d3148;border-top-color:#7c3aed;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
@@ -226,11 +247,13 @@ details[open] .severity-header{border-radius:6px 6px 0 0;border-bottom:none}
 .element-card{padding:10px 12px;border-bottom:1px solid #1e2133;cursor:pointer;transition:background .15s}
 .element-card:hover{background:#1e2133}
 .element-card.selected{background:#1e2a3a;border-left:3px solid #7c3aed}
+.element-card.ambiguous-card{border-left:2px solid #f59e0b}
 .element-card:last-child{border-bottom:none}
 .card-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .element-label{font-size:12px;color:#93c5fd;font-family:'JetBrains Mono',monospace}
 .card-meta{display:flex;gap:6px;align-items:center;flex-shrink:0}
 .diff-count{background:#312e81;color:#a5b4fc;border-radius:4px;padding:1px 6px;font-size:11px}
+.candidate-count{background:#3d2800;color:#fcd34d;border-radius:4px;padding:1px 6px;font-size:11px}
 .confidence{color:#6b7280;font-size:11px}
 .has-visual{background:#2d1a3e;color:#c084fc;border-radius:4px;padding:1px 6px;font-size:10px;letter-spacing:.03em}
 .card-breadcrumb{font-size:10px;color:#4a5568;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -262,6 +285,13 @@ details[open] .severity-header{border-radius:6px 6px 0 0;border-bottom:none}
 .sev-pip.medium{background:#eab308}
 .sev-pip.low{background:#6b7280}
 .swatch{display:inline-block;width:12px;height:12px;border-radius:2px;border:1px solid rgba(255,255,255,.2);vertical-align:middle;margin-right:3px}
+.ambiguous-notice{background:#3d2800;border:1px solid #f59e0b;border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:12px;color:#fcd34d}
+.ambiguous-notice strong{display:block;margin-bottom:4px;font-size:13px}
+.candidate-table{width:100%;border-collapse:collapse;margin-top:10px}
+.candidate-table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#4a5568;padding:4px 8px;border-bottom:1px solid #1e2133}
+.candidate-table td{font-size:12px;color:#a0aec0;padding:5px 8px;border-bottom:1px solid #1a1d27;font-family:monospace}
+.candidate-table tr:hover td{background:#1e2133}
+.candidate-rank{color:#f59e0b;font-weight:700}
 .vdiff-section{margin-top:16px;border:1px solid #2d3148;border-radius:8px;overflow:hidden}
 .vdiff-toggle{width:100%;display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#1e2133;border:none;color:#c084fc;font-size:12px;font-weight:600;cursor:pointer;letter-spacing:.04em;text-transform:uppercase}
 .vdiff-toggle:hover{background:#252840}
@@ -285,7 +315,7 @@ details[open] .severity-header{border-radius:6px 6px 0 0;border-bottom:none}
 `;
 }
 
-function _js(grouped, diffUris) {
+function buildJs(grouped, diffUris) {
   const data     = JSON.stringify(grouped);
   const urisJson = JSON.stringify(diffUris ?? {});
 
@@ -301,12 +331,13 @@ let activeCat    = 'all';
 let selectedCard = null;
 
 const SEV_ORDER = [
-  { key:'critical', label:'Critical', icon:'\u{1F534}', expanded:true  },
-  { key:'high',     label:'High',     icon:'\u{1F7E0}', expanded:true  },
-  { key:'medium',   label:'Medium',   icon:'\u{1F7E1}', expanded:false },
-  { key:'low',      label:'Low',      icon:'\u26AA',    expanded:false },
-  { key:'added',    label:'Added',    icon:'\u{1F7E2}', expanded:true  },
-  { key:'removed',  label:'Removed',  icon:'\u2B1B',    expanded:true  }
+  { key:'critical',  label:'Critical',  icon:'\u{1F534}', expanded:true  },
+  { key:'high',      label:'High',      icon:'\u{1F7E0}', expanded:true  },
+  { key:'medium',    label:'Medium',    icon:'\u{1F7E1}', expanded:false },
+  { key:'low',       label:'Low',       icon:'\u26AA',    expanded:false },
+  { key:'added',     label:'Added',     icon:'\u{1F7E2}', expanded:true  },
+  { key:'removed',   label:'Removed',   icon:'\u2B1B',    expanded:true  },
+  { key:'ambiguous', label:'Ambiguous', icon:'\u{1F536}', expanded:true  }
 ];
 
 function ric(cb){
@@ -345,6 +376,17 @@ function buildCard(item,severity,index){
     +buildCatPills(item.diffsByCategory)+'</div>';
 }
 
+function buildAmbiguousCard(item,index){
+  const key='ambiguous-'+index;
+  const count=(item.candidates||[]).length;
+  const badge='<span class="candidate-count">'+count+' candidate'+(count!==1?'s':'')+'</span>';
+  return '<div class="element-card ambiguous-card" data-key="'+esc(key)+'" data-sev="ambiguous" role="button" tabindex="0">'
+    +'<div class="card-header"><code class="element-label">'+esc(item.elementKey)+'</code>'
+    +'<div class="card-meta">'+badge+'</div></div>'
+    +(item.breadcrumb?'<div class="card-breadcrumb">'+esc(item.breadcrumb)+'</div>':'')
+    +'</div>';
+}
+
 function buildGroup(spec){
   const items=GROUPED.groups[spec.key]??[];
   if(!items.length) return null;
@@ -352,12 +394,14 @@ function buildGroup(spec){
   el.className='severity-group';
   el.dataset.sev=spec.key;
   if(spec.expanded) el.open=true;
+  const isAmbiguousGroup=spec.key==='ambiguous';
+  const cards=items.map((item,i)=>isAmbiguousGroup?buildAmbiguousCard(item,i):buildCard(item,spec.key,i));
   el.innerHTML='<summary class="severity-header">'
     +'<span class="sev-icon">'+spec.icon+'</span>'
     +'<span class="sev-label">'+spec.label+'</span>'
     +'<span class="sev-count">'+items.length+'</span>'
     +'</summary>'
-    +'<div class="severity-body">'+items.map((item,i)=>buildCard(item,spec.key,i)).join('')+'</div>';
+    +'<div class="severity-body">'+cards.join('')+'</div>';
   return el;
 }
 
@@ -392,27 +436,54 @@ function buildVisualDiffSection(elementId){
     +'</div>';
 }
 
-function renderListAsync(){
-  const loading=document.getElementById('list-loading');
-  const queue=SEV_ORDER.slice();
-  const frag=document.createDocumentFragment();
-  function chunk(deadline){
-    while(queue.length>0&&(deadline.timeRemaining()>4||deadline.didTimeout)){
-      const g=buildGroup(queue.shift());
-      if(g) frag.appendChild(g);
-    }
-    if(queue.length>0){ ric(chunk); }
-    else {
-      if(loading) loading.remove();
-      listEl.appendChild(frag);
-      attachListHandlers();
-    }
-  }
-  ric(chunk);
+function buildAmbiguousDetail(item){
+  const candidates=item.candidates||[];
+  const rows=candidates.map((c,i)=>{
+    const rankLabel=i===0?'<span class="candidate-rank">#1</span>':'#'+(i+1);
+    return '<tr>'
+      +'<td>'+rankLabel+'</td>'
+      +'<td>'+esc(c.compareIndex!=null?String(c.compareIndex):'—')+'</td>'
+      +'<td>'+(Math.round((c.confidence||0)*100))+'%</td>'
+      +'<td>'+esc(c.strategy||'—')+'</td>'
+      +'<td>'+(c.deltaFromBest!=null?('+'+Math.round(c.deltaFromBest*100)/100):'0')+'</td>'
+      +'</tr>';
+  });
+  const sel=item.selectors||{};
+  const selBtns=[
+    sel.xpath?'<button class="sel-btn" data-copy="'+esc(sel.xpath)+'">Copy XPath</button>':'',
+    sel.css  ?'<button class="sel-btn" data-copy="'+esc(sel.css)+'">Copy CSS</button>':''
+  ].join('');
+  detailEl.innerHTML='<div class="detail-header">'
+    +'<div class="detail-tag">'+esc(item.elementKey)+'</div>'
+    +(item.breadcrumb?'<div class="detail-breadcrumb">'+esc(item.breadcrumb)+'</div>':'')
+    +'<div class="detail-selectors">'+selBtns+'</div>'
+    +'</div>'
+    +'<div class="ambiguous-notice">'
+    +'<strong>\u{1F536} Ambiguous Match — Not Compared</strong>'
+    +'This element has '+candidates.length+' candidate match'+(candidates.length!==1?'es':'')+' within the ambiguity window (confidence delta \u2264 0.12). '
+    +'The matcher declined to commit a match to prevent false property diffs. '
+    +'Inspect the candidates below to determine the intended counterpart.'
+    +'</div>'
+    +(rows.length>0?
+      '<table class="candidate-table">'
+      +'<thead><tr><th>Rank</th><th>Compare idx</th><th>Confidence</th><th>Strategy</th><th>Delta</th></tr></thead>'
+      +'<tbody>'+rows.join('')+'</tbody>'
+      +'</table>'
+      :'<div class="detail-placeholder" style="margin-top:16px">No candidate data available</div>');
+
+  detailEl.querySelectorAll('[data-copy]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      navigator.clipboard.writeText(btn.dataset.copy).then(()=>{
+        const orig=btn.textContent; btn.textContent='Copied!';
+        setTimeout(()=>{ btn.textContent=orig; },1200);
+      });
+    });
+  });
 }
 
 function renderDetail(item){
   if(!item){ detailEl.innerHTML='<div class="detail-placeholder">Select an element</div>'; return; }
+  if(item.isAmbiguous){ buildAmbiguousDetail(item); return; }
   const sel=item.selectors||{};
   const selBtns=[
     sel.xpath?'<button class="sel-btn" data-copy="'+esc(sel.xpath)+'">Copy XPath</button>':'',
@@ -453,16 +524,31 @@ function renderDetail(item){
     toggleBtn.addEventListener('click',()=>{
       const expanded=toggleBtn.getAttribute('aria-expanded')==='true';
       const panes=detailEl.querySelector('.vdiff-panes');
-      const key=toggleBtn.getAttribute('aria-controls').replace(/^vd-/,'');
-      const legend=detailEl.getElementById
-        ? null
-        : document.getElementById('vd-legend-'+key);
       const legendEl=detailEl.querySelector('[id^="vd-legend-"]');
       toggleBtn.setAttribute('aria-expanded',String(!expanded));
       if(panes) panes.classList.toggle('open',!expanded);
       if(legendEl) legendEl.style.display=expanded?'none':'flex';
     });
   }
+}
+
+function renderListAsync(){
+  const loading=document.getElementById('list-loading');
+  const queue=SEV_ORDER.slice();
+  const frag=document.createDocumentFragment();
+  function chunk(deadline){
+    while(queue.length>0&&(deadline.timeRemaining()>4||deadline.didTimeout)){
+      const g=buildGroup(queue.shift());
+      if(g) frag.appendChild(g);
+    }
+    if(queue.length>0){ ric(chunk); }
+    else {
+      if(loading) loading.remove();
+      listEl.appendChild(frag);
+      attachListHandlers();
+    }
+  }
+  ric(chunk);
 }
 
 function applyFilters(){

@@ -1,5 +1,6 @@
 import { isStableId, isStableClass, cleanText } from '../../shared/dom-utils.js';
 import { get } from '../../config/defaults.js';
+import { extractUrlPath, extractSrcPath } from '../../shared/url-utils.js';
 
 let stateClassRegex = null;
 
@@ -19,15 +20,18 @@ function djb2(str) {
   return hash >>> 0;
 }
 
-function extractUrlPath(url) {
-  if (!url) {
-    return '';
+function buildChildTagSignature(element) {
+  const children = element.children;
+  if (children.length === 0) {
+    return djb2(get('fingerprint.childTagSentinel'));
   }
-  try {
-    return url.split('?')[0].split('#')[0];
-  } catch {
-    return '';
+  const limit = get('fingerprint.childTagDepthLimit');
+  const count = Math.min(children.length, limit);
+  const parts = new Array(count);
+  for (let i = 0; i < count; i++) {
+    parts[i] = children[i].tagName;
   }
+  return djb2(parts.join('|'));
 }
 
 function resolveTestAttribute(element) {
@@ -58,7 +62,7 @@ function buildSemanticInputs(element) {
   const inputType = element.getAttribute('type') ?? '';
   const formName = element.getAttribute('name') ?? '';
   const hrefPath = extractUrlPath(element.getAttribute('href'));
-  const srcPath = extractUrlPath(element.getAttribute('src'));
+  const srcPath = extractSrcPath(element.getAttribute('src'));
   const alt = element.getAttribute('alt') ?? '';
   const text = cleanText(element.textContent ?? '').slice(0, get('fingerprint.textMaxChars'));
 
@@ -68,7 +72,8 @@ function buildSemanticInputs(element) {
 function buildStructuralInputs(element, depth, sameTagSiblingIndex) {
   const parentTag = element.parentElement?.tagName ?? 'root';
   const parentRole = element.parentElement?.getAttribute('role') ?? '';
-  return `${depth}|${element.tagName}|${parentTag}|${parentRole}|${sameTagSiblingIndex}|${element.childElementCount}`;
+  const childSig = buildChildTagSignature(element);
+  return `${depth}|${element.tagName}|${parentTag}|${parentRole}|${sameTagSiblingIndex}|${childSig}`;
 }
 
 function buildSelectorSegment(element) {
@@ -141,10 +146,10 @@ function resolveSemanticKey(element) {
 
 function buildFingerprint(element, depth, sameTagSiblingIndex) {
   return {
-    semanticKey: resolveSemanticKey(element),
-    semanticHash: djb2(buildSemanticInputs(element)),
+    semanticKey:    resolveSemanticKey(element),
+    semanticHash:   djb2(buildSemanticInputs(element)),
     structuralHash: djb2(buildStructuralInputs(element, depth, sameTagSiblingIndex)),
-    selectorPath: buildSelectorPath(element)
+    selectorPath:   buildSelectorPath(element)
   };
 }
 

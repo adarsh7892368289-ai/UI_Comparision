@@ -7,7 +7,26 @@ import { get } from '../config/defaults.js';
 
 const BLOCKED_PROTOCOLS = new Set(['chrome:', 'chrome-extension:', 'about:', 'data:']);
 const IPC_SIZE_WARN_THRESHOLD = 2_000_000;
-const REPORT_VERSION = '2.0';
+const REPORT_VERSION = '2.1';
+
+class ProtocolError extends Error {
+  constructor(expected, actual) {
+    super(
+      `Report version contract violated: expected=${expected}, actual=${actual}. ` +
+      `The fingerprint algorithm and REPORT_VERSION constant are out of sync. ` +
+      `Update REPORT_VERSION to match the deployed algorithm.`
+    );
+    this.name            = 'ProtocolError';
+    this.expectedVersion = expected;
+    this.actualVersion   = actual;
+  }
+}
+
+function assertReportVersion(version) {
+  if (version !== REPORT_VERSION) {
+    throw new ProtocolError(REPORT_VERSION, version);
+  }
+}
 
 function validateTab(tab) {
   if (!tab) {
@@ -120,9 +139,9 @@ async function extractFromActiveTab(filters = null) {
 
     logger.info('Extraction requested', { tabId: tab.id, url: tab.url, filters });
 
-    const timeout = get('infrastructure.timeout.contentScript');
+    const timeout  = get('infrastructure.timeout.contentScript');
     const response = await sendToTab(tab.id, MessageTypes.EXTRACT_ELEMENTS, { filters }, timeout);
-    const data = validateExtractionResponse(response);
+    const data     = validateExtractionResponse(response);
 
     const estimatedBytes = estimatePayloadBytes(data);
     if (estimatedBytes > IPC_SIZE_WARN_THRESHOLD) {
@@ -141,10 +160,14 @@ async function extractFromActiveTab(filters = null) {
     }
 
     const report = buildReport(data);
+
+    assertReportVersion(report.version);
+
     await storage.saveReport(report);
 
     logger.info('Report persisted', {
       reportId:       report.id,
+      version:        report.version,
       totalElements:  report.totalElements,
       captureQuality: report.captureQuality,
       duration:       report.duration
@@ -155,9 +178,19 @@ async function extractFromActiveTab(filters = null) {
 
   } catch (err) {
     performanceMonitor.end(perfHandle);
-    logger.error('Extract workflow failed', { error: err.message });
+
+    if (err instanceof ProtocolError) {
+      logger.error('Protocol contract violation — report NOT persisted', {
+        error:           err.message,
+        expectedVersion: err.expectedVersion,
+        actualVersion:   err.actualVersion
+      });
+    } else {
+      logger.error('Extract workflow failed', { error: err.message });
+    }
+
     throw err;
   }
 }
 
-export { extractFromActiveTab };
+export { extractFromActiveTab, ProtocolError };

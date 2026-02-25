@@ -1,89 +1,129 @@
 import { ElementMatcher } from './matcher.js';
 import { StaticComparisonMode, DynamicComparisonMode } from './comparison-modes.js';
 
+const MATCHING_PCT_WEIGHT    = 0.5;
+const MATCHING_PHASE_CEILING = 50;
+
+function calculateMatchRate(matched, unmatchedBaseline, unmatchedCompare) {
+  const denominator = matched + unmatchedBaseline + unmatchedCompare;
+  if (denominator === 0) {
+    return 0;
+  }
+  return Math.round((matched / denominator) * 100);
+}
+
+function progressFrame(label, pct) {
+  return { type: 'progress', label, pct };
+}
+
+function resultFrame(payload) {
+  return { type: 'result', payload };
+}
+
+function buildReportMeta(report) {
+  return {
+    id:            report.id,
+    url:           report.url,
+    title:         report.title,
+    timestamp:     report.timestamp,
+    totalElements: report.elements.length
+  };
+}
+
+function buildUnmatchedSummary(elements) {
+  return elements.map(el => ({
+    id:        el.id,
+    tagName:   el.tagName,
+    elementId: el.elementId,
+    className: el.className
+  }));
+}
+
+function buildMatchingMetadata(matchingResult) {
+  const totalMatched       = matchingResult.matches.length;
+  const ambiguousCount     = (matchingResult.ambiguous ?? []).length;
+  const unmatchedBaseCount = matchingResult.unmatchedBaseline.length;
+  const unmatchedCmpCount  = matchingResult.unmatchedCompare.length;
+  return {
+    totalMatched,
+    ambiguousCount,
+    unmatchedBaseline: unmatchedBaseCount,
+    unmatchedCompare:  unmatchedCmpCount,
+    matchRate:         calculateMatchRate(totalMatched, unmatchedBaseCount, unmatchedCmpCount)
+  };
+}
+
 class Comparator {
   #matcher;
   #modes;
-  #onProgress;
 
-  constructor({ matcher, modes, onProgress } = {}) {
+  constructor({ matcher, modes } = {}) {
     this.#matcher = matcher ?? new ElementMatcher();
-    this.#modes = modes ?? {
+    this.#modes   = modes ?? {
       static:  new StaticComparisonMode(),
       dynamic: new DynamicComparisonMode()
     };
-    this.#onProgress = typeof onProgress === 'function' ? onProgress : null;
   }
 
-  compare(baselineReport, compareReport, mode = 'static') {
-    const startTime = performance.now();
+  async* compare(baselineReport, compareReport, mode = 'static') {
+    const startTime    = performance.now();
+    let matchingResult = null;
 
-    this.#emit('Matching elements…', 15);
-
-    const matchingResult = this.#matcher.matchElements(
+    const matchingGen = this.#matcher.matchElements(
       baselineReport.elements,
       compareReport.elements
     );
 
-    this.#emit('Comparing properties…', 50);
+    for await (const frame of matchingGen) {
+      if (frame.type === 'result') {
+        matchingResult = frame.payload;
+      } else {
+        yield progressFrame(frame.label, Math.round(frame.pct * MATCHING_PCT_WEIGHT));
+      }
+    }
 
-    const comparisonMode = this.#modes[mode] ?? this.#modes.static;
-    const comparisonResult = comparisonMode.compare(matchingResult.matches);
+    yield progressFrame('Comparing properties…', MATCHING_PHASE_CEILING);
 
-    this.#emit('Finalising results…', 90);
+    const comparisonMode  = this.#modes[mode] ?? this.#modes.static;
+    const diffTotal       = matchingResult.matches.length;
+    let   comparisonResult = null;
 
-    const duration = performance.now() - startTime;
+    const diffingGen = comparisonMode.compare(
+      matchingResult.matches,
+      matchingResult.ambiguous ?? []
+    );
 
-    return {
-      baseline: {
-        id:            baselineReport.id,
-        url:           baselineReport.url,
-        title:         baselineReport.title,
-        timestamp:     baselineReport.timestamp,
-        totalElements: baselineReport.elements.length
-      },
-      compare: {
-        id:            compareReport.id,
-        url:           compareReport.url,
-        title:         compareReport.title,
-        timestamp:     compareReport.timestamp,
-        totalElements: compareReport.elements.length
-      },
+    for await (const frame of diffingGen) {
+      if (frame.type === 'result') {
+        comparisonResult = frame.payload;
+      } else {
+        const diffFraction = diffTotal > 0 ? frame.pct / diffTotal : 1;
+        yield progressFrame(frame.label, MATCHING_PHASE_CEILING + Math.min(Math.round(diffFraction * 49), 49));
+      }
+    }
+
+    const duration = Math.round(performance.now() - startTime);
+
+    yield progressFrame('Finalising results…', 99);
+
+    yield resultFrame({
+      baseline: buildReportMeta(baselineReport),
+      compare:  buildReportMeta(compareReport),
       mode,
-      matching: {
-        totalMatched:     matchingResult.matches.length,
-        unmatchedBaseline: matchingResult.unmatchedBaseline.length,
-        unmatchedCompare:  matchingResult.unmatchedCompare.length,
-        matchRate:         this.#calculateMatchRate(
-          matchingResult.matches.length,
-          baselineReport.elements.length
-        )
+      matching: buildMatchingMetadata(matchingResult),
+      comparison: {
+        mode:      comparisonResult.modeName,
+        results:   comparisonResult.results,
+        ambiguous: comparisonResult.ambiguous,
+        summary:   comparisonResult.summary
       },
-      comparison: comparisonResult,
       unmatchedElements: {
-        baseline: matchingResult.unmatchedBaseline.map(el => ({
-          id: el.id, tagName: el.tagName, elementId: el.elementId, className: el.className
-        })),
-        compare: matchingResult.unmatchedCompare.map(el => ({
-          id: el.id, tagName: el.tagName, elementId: el.elementId, className: el.className
-        }))
+        baseline: buildUnmatchedSummary(matchingResult.unmatchedBaseline),
+        compare:  buildUnmatchedSummary(matchingResult.unmatchedCompare)
       },
-      duration:  Math.round(duration),
+      duration,
       timestamp: new Date().toISOString()
-    };
-  }
-
-  #emit(label, pct) {
-    if (this.#onProgress) {
-      this.#onProgress(label, pct);
-    }
-  }
-
-  #calculateMatchRate(matched, total) {
-    if (total === 0) {
-      return 0;
-    }
-    return Math.round((matched / total) * 100);
+    });
   }
 }
 
