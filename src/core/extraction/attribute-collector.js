@@ -14,46 +14,20 @@ function getFrameworkPatterns() {
 
 function collectAttributes(element) {
   try {
-    const attributes = {};
+    const result   = Object.create(null);
     const patterns = getFrameworkPatterns();
-    const { attributes: attrs } = element;
 
-    for (let i = 0; i < attrs.length; i++) {
-      const { name, value } = attrs[i];
+    for (const { name, value } of element.attributes) {
       if (!patterns.some(p => p.test(name))) {
-        attributes[name] = value;
+        result[name] = value;
       }
     }
 
-    return attributes;
+    return result;
   } catch (err) {
-    logger.error('Attribute collection failed', {
-      tagName: element.tagName,
-      error: err.message
-    });
-    return {};
+    logger.error('Attribute collection failed', { tagName: element.tagName, error: err.message });
+    return Object.create(null);
   }
 }
 
-function getPriorityAttributes(element) {
-  const priorityList = get('attributes.priority');
-  const supplementary = get('attributes.supplementary');
-  const allAttrs = [...priorityList, ...supplementary];
-  const attributes = {};
-
-  for (const attrName of allAttrs) {
-    const value = element.getAttribute(attrName);
-    if (value !== null) {
-      attributes[attrName] = value;
-    }
-  }
-
-  return attributes;
-}
-
-function hasTestAttribute(element) {
-  const priorityList = get('attributes.priority');
-  return priorityList.some(attr => element.hasAttribute(attr));
-}
-
-export { collectAttributes, getPriorityAttributes, hasTestAttribute };
+export { collectAttributes };

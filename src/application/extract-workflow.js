@@ -7,14 +7,13 @@ import { get } from '../config/defaults.js';
 
 const BLOCKED_PROTOCOLS = new Set(['chrome:', 'chrome-extension:', 'about:', 'data:']);
 const IPC_SIZE_WARN_THRESHOLD = 2_000_000;
-const REPORT_VERSION = '2.1';
+const REPORT_VERSION = '3.0';
 
 class ProtocolError extends Error {
   constructor(expected, actual) {
     super(
       `Report version contract violated: expected=${expected}, actual=${actual}. ` +
-      `The fingerprint algorithm and REPORT_VERSION constant are out of sync. ` +
-      `Update REPORT_VERSION to match the deployed algorithm.`
+      `Recapture the page to generate a v${expected} report.`
     );
     this.name            = 'ProtocolError';
     this.expectedVersion = expected;

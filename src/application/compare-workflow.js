@@ -9,7 +9,7 @@ import { elementLabel } from '../core/export/report-transformer.js';
 import { exportToHTML } from '../core/export/html-exporter.js';
 import { assessUrlCompatibility } from '../shared/url-utils.js';
 
-const MINIMUM_FINGERPRINT_VERSION = '2.1';
+const MINIMUM_SCHEMA_VERSION = '3.0';
 
 class PreFlightError extends Error {
   constructor(code, compatResult) {
@@ -23,9 +23,9 @@ class PreFlightError extends Error {
 class CompatibilityError extends Error {
   constructor(baselineVersion, compareVersion) {
     super(
-      `Fingerprint algorithm version too old: baseline=${baselineVersion ?? 'unknown'}, ` +
+      `Report schema version too old: baseline=${baselineVersion ?? 'unknown'}, ` +
       `compare=${compareVersion ?? 'unknown'}. ` +
-      `Both reports must be captured with fingerprint version >= ${MINIMUM_FINGERPRINT_VERSION}. ` +
+      `Both reports must be schema version >= ${MINIMUM_SCHEMA_VERSION}. ` +
       `Recapture both reports.`
     );
     this.name            = 'CompatibilityError';
@@ -52,8 +52,8 @@ function versionAtLeast(versionStr, minStr) {
 }
 
 function assertVersionCompatibility(baselineVersion, compareVersion) {
-  const baselineSufficient = versionAtLeast(baselineVersion, MINIMUM_FINGERPRINT_VERSION);
-  const compareSufficient  = versionAtLeast(compareVersion,  MINIMUM_FINGERPRINT_VERSION);
+  const baselineSufficient = versionAtLeast(baselineVersion, MINIMUM_SCHEMA_VERSION);
+  const compareSufficient  = versionAtLeast(compareVersion,  MINIMUM_SCHEMA_VERSION);
   if (!baselineSufficient || !compareSufficient) {
     throw new CompatibilityError(baselineVersion, compareVersion);
   }

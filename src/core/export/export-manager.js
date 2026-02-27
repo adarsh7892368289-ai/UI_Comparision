@@ -1,60 +1,36 @@
-import logger from '../../infrastructure/logger.js';
-import { exportToExcel } from './excel-exporter.js';
-import { exportToCSV } from './csv-exporter.js';
-import { exportToHTML } from './html-exporter.js';
-import { exportToJSON } from './json-exporter.js';
+import logger                              from '../../infrastructure/logger.js';
+import { exportComparisonToCsv }           from './comparison-csv-exporter.js';
+import { exportComparisonToJson }          from './comparison-json-exporter.js';
+import { exportToExcel }                   from './excel-exporter.js';
+import { exportToHTML }                    from './html-exporter.js';
 
-const EXPORT_FORMATS = {
+const EXPORT_FORMAT = Object.freeze({
   EXCEL: 'excel',
-  CSV: 'csv',
-  HTML: 'html',
-  JSON: 'json'
-};
+  CSV:   'csv',
+  HTML:  'html',
+  JSON:  'json'
+});
 
-class ExportManager {
-  async export(comparisonResult, format) {
-    logger.info('Starting export', { format });
+async function exportComparison(comparisonResult, format) {
+  logger.info('Comparison export requested', { format });
 
-    try {
-      let result;
-
-      switch (format) {
-        case EXPORT_FORMATS.EXCEL:
-          result = await exportToExcel(comparisonResult);
-          break;
-
-        case EXPORT_FORMATS.CSV:
-          result = await exportToCSV(comparisonResult);
-          break;
-
-        case EXPORT_FORMATS.HTML:
-          result = await exportToHTML(comparisonResult);
-          break;
-
-        case EXPORT_FORMATS.JSON:
-          result = exportToJSON(comparisonResult);
-          break;
-
-        default:
-          throw new Error(`Unsupported export format: ${format}`);
-      }
-
-      if (result.success) {
-        logger.info('Export completed successfully', { format });
-      } else {
-        logger.error('Export failed', { format, error: result.error });
-      }
-
-      return result;
-    } catch (error) {
-      logger.error('Export error', { format, error: error.message });
-      return { success: false, error: error.message };
+  try {
+    switch (format) {
+      case EXPORT_FORMAT.EXCEL: return await exportToExcel(comparisonResult);
+      case EXPORT_FORMAT.CSV:   return exportComparisonToCsv(comparisonResult);
+      case EXPORT_FORMAT.HTML:  return await exportToHTML(comparisonResult);
+      case EXPORT_FORMAT.JSON:  return exportComparisonToJson(comparisonResult);
+      default:
+        throw new Error(`Unsupported comparison export format: "${format}"`);
     }
-  }
-
-  getSupportedFormats() {
-    return Object.values(EXPORT_FORMATS);
+  } catch (err) {
+    logger.error('Comparison export failed', { format, error: err.message });
+    return { success: false, error: err.message };
   }
 }
 
-export { ExportManager, EXPORT_FORMATS };
+function getSupportedFormats() {
+  return Object.values(EXPORT_FORMAT);
+}
+
+export { exportComparison, getSupportedFormats, EXPORT_FORMAT };

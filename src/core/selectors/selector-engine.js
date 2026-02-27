@@ -116,29 +116,36 @@ async function generateSelectors(element) {
     return { ...NULL_SELECTORS };
   }
 
+  const doCSS     = get('selectors.generateCSS',   true);
+  const doXPath   = get('selectors.generateXPath',  true);
+  const total     = get('selectors.totalTimeout',   600);
   const shadowPath = buildShadowPath(element);
   const parallel   = get('selectors.xpath.parallelExecution', true) &&
-                     get('selectors.css.parallelExecution', true);
+                     get('selectors.css.parallelExecution',   true);
 
-  if (parallel) {
-    const [xpathOutcome, cssOutcome] = await Promise.allSettled([
-      generateXPath(element),
-      generateCSS(element)
-    ]);
-    return assembleSelectors(
-      xpathOutcome.status === 'fulfilled' ? xpathOutcome.value : null,
-      cssOutcome.status === 'fulfilled'   ? cssOutcome.value   : null,
-      shadowPath
-    );
-  }
+  const raceTimeout = new Promise(resolve =>
+    setTimeout(() => resolve(null), total)
+  );
 
-  const xpathResult = await generateXPath(element);
-  const cssResult   = await generateCSS(element);
-  return assembleSelectors(xpathResult, cssResult, shadowPath);
+  const cssWork   = doCSS   ? generateCSS(element)   : Promise.resolve(null);
+  const xpathWork = doXPath ? generateXPath(element) : Promise.resolve(null);
+
+  const work = parallel
+    ? Promise.allSettled([xpathWork, cssWork]).then(
+        ([xpathOutcome, cssOutcome]) => assembleSelectors(
+          xpathOutcome.status === 'fulfilled' ? xpathOutcome.value : null,
+          cssOutcome.status   === 'fulfilled' ? cssOutcome.value   : null,
+          shadowPath
+        )
+      )
+    : xpathWork.then(x => cssWork.then(c => assembleSelectors(x, c, shadowPath)));
+
+  const result = await Promise.race([work, raceTimeout]);
+  return result ?? { ...NULL_SELECTORS, shadowPath };
 }
 
 async function generateSelectorsForElements(elements) {
-  const concurrency = get('selectors.batchConcurrency', 8);
+  const concurrency = get('selectors.concurrency', 4);
   const queue       = new BoundedQueue(concurrency);
   const results     = new Array(elements.length);
 

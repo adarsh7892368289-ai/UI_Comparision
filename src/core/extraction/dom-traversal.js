@@ -1,103 +1,221 @@
-import { getT0Tags, matchesFilters } from './element-classifier.js';
+import { get }     from '../../config/defaults.js';
+import { getT0Tags } from './element-classifier.js';
+import { resolveFilteredRoots, hasActiveFilters } from './extraction-filter.js';
 
-const STACK_CAPACITY = 1024;
-const sharedStackNodes = new Array(STACK_CAPACITY);
-const sharedStackDepths = new Int32Array(STACK_CAPACITY);
-const sharedStackIds = new Int32Array(STACK_CAPACITY);
+const SHADOW_SENTINEL = () => get('hpid.shadowSentinel', 0);
 
-function buildFilter(t0Tags, filters) {
+class EngineBoundaryError extends Error {
+  constructor(message, context) {
+    super(message);
+    this.name    = 'EngineBoundaryError';
+    this.context = context;
+  }
+}
+
+function computeAbsoluteHpidPath(element) {
+  const path      = [];
+  let   current   = element;
+  const lightRoot = document.body ?? document.documentElement;
+
+  while (current && current !== lightRoot && current !== document.documentElement) {
+    if (current.parentElement) {
+      let position = 1;
+      let sibling  = current.previousElementSibling;
+      while (sibling) {
+        position++;
+        sibling = sibling.previousElementSibling;
+      }
+      path.unshift(position);
+      current = current.parentElement;
+    } else if (current.parentNode instanceof ShadowRoot) {
+      const shadowRoot = current.parentNode;
+      let position     = 1;
+      let sibling      = current.previousElementSibling;
+      while (sibling) {
+        position++;
+        sibling = sibling.previousElementSibling;
+      }
+      path.unshift(position);
+      path.unshift(SHADOW_SENTINEL());
+      current = shadowRoot.host;
+    } else {
+      break;
+    }
+  }
+
+  return path;
+}
+
+function buildNodeFilter(t0Tags, excludedRootSet) {
   return {
     acceptNode(node) {
       if (t0Tags.has(node.tagName)) {
         return NodeFilter.FILTER_REJECT;
       }
-      return matchesFilters(node, filters) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+      if (excludedRootSet !== null && excludedRootSet.has(node)) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
     }
   };
 }
 
-function buildShadowContext(parentContext, hostElement) {
-  return {
-    inShadow: true,
-    hostElement,
-    shadowDepth: (parentContext?.shadowDepth ?? 0) + 1
-  };
+function createFrame(node, depth, hpidPath, absolutePath) {
+  return { node, depth, hpidPath, absolutePath, childCount: 0 };
 }
 
-function collectFromRoot(root, baseDepth, shadowContext, ctx, stackBase) {
-  const { filter, siblingMap, accumulator } = ctx;
+function popToParent(stack, parentNode) {
+  while (stack.length > 1 && stack[stack.length - 1].node !== parentNode) {
+    stack.pop();
+  }
+}
 
-  sharedStackNodes[stackBase] = root;
-  sharedStackDepths[stackBase] = baseDepth - 1;
-  sharedStackIds[stackBase] = ctx.nextId++;
-  let stackTop = stackBase;
+function serializeHpid(hpidPath) {
+  return hpidPath.join('.');
+}
 
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, filter);
-  let node = walker.nextNode();
+function assertDepth(depth, tagName, parentHpidPath) {
+  const limit = get('hpid.maxDepth', 5000);
+  if (depth > limit) {
+    throw new EngineBoundaryError(
+      `DOM depth ${depth} exceeded sanity limit of ${limit}`,
+      { depth, tagName, hpidPath: parentHpidPath }
+    );
+  }
+}
+
+function collectShadowSubtree(host, hostDepth, hostAbsolutePath, hostRelativePath, nodeFilter, accumulator) {
+  const shadowRoot = host.shadowRoot;
+  if (!shadowRoot) return;
+
+  const sentinel      = SHADOW_SENTINEL();
+  const shadowAbsBase = hostAbsolutePath.concat(sentinel);
+  const shadowRelBase = hostRelativePath.concat(sentinel);
+  const rootFrame     = createFrame(shadowRoot, hostDepth, shadowRelBase, shadowAbsBase);
+  const stack         = [rootFrame];
+  const walker        = document.createTreeWalker(shadowRoot, NodeFilter.SHOW_ELEMENT, nodeFilter);
+  let   node          = walker.nextNode();
 
   while (node) {
-    const parent = node.parentNode;
+    popToParent(stack, node.parentNode);
 
-    while (stackTop > stackBase && sharedStackNodes[stackTop] !== parent) {
-      stackTop--;
-    }
+    const parentFrame = stack[stack.length - 1];
+    parentFrame.childCount += 1;
 
-    const depth = sharedStackDepths[stackTop] + 1;
-    stackTop = Math.min(stackTop + 1, STACK_CAPACITY - 1);
-    sharedStackNodes[stackTop] = node;
-    sharedStackDepths[stackTop] = depth;
-    sharedStackIds[stackTop] = ctx.nextId++;
+    const depth       = parentFrame.depth + 1;
+    const relHpidPath = parentFrame.hpidPath.concat(parentFrame.childCount);
+    const absHpidPath = parentFrame.absolutePath.concat(parentFrame.childCount);
 
-    if (stackTop > ctx.maxStackTop) {
-      ctx.maxStackTop = stackTop;
-    }
+    assertDepth(depth, node.tagName, parentFrame.hpidPath);
+    stack.push(createFrame(node, depth, relHpidPath, absHpidPath));
 
-    const sibKey = `${sharedStackIds[stackTop - 1]}|${node.tagName}`;
-    const sameTagSiblingIndex = siblingMap.get(sibKey) ?? 0;
-    siblingMap.set(sibKey, sameTagSiblingIndex + 1);
-
-    accumulator.push({ element: node, depth, sameTagSiblingIndex, shadowContext });
+    accumulator.push({
+      element:          node,
+      depth,
+      hpidPath:         relHpidPath,
+      absoluteHpidPath: absHpidPath
+    });
 
     if (node.shadowRoot) {
-      const innerBase = Math.min(stackTop + 1, STACK_CAPACITY - 1);
-      collectFromRoot(
-        node.shadowRoot,
-        depth + 1,
-        buildShadowContext(shadowContext, node),
-        ctx,
-        innerBase
-      );
+      collectShadowSubtree(node, depth, absHpidPath, relHpidPath, nodeFilter, accumulator);
     }
 
     node = walker.nextNode();
   }
 }
 
+function collectLightSubtree(root, rootRelativePath, rootAbsolutePath, nodeFilter, accumulator) {
+  const rootFrame = createFrame(root, rootRelativePath.length - 1, rootRelativePath, rootAbsolutePath);
+  const stack     = [rootFrame];
+  const walker    = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, nodeFilter);
+  let   node      = walker.nextNode();
+
+  while (node) {
+    popToParent(stack, node.parentNode);
+
+    const parentFrame = stack[stack.length - 1];
+    parentFrame.childCount += 1;
+
+    const depth       = parentFrame.depth + 1;
+    const relHpidPath = parentFrame.hpidPath.concat(parentFrame.childCount);
+    const absHpidPath = parentFrame.absolutePath.concat(parentFrame.childCount);
+
+    assertDepth(depth, node.tagName, parentFrame.hpidPath);
+    stack.push(createFrame(node, depth, relHpidPath, absHpidPath));
+
+    accumulator.push({
+      element:          node,
+      depth,
+      hpidPath:         relHpidPath,
+      absoluteHpidPath: absHpidPath
+    });
+
+    if (node.shadowRoot) {
+      collectShadowSubtree(node, depth, absHpidPath, relHpidPath, nodeFilter, accumulator);
+    }
+
+    node = walker.nextNode();
+  }
+}
+
+function traverseFullDocument(t0Tags, accumulator) {
+  const body            = document.body ?? document.documentElement;
+  const absoluteBodyPath = computeAbsoluteHpidPath(body);
+  const displayRootPath = [1];
+  const safeAbsPath     = absoluteBodyPath.length > 0 ? absoluteBodyPath : [1];
+  const nodeFilter      = buildNodeFilter(t0Tags, null);
+
+  accumulator.push({
+    element:          body,
+    depth:            0,
+    hpidPath:         displayRootPath,
+    absoluteHpidPath: safeAbsPath
+  });
+
+  collectLightSubtree(body, displayRootPath, safeAbsPath, nodeFilter, accumulator);
+}
+
+function traverseFilteredRoots(roots, t0Tags, accumulator) {
+  const rootSet    = new WeakSet(roots);
+  const nodeFilter = buildNodeFilter(t0Tags, rootSet);
+
+  for (let idx = 0; idx < roots.length; idx++) {
+    const root             = roots[idx];
+    const relPath          = [idx + 1];
+    const absoluteHpidPath = computeAbsoluteHpidPath(root);
+
+    accumulator.push({
+      element: root,
+      depth:   0,
+      hpidPath: relPath,
+      absoluteHpidPath
+    });
+
+    if (root.shadowRoot) {
+      collectShadowSubtree(root, 0, absoluteHpidPath, relPath, nodeFilter, accumulator);
+    } else {
+      collectLightSubtree(root, relPath, absoluteHpidPath, nodeFilter, accumulator);
+    }
+  }
+}
+
 function traverseDocument(filters) {
-  const t0Tags = getT0Tags();
-  const filter = buildFilter(t0Tags, filters);
-  const siblingMap = new Map();
+  const t0Tags      = getT0Tags();
   const accumulator = [];
-  const ctx = { filter, siblingMap, accumulator, nextId: 1, maxStackTop: 0 };
-  const root = document.body ?? document.documentElement;
 
-  collectFromRoot(root, 0, null, ctx, 0);
-
-  for (let i = 0; i <= ctx.maxStackTop; i++) {
-    sharedStackNodes[i] = null;
+  if (!hasActiveFilters(filters)) {
+    traverseFullDocument(t0Tags, accumulator);
+    return accumulator;
   }
 
-  siblingMap.clear();
+  const roots = resolveFilteredRoots(filters);
 
+  if (!roots || roots.length === 0) {
+    return accumulator;
+  }
+
+  traverseFilteredRoots(roots, t0Tags, accumulator);
   return accumulator;
 }
 
-function buildShadowHostId(visit, captureIndex) {
-  if (!visit.shadowContext) {
-    return null;
-  }
-  const { shadowDepth } = visit.shadowContext;
-  return `::shadow::${shadowDepth}-${captureIndex}`;
-}
-
-export { traverseDocument, buildShadowHostId };
+export { traverseDocument, serializeHpid, computeAbsoluteHpidPath, EngineBoundaryError };

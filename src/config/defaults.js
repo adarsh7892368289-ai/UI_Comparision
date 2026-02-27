@@ -1,13 +1,49 @@
 const rawConfig = {
 
+  schema: {
+    includeStyles:         true,
+    includeAttributes:     true,
+    includeRect:           true,
+    includeNeighbours:     false,
+    includeClassHierarchy: false,
+    includeTier:           true,
+    includeClassMeta:      true,
+    includePageSection:    true,
+
+    record: {
+      textContent: {
+        maxLength: 500
+      }
+    },
+
+    enrichment: {
+      neighbours: {
+        maxParentClasses: 3,
+        maxChildrenTypes: 10
+      },
+      classHierarchy: {
+        maxParentDepth: 3,
+        maxChildCount:  10,
+        maxClassSlice:  2
+      }
+    }
+  },
+
   extraction: {
-    batchSize: 50,
+    batchSize:         20,
+    batchHardCapMs:    30,
     perElementTimeout: 200,
-    maxElements: 10000,
-    skipInvisible: true,
+    maxElements:       10_000,
+    skipInvisible:     true,
     stabilityWindowMs: 500,
-    hardTimeoutMs: 5000,
-    initialValueSentinel: '__initial__',
+    hardTimeoutMs:     5_000,
+
+    section: {
+      headerPositionRatio:  0.20,
+      footerPositionRatio:  0.15,
+      headerViewportFactor: 1.5,
+      footerViewportFactor: 1.0
+    },
 
     irrelevantTags: [
       'SCRIPT', 'STYLE', 'META', 'LINK', 'NOSCRIPT', 'BR', 'HR',
@@ -16,69 +52,90 @@ const rawConfig = {
     ],
 
     cssProperties: [
-      'display', 'position', 'float', 'clear',
-      'width', 'height', 'max-width', 'max-height', 'min-width', 'min-height',
+      'font-family', 'font-size', 'font-weight', 'font-style',
+      'line-height', 'letter-spacing', 'word-spacing', 'text-align',
+      'text-decoration', 'text-transform',
+      'color', 'background-color', 'opacity', 'visibility',
+      'padding',
       'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+      'margin',
       'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+      'gap',
+      'display', 'position', 'float', 'clear', 'overflow', 'overflow-x', 'overflow-y',
+      'width', 'height', 'max-width', 'max-height', 'min-width', 'min-height',
+      'top', 'right', 'bottom', 'left', 'z-index',
+      'flex-direction', 'flex-wrap', 'flex-grow', 'flex-shrink', 'flex-basis',
+      'justify-content', 'align-items', 'align-content', 'align-self',
+      'grid-template-columns', 'grid-template-rows', 'grid-column', 'grid-row',
+      'border', 'border-width', 'border-style', 'border-color',
       'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
       'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
       'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+      'border-radius',
       'border-top-left-radius', 'border-top-right-radius',
       'border-bottom-right-radius', 'border-bottom-left-radius',
-      'font-family', 'font-size', 'font-weight', 'font-style',
-      'line-height', 'letter-spacing', 'word-spacing',
-      'text-align', 'text-decoration', 'text-transform',
-      'white-space', 'word-wrap', 'word-break', 'vertical-align',
-      'color', 'background-color', 'background-image',
-      'box-shadow', 'text-shadow', 'opacity', 'visibility',
-      'top', 'right', 'bottom', 'left', 'z-index',
-      'overflow', 'overflow-x', 'overflow-y',
-      'flex-direction', 'flex-wrap', 'flex-grow', 'flex-shrink', 'flex-basis',
-      'justify-content', 'align-items', 'align-content', 'align-self', 'gap',
-      'grid-template-columns', 'grid-template-rows', 'grid-gap',
-      'grid-column', 'grid-row',
-      'transform', 'transform-origin',
-      'outline', 'outline-width', 'outline-style', 'outline-color'
-    ]
+      'box-shadow', 'text-shadow'
+    ],
+
+    styleCategories: ['typography', 'colors', 'spacing', 'layout', 'borders']
   },
 
-  fingerprint: {
-    textMaxChars: 120,
-    selectorMaxDepth: 8,
-    stateClassPattern: '^(?:is-|has-)\\S+$|^(?:active|open|closed|loading|hidden|visible|selected|disabled|hover|focus|expanded|collapsed|checked)$',
-    childTagDepthLimit: 8,
-    childTagSentinel: '__LEAF__'
+  hpid: {
+    coordinateMode: 'dual',
+    maxDepth:       5_000,
+    shadowSentinel: 0
   },
 
   selectors: {
+    generateCSS:   true,
+    generateXPath: true,
+    concurrency:   4,
+    totalTimeout:  600,
+
     xpath: {
-      perStrategyTimeout: 80,
-      totalTimeout: 500,
-      enableFallback: true,
-      parallelExecution: true
+      perStrategyTimeout: 50,
+      totalTimeout:       400,
+      enableFallback:     true,
+      parallelExecution:  true,
+      enableNearbyText:   false
     },
     css: {
-      perStrategyTimeout: 50,
-      totalTimeout: 300,
-      enableFallback: true,
-      parallelExecution: true
+      perStrategyTimeout: 40,
+      totalTimeout:       250,
+      enableFallback:     true,
+      parallelExecution:  true
     },
-    minRobustnessScore: 50,
-    batchConcurrency:   8
+    minRobustnessScore: 50
   },
 
   comparison: {
     matching: {
-      strategies: ['testid', 'id', 'css', 'xpath', 'position'],
+      anchorAttributes: [
+        'data-testid', 'data-test', 'data-qa', 'data-cy',
+        'data-automation-id', 'data-key', 'data-record-id',
+        'data-component-id', 'data-row-key-value'
+      ],
+
+      strategies: [
+        { id: 'test-attribute', confidence: 1.00, enabled: true, label: 'Anchoring by test attributes\u2026' },
+        { id: 'absolute-hpid', confidence: 0.98, enabled: true, label: 'Anchoring by absolute position\u2026' },
+        { id: 'id',            confidence: 0.90, enabled: true, label: 'Anchoring by element ID\u2026' },
+        { id: 'css-selector',  confidence: 0.85, enabled: true, label: 'Structural match by CSS\u2026' },
+        { id: 'xpath',         confidence: 0.82, enabled: true, label: 'Structural match by XPath\u2026' },
+        { id: 'hpid-prefix',  confidence: 0.65, enabled: true, label: 'Topological matching\u2026' },
+        { id: 'position',     confidence: 0.30, enabled: true, label: 'Positional matching\u2026' }
+      ],
+
       confidenceThreshold: 0.5,
-      positionTolerance: 50,
-      minMatchThreshold: 0.70,
-      ambiguityWindow: 0.12
+      positionTolerance:   50,
+      minMatchThreshold:   0.70,
+      ambiguityWindow:     0.12,
+      yieldChunkSize:      64
     },
 
     tolerances: {
-      color: 5,
-      size: 3,
+      color:   5,
+      size:    3,
       opacity: 0.01
     },
 
@@ -139,7 +196,7 @@ const rawConfig = {
           'filter', 'backdrop-filter',
           'object-fit', 'object-position'
         ],
-        compareTextContent: false,
+        compareTextContent:       false,
         structuralOnlyAttributes: [
           'role', 'aria-label', 'aria-labelledby', 'aria-describedby',
           'type', 'name', 'data-testid', 'data-test', 'data-qa', 'data-cy'
@@ -147,24 +204,24 @@ const rawConfig = {
         tolerances: { color: 8, size: 5, opacity: 0.05 }
       },
       static: {
-        ignoredProperties: [],
+        ignoredProperties:  [],
         compareTextContent: true,
-        tolerances: { color: 5, size: 3, opacity: 0.01 }
+        tolerances:         { color: 5, size: 3, opacity: 0.01 }
       }
     },
 
     confidence: {
-      high: 0.9,
+      high:   0.9,
       medium: 0.7,
-      low: 0.5,
-      min: 0.5
+      low:    0.5,
+      min:    0.5
     }
   },
 
   normalization: {
     cache: {
-      enabled: true,
-      maxEntries: 1000,
+      enabled:        true,
+      maxEntries:     1_000,
       evictionPolicy: 'LRU'
     },
     rounding: {
@@ -175,33 +232,33 @@ const rawConfig = {
   infrastructure: {
     circuitBreaker: {
       failureThreshold: 5,
-      cooldownPeriod: 5000,
-      resetTimeout: 30000
+      cooldownPeriod:   5_000,
+      resetTimeout:     30_000
     },
     retry: {
       maxRetries: 3,
-      baseDelay: 100,
-      maxDelay: 5000
+      baseDelay:  100,
+      maxDelay:   5_000
     },
     timeout: {
-      default: 5000,
-      extraction: 200,
-      tabLoad: 30000,
-      contentScript: 300000
+      default:       5_000,
+      extraction:    200,
+      tabLoad:       30_000,
+      contentScript: 300_000
     }
   },
 
   storage: {
     maxReports: 50,
-    reportKey: 'page_comparator_reports',
-    logsKey: 'page_comparator_logs',
-    stateKey: 'page_comparator_state'
+    reportKey:  'page_comparator_reports',
+    logsKey:    'page_comparator_logs',
+    stateKey:   'page_comparator_state'
   },
 
   logging: {
-    level: 'debug',
-    persistLogs: true,
-    maxEntries: 1000,
+    level:                  'debug',
+    persistLogs:            true,
+    maxEntries:             1_000,
     slowOperationThreshold: 500
   },
 
@@ -216,14 +273,9 @@ const rawConfig = {
       'placeholder', 'name', 'aria-label'
     ],
     frameworkPatterns: [
-      '^ng-',
-      '^_ngcontent',
-      '^_nghost',
-      '^v-',
-      '^data-v-[a-f0-9]+$',
-      '^jsx-',
-      '^data-reactid',
-      '^data-react-'
+      '^ng-', '^_ngcontent', '^_nghost',
+      '^v-', '^data-v-[a-f0-9]+$',
+      '^jsx-', '^data-reactid', '^data-react-'
     ],
     dynamicIdPatterns: [
       '^\\d+$',
@@ -249,16 +301,16 @@ const rawConfig = {
   export: {
     defaultFilename: 'comparison-report',
     excel: {
-      headerColor: '4472C4',
+      headerColor:   '4472C4',
       criticalColor: 'FF4444',
-      highColor: 'FF9800',
-      mediumColor: 'FFD700',
-      lowColor: 'FFFFFF',
-      maxCellLength: 32767
+      highColor:     'FF9800',
+      mediumColor:   'FFD700',
+      lowColor:      'FFFFFF',
+      maxCellLength: 32_767
     },
     csv: {
       delimiter: ',',
-      encoding: 'utf-8-bom'
+      encoding:  'utf-8-bom'
     }
   }
 };
@@ -300,22 +352,18 @@ function init(overrides = {}) {
 
 function get(path, fallback) {
   const segments = path.split('.');
-  let current = config;
+  let current    = config;
 
   for (const seg of segments) {
     if (current === undefined || current === null) {
-      if (fallback !== undefined) {
-        return fallback;
-      }
+      if (fallback !== undefined) return fallback;
       throw new Error(`[Config] Path not found: "${path}" (failed at "${seg}")`);
     }
     current = current[seg];
   }
 
   if (current === undefined) {
-    if (fallback !== undefined) {
-      return fallback;
-    }
+    if (fallback !== undefined) return fallback;
     throw new Error(`[Config] Path not found: "${path}"`);
   }
 

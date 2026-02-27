@@ -7,7 +7,6 @@ import {
   collectStableAttributes,
   getStableAncestorChain,
   findBestSemanticAncestor,
-  findNearbyTextElements,
   getUniversalTag
 } from '../../../shared/dom-utils.js';
 import { escapeXPath } from './validator.js';
@@ -101,22 +100,8 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 7: Nearby label / preceding text as context
-  static tier7NearbyText(element, tag) {
-    const results = [];
-    const nearbyTexts = findNearbyTextElements(element, 50);
-    for (const nearby of nearbyTexts.slice(0, 2)) {
-      const text = cleanText(nearby.element.textContent);
-      if (text && text.length > 1 && text.length < 50 && isStaticText(text)) {
-        const nearbyTag = getUniversalTag(nearby.element);
-        results.push({
-          xpath: `//${nearbyTag}[normalize-space(.)=${escapeXPath(text)}]/following::${tag}[1]`,
-          strategy: 'nearby-text',
-          tier: 7
-        });
-      }
-    }
-    return results;
+  static tier7NearbyText(_element, _tag) {
+    return [];
   }
 
   // Tier 8: Sibling with stable ID

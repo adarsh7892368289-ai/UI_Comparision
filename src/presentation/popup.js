@@ -3,16 +3,17 @@ import { popupState } from './popup-state.js';
 import { TabAdapter } from '../infrastructure/chrome-tabs.js';
 import { sendToBackground, MessageTypes } from '../infrastructure/chrome-messaging.js';
 import {
-  loadAllReports, deleteReport, deleteAllReports,
-  exportReportAsJson, exportReportAsCsv,
-  exportAllReportsAsJson, exportAllReportsAsCsv
+  loadAllReports, deleteReport, deleteAllReports
 } from '../application/report-manager.js';
-import { ExportManager, EXPORT_FORMATS } from '../core/export/export-manager.js';
+import {
+  exportReport, exportAllReports,
+  exportComparison, EXPORT_FORMAT
+} from '../application/export-workflow.js';
 
 logger.init();
 logger.setContext({ script: 'popup' });
 
-const exportManager = new ExportManager();
+
 
 class ToastManager {
   _init() {
@@ -404,7 +405,7 @@ async function handleDeleteReport(report) {
 async function handleExportAll() {
   const format = document.getElementById('export-all-format')?.value ?? 'csv';
   try {
-    const result = format === 'json' ? await exportAllReportsAsJson() : await exportAllReportsAsCsv();
+    const result = await exportAllReports(format);
     if (result.success) {
       Toast.success(`Exported ${result.count} reports as ${format.toUpperCase()}`);
     } else {
@@ -418,9 +419,9 @@ async function handleExportAll() {
 async function handleExportReport(report, format) {
   try {
     if (format === 'json') {
-      await exportReportAsJson(report);
+      await exportReport(report, 'json');
     } else {
-      await exportReportAsCsv(report);
+      await exportReport(report, 'csv');
     }
     Toast.success(`Exported as ${format.toUpperCase()}`);
   } catch (err) {
@@ -433,14 +434,14 @@ async function handleExportComparison() {
   const result = state.comparisonResult;
   if (!result) { Toast.error('No comparison result to export'); return; }
 
-  const format = document.getElementById('export-format-select')?.value ?? EXPORT_FORMATS.EXCEL;
+  const format = document.getElementById('export-format-select')?.value ?? EXPORT_FORMAT.EXCEL;
 
-  if (format === EXPORT_FORMATS.HTML) {
+  if (format === EXPORT_FORMAT.HTML) {
     await _exportHTMLViaBackground(state);
     return;
   }
 
-  const res = await exportManager.export(result, format);
+  const res = await exportComparison(result, format);
   if (res.success) {
     Toast.success(`Exported as ${format.toUpperCase()}`);
   } else {

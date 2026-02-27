@@ -1,27 +1,21 @@
-const SEVERITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
+const SEVERITY_ORDER = Object.freeze({ critical: 0, high: 1, medium: 2, low: 3 });
 
 function elementLabel(el) {
-  const tag      = (el.tagName || 'unknown').toLowerCase();
-  const idPart   = el.elementId ? `#${el.elementId}` : '';
-  const rawClass = el.className;
-  const classStr = typeof rawClass === 'string'
-    ? rawClass
-    : (rawClass?.baseVal ?? '');
-  const clsPart = classStr.trim()
-    ? `.${classStr.trim().split(/\s+/).slice(0, 2).join('.')}`
+  const tag     = (el.tagName   || 'unknown').toLowerCase();
+  const idPart  = el.elementId  ? `#${el.elementId}` : '';
+  const clsPart = el.className?.trim()
+    ? `.${el.className.trim().split(/\s+/).slice(0, 2).join('.')}`
     : '';
   return `${tag}${idPart}${clsPart}`;
 }
 
 function elementBreadcrumb(el) {
-  return el.selectors?.css || el.selectors?.xpath || elementLabel(el);
+  return el.cssSelector || el.xpath || elementLabel(el);
 }
 
 function getTopSeverity(annotatedDifferences) {
   for (const level of ['critical', 'high', 'medium', 'low']) {
-    if (annotatedDifferences.some(d => d.severity === level)) {
-      return level;
-    }
+    if (annotatedDifferences.some(d => d.severity === level)) return level;
   }
   return 'low';
 }
@@ -30,9 +24,7 @@ function buildDiffsByCategory(annotatedDifferences) {
   const map = {};
   for (const diff of annotatedDifferences) {
     const cat = diff.category || 'other';
-    if (!map[cat]) {
-      map[cat] = [];
-    }
+    if (!map[cat]) map[cat] = [];
     map[cat].push(diff);
   }
   for (const cat of Object.keys(map)) {
@@ -45,14 +37,8 @@ function buildMatchedGroups(results) {
   const groups = { critical: [], high: [], medium: [], low: [], unchanged: [] };
 
   for (const match of results) {
-    const el = match.baselineElement || {
-      id:        match.baselineElementId,
-      tagName:   match.tagName,
-      elementId: match.elementId,
-      className: match.className,
-      selectors: match.selectors
-    };
-    const diffs = match.annotatedDifferences ?? match.differences ?? [];
+    const el    = match.baselineElement ?? {};
+    const diffs = match.annotatedDifferences ?? [];
 
     if ((match.totalDifferences ?? diffs.length) === 0) {
       groups.unchanged.push({ elementKey: elementLabel(el), tagName: el.tagName });
@@ -65,12 +51,13 @@ function buildMatchedGroups(results) {
     groups[topSeverity].push({
       elementKey:      elementLabel(el),
       breadcrumb:      elementBreadcrumb(el),
-      elementId:       el.id,
+      elementId:       el.elementId,
       tagName:         el.tagName,
       totalDiffs:      match.totalDifferences ?? diffs.length,
       severity:        topSeverity,
       diffsByCategory,
-      selectors:       el.selectors,
+      cssSelector:     el.cssSelector,
+      xpath:           el.xpath,
       matchConfidence: match.confidence,
       matchStrategy:   match.strategy
     });
@@ -83,28 +70,22 @@ function buildMatchedGroups(results) {
   return groups;
 }
 
-function resolveAmbiguousElement(entry) {
-  if (entry.baselineElement) {
-    return entry.baselineElement;
-  }
-  return {
-    id:        entry.baselineElementId,
-    tagName:   entry.tagName,
-    elementId: entry.elementId,
-    className: entry.className,
-    selectors: entry.selectors
-  };
-}
-
 function buildAmbiguousGroup(ambiguousList) {
   return ambiguousList.map(entry => {
-    const el = resolveAmbiguousElement(entry);
+    const el = entry.baselineElement ?? {
+      tagName:     entry.tagName,
+      elementId:   entry.elementId,
+      className:   entry.className,
+      cssSelector: entry.cssSelector,
+      xpath:       entry.xpath
+    };
     return {
       elementKey:      elementLabel(el),
       breadcrumb:      elementBreadcrumb(el),
-      elementId:       el.id ?? null,
+      elementId:       el.elementId  ?? null,
       tagName:         el.tagName,
-      selectors:       el.selectors ?? null,
+      cssSelector:     el.cssSelector ?? null,
+      xpath:           el.xpath       ?? null,
       candidateCount:  entry.candidateCount ?? entry.ambiguousCandidates?.length ?? 0,
       matchConfidence: entry.confidence,
       matchStrategy:   entry.strategy
@@ -123,8 +104,12 @@ function transformToGroupedReport(comparisonResult) {
 
   const groups = {
     ...matchedGroups,
-    added:     unmatchedCompare.map(el  => ({ elementKey: elementLabel(el),  tagName: el.tagName, className: el.className, status: 'added' })),
-    removed:   unmatchedBaseline.map(el => ({ elementKey: elementLabel(el),  tagName: el.tagName, className: el.className, status: 'removed' })),
+    added:     unmatchedCompare.map(el  => ({
+      elementKey: elementLabel(el), tagName: el.tagName, className: el.className, status: 'added'
+    })),
+    removed:   unmatchedBaseline.map(el => ({
+      elementKey: elementLabel(el), tagName: el.tagName, className: el.className, status: 'removed'
+    })),
     ambiguous: buildAmbiguousGroup(ambiguousList)
   };
 
@@ -144,4 +129,4 @@ function transformToGroupedReport(comparisonResult) {
   return { summary, groups };
 }
 
-export { transformToGroupedReport, elementLabel, elementBreadcrumb, getTopSeverity };
+export { elementBreadcrumb, elementLabel, getTopSeverity, transformToGroupedReport };

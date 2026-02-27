@@ -1,7 +1,7 @@
 import { get } from '../../config/defaults.js';
 import logger from '../../infrastructure/logger.js';
 
-const CaptureQuality = Object.freeze({
+const CAPTURE_QUALITY = Object.freeze({
   OPTIMAL:  'OPTIMAL',
   STABLE:   'STABLE',
   DEGRADED: 'DEGRADED'
@@ -11,29 +11,15 @@ const SKELETON_CSS =
   '[class*="skeleton"],[class*="shimmer"],[class*="placeholder"],[class*="loading"],[class*="spinner"]';
 
 const NOISE_TAG_PREFIXES = Object.freeze([
-  'atomic-',
-  'coveo-',
-  'dyn-',
-  'gtm-',
-  'analytics-',
-  'beacon-'
+  'atomic-', 'coveo-', 'dyn-', 'gtm-', 'analytics-', 'beacon-'
 ]);
 
 const NOISE_ATTR_NAMES = Object.freeze([
-  'data-analytics',
-  'data-tracking',
-  'data-gtm',
-  'data-layer',
-  'aria-live'
+  'data-analytics', 'data-tracking', 'data-gtm', 'data-layer', 'aria-live'
 ]);
 
 const NOISE_CLASS_FRAGMENTS = Object.freeze([
-  'analytics',
-  'tracking',
-  'beacon',
-  'telemetry',
-  'coveo',
-  'atomic'
+  'analytics', 'tracking', 'beacon', 'telemetry', 'coveo', 'atomic'
 ]);
 
 function isNoiseTag(tagName) {
@@ -50,13 +36,12 @@ function isNoiseClassMutation(record) {
   if (record.type !== 'attributes' || record.attributeName !== 'class') {
     return false;
   }
-  const el  = record.target;
-  const cls = el instanceof Element ? (el.getAttribute('class') ?? '').toLowerCase() : '';
+  const { target } = record;
+  const cls = target instanceof Element ? (target.getAttribute('class') ?? '').toLowerCase() : '';
   return NOISE_CLASS_FRAGMENTS.some(frag => cls.includes(frag));
 }
 
-function isOffscreenTarget(record) {
-  const el = record.target;
+function isOffscreenElement(el) {
   if (!(el instanceof Element)) {
     return false;
   }
@@ -69,7 +54,7 @@ function isOffscreenTarget(record) {
 }
 
 function classifyMutation(record) {
-  const target  = record.target;
+  const { target } = record;
   const tagName = target instanceof Element ? target.tagName : '';
 
   if (isNoiseTag(tagName)) {
@@ -81,7 +66,7 @@ function classifyMutation(record) {
   if (isNoiseClassMutation(record)) {
     return 'noise';
   }
-  if (isOffscreenTarget(record)) {
+  if (isOffscreenElement(target)) {
     return 'noise';
   }
   if (record.type === 'childList') {
@@ -89,7 +74,7 @@ function classifyMutation(record) {
       if (!(node instanceof Element)) {
         return true;
       }
-      return isNoiseTag(node.tagName) || isOffscreenTarget({ target: node });
+      return isNoiseTag(node.tagName) || isOffscreenElement(node);
     });
     if (allNoise) {
       return 'noise';
@@ -103,8 +88,7 @@ function hasVisualMutations(records) {
 }
 
 function hasUnloadedImages() {
-  const images = document.querySelectorAll('img');
-  for (const img of images) {
+  for (const img of document.querySelectorAll('img')) {
     if (!img.complete) {
       return true;
     }
@@ -147,7 +131,7 @@ function waitForReadiness() {
       if (!isDocumentReady()) {
         return;
       }
-      const quality = noiseOnlyCount === 0 ? CaptureQuality.OPTIMAL : CaptureQuality.STABLE;
+      const quality = noiseOnlyCount === 0 ? CAPTURE_QUALITY.OPTIMAL : CAPTURE_QUALITY.STABLE;
       logger.debug('Readiness gate cleared', { quality, noiseMutations: noiseOnlyCount });
       settle(quality);
     }
@@ -161,12 +145,12 @@ function waitForReadiness() {
       stabilityTimer = setTimeout(checkAndSettle, stabilityWindowMs);
     }
 
-    observer = new MutationObserver(onMutations);
-
     hardTimer = setTimeout(() => {
-      logger.warn('Readiness gate hard timeout', { quality: CaptureQuality.DEGRADED, noiseMutations: noiseOnlyCount });
-      settle(CaptureQuality.DEGRADED);
+      logger.warn('Readiness gate hard timeout', { quality: CAPTURE_QUALITY.DEGRADED, noiseMutations: noiseOnlyCount });
+      settle(CAPTURE_QUALITY.DEGRADED);
     }, hardTimeoutMs);
+
+    observer = new MutationObserver(onMutations);
 
     observer.observe(document.documentElement, {
       childList:       true,
@@ -176,12 +160,8 @@ function waitForReadiness() {
       characterData:   false
     });
 
-    scheduleInitialCheck(stabilityWindowMs, checkAndSettle, timer => { stabilityTimer = timer; });
+    stabilityTimer = setTimeout(checkAndSettle, stabilityWindowMs);
   });
 }
 
-function scheduleInitialCheck(delay, checkFn, setTimer) {
-  setTimer(setTimeout(checkFn, delay));
-}
-
-export { waitForReadiness, CaptureQuality };
+export { waitForReadiness };

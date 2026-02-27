@@ -1,21 +1,22 @@
-import { get } from '../../config/defaults.js';
-import logger from '../../infrastructure/logger.js';
-import { performanceMonitor } from '../../infrastructure/performance-monitor.js';
-import { safeExecute } from '../../infrastructure/safe-execute.js';
-import { collectAttributes } from './attribute-collector.js';
-import { buildShadowHostId, traverseDocument } from './dom-traversal.js';
-import { classifyTier, isTierZero, isVisible } from './element-classifier.js';
-import { buildFingerprint } from './fingerprint.js';
-import { waitForReadiness } from './readiness-gate.js';
-import { buildContextSnapshot, collectStylesFromComputed } from './style-collector.js';
-import { generateSelectorsForElements } from '../selectors/selector-engine.js';
+import { get }                                  from '../../config/defaults.js';
+import logger                                   from '../../infrastructure/logger.js';
+import { performanceMonitor }                   from '../../infrastructure/performance-monitor.js';
+import { safeExecute }                          from '../../infrastructure/safe-execute.js';
+import { collectAttributes }                    from './attribute-collector.js';
+import { serializeHpid, traverseDocument }      from './dom-traversal.js';
+import { classifyTier, isTierZero, isVisible }  from './element-classifier.js';
+import { waitForReadiness }                     from './readiness-gate.js';
+import { collectStylesFromComputed }            from './style-collector.js';
+import { generateSelectorsForElements }         from '../selectors/selector-engine.js';
+import { detectElementSection }                 from './section-detector.js';
+import { getNeighbours, getClassHierarchy }     from './dom-enrichment.js';
 
 const yieldChannel = new MessageChannel();
 yieldChannel.port1.start();
 
 function yieldToEventLoop() {
   return new Promise(resolve => {
-    yieldChannel.port1.onmessage = resolve;
+    yieldChannel.port1.addEventListener('message', resolve, { once: true });
     yieldChannel.port2.postMessage(null);
   });
 }
@@ -23,31 +24,25 @@ function yieldToEventLoop() {
 function executePass1(visits) {
   performance.mark('pass1-start');
 
-  const scrollX = window.scrollX;
-  const scrollY = window.scrollY;
-  const rootFontSize = window.getComputedStyle(document.documentElement).fontSize;
+  const scrollX  = window.scrollX;
+  const scrollY  = window.scrollY;
   const readings = new Array(visits.length);
 
   for (let i = 0; i < visits.length; i++) {
     const { element } = visits[i];
     try {
-      const parentEl = element.parentElement;
       readings[i] = {
-        rect:                element.getBoundingClientRect(),
-        computedStyle:       window.getComputedStyle(element),
-        parentComputedStyle: parentEl ? window.getComputedStyle(parentEl) : null,
-        rootFontSize,
-        isConnected:         element.isConnected,
+        rect:          element.getBoundingClientRect(),
+        computedStyle: window.getComputedStyle(element),
+        isConnected:   element.isConnected,
         scrollX,
         scrollY
       };
     } catch {
       readings[i] = {
-        rect:                { x: 0, y: 0, width: 0, height: 0 },
-        computedStyle:       null,
-        parentComputedStyle: null,
-        rootFontSize,
-        isConnected:         false,
+        rect:          { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0 },
+        computedStyle: null,
+        isConnected:   false,
         scrollX,
         scrollY
       };
@@ -56,7 +51,6 @@ function executePass1(visits) {
 
   performance.mark('pass1-end');
   performance.measure('extraction-pass1', 'pass1-start', 'pass1-end');
-
   return readings;
 }
 
@@ -69,12 +63,7 @@ function applyVisibilityFilter(visits, readings) {
   const filteredReadings = [];
 
   for (let i = 0; i < visits.length; i++) {
-    if (!readings[i].isConnected) {
-      continue;
-    }
-    if (isTierZero(visits[i].element)) {
-      continue;
-    }
+    if (!readings[i].isConnected || isTierZero(visits[i].element)) continue;
     if (isVisible(readings[i].computedStyle, readings[i].rect)) {
       filteredVisits.push(visits[i]);
       filteredReadings.push(readings[i]);
@@ -85,127 +74,181 @@ function applyVisibilityFilter(visits, readings) {
 }
 
 function buildBoundingRect(rect, scrollX, scrollY) {
-  if (!rect) {
-    return null;
-  }
-  return { x: rect.x + scrollX, y: rect.y + scrollY, width: rect.width, height: rect.height };
-}
-
-function buildElementRecord(visit, captureIndex, reading) {
-  const { element, depth, sameTagSiblingIndex, shadowContext } = visit;
-  const { rect, computedStyle, parentComputedStyle, rootFontSize, scrollX, scrollY } = reading;
-
+  if (!rect) return null;
   return {
-    captureIndex,
-    tagName:         element.tagName,
-    elementId:       element.id || null,
-    className:       element.getAttribute('class') || '',
-    textContent:     (element.textContent ?? '').trim().substring(0, 500),
-    tier:            classifyTier(element),
-    depth,
-    fingerprint:     buildFingerprint(element, depth, sameTagSiblingIndex),
-    selectors:       null,
-    styles:          collectStylesFromComputed(computedStyle),
-    attributes:      collectAttributes(element),
-    contextSnapshot: buildContextSnapshot(
-      computedStyle, rect, scrollX, scrollY, parentComputedStyle, rootFontSize
-    ),
-    shadowContext:   shadowContext ?? null,
-    shadowId:        buildShadowHostId(visit, captureIndex),
-    boundingRect:    buildBoundingRect(rect, scrollX, scrollY)
+    x:      Math.round(rect.x      + scrollX),
+    y:      Math.round(rect.y      + scrollY),
+    width:  Math.round(rect.width),
+    height: Math.round(rect.height),
+    top:    Math.round(rect.top    + scrollY),
+    left:   Math.round(rect.left   + scrollX)
   };
 }
 
-async function processElement(visit, captureIndex, reading, timeout) {
-  const result = await safeExecute(
-    () => buildElementRecord(visit, captureIndex, reading),
-    { timeout, operation: 'element-extraction' }
-  );
-  return result.success ? result.data : null;
-}
-
-function buildBatchPromises(visits, readings, batchStart, batchEnd, timeout) {
-  const promises = [];
-  for (let j = batchStart; j < batchEnd; j++) {
-    promises.push(processElement(visits[j], j, readings[j], timeout));
+function getTextContent(element, maxLength) {
+  let text = '';
+  for (const node of element.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      text += node.textContent;
+    }
   }
-  return promises;
+  text = text.trim();
+  if (text.length === 0) return null;
+  return text.length > maxLength ? `${text.substring(0, maxLength)}...` : text;
 }
 
-async function executePass2Batched(visits, readings) {
-  performance.mark('pass2-start');
+function getClassName(element) {
+  if (!element.className) return null;
+  if (typeof element.className === 'string') return element.className || null;
+  return element.className.baseVal || null;
+}
 
-  const batchSize        = get('extraction.batchSize');
-  const perElementTimeout = get('extraction.perElementTimeout');
-  const results          = [];
+function buildClassOccurrenceMap(visits) {
+  const counts = new Map();
+  for (const { element } of visits) {
+    const raw = getClassName(element) ?? '';
+    const key = raw.split(/\s+/).filter(Boolean).sort().join(' ');
+    if (key) counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return counts;
+}
 
-  for (let i = 0; i < visits.length; i += batchSize) {
-    const batchEnd = Math.min(i + batchSize, visits.length);
-    const settled = await Promise.allSettled(
-      buildBatchPromises(visits, readings, i, batchEnd, perElementTimeout)
-    );
+function getClassOccurrenceCount(element, classOccurrenceMap) {
+  const raw = getClassName(element) ?? '';
+  const key = raw.split(/\s+/).filter(Boolean).sort().join(' ');
+  return key ? (classOccurrenceMap.get(key) || 1) : 0;
+}
 
-    for (const outcome of settled) {
-      if (outcome.status === 'fulfilled' && outcome.value !== null) {
-        results.push(outcome.value);
+function buildElementRecord(visit, reading, ctx) {
+  const { element, depth, hpidPath, absoluteHpidPath } = visit;
+  const { rect, computedStyle, scrollX, scrollY }      = reading;
+  const { classOccurrenceMap, schema }                  = ctx;
+
+  const absoluteTop = rect ? Math.round(rect.top + scrollY) : null;
+
+  const record = {
+    hpid:         serializeHpid(hpidPath),
+    absoluteHpid: serializeHpid(absoluteHpidPath),
+    tagName:      element.tagName.toLowerCase(),
+    elementId:    element.id || null,
+    className:    getClassName(element),
+    textContent:  getTextContent(element, schema.record.textContent.maxLength),
+    cssSelector:  null,
+    xpath:        null,
+    depth
+  };
+
+  if (schema.includePageSection)    record.pageSection        = detectElementSection(element, absoluteTop);
+  if (schema.includeTier)           record.tier               = classifyTier(element);
+  if (schema.includeClassMeta)      record.classOccurrenceCount = getClassOccurrenceCount(element, classOccurrenceMap);
+  if (schema.includeStyles)         record.styles             = collectStylesFromComputed(computedStyle);
+  if (schema.includeAttributes)     record.attributes         = collectAttributes(element);
+  if (schema.includeRect)           record.rect               = buildBoundingRect(rect, scrollX, scrollY);
+  if (schema.includeNeighbours)     record.neighbours         = getNeighbours(element);
+  if (schema.includeClassHierarchy) record.classHierarchy     = getClassHierarchy(element);
+
+  return record;
+}
+
+function computeAdaptiveBatchSize(totalElements) {
+  if (totalElements <= 200)  return 40;
+  if (totalElements <= 1000) return 25;
+  if (totalElements <= 3000) return 15;
+  return 10;
+}
+
+async function executeUnifiedPass(visits, readings, classOccurrenceMap) {
+  performance.mark('unified-pass-start');
+
+  const hardCapMs     = get('extraction.batchHardCapMs', 30);
+  const perTimeout    = get('extraction.perElementTimeout');
+  const schema        = get('schema');
+  const generateCSS   = get('selectors.generateCSS', true);
+  const generateXPath = get('selectors.generateXPath', true);
+  const doSelectors   = generateCSS || generateXPath;
+  const baseBatchSize = computeAdaptiveBatchSize(visits.length);
+  const ctx           = { classOccurrenceMap, schema };
+  const results       = [];
+
+  let i = 0;
+  while (i < visits.length) {
+    const batchStart     = performance.now();
+    const batchEndTarget = i + baseBatchSize;
+    const batchRecords   = [];
+    const batchElements  = [];
+
+    while (i < visits.length) {
+      const j = i;
+      i++;
+
+      const safeResult = await safeExecute(
+        () => buildElementRecord(visits[j], readings[j], ctx),
+        { timeout: perTimeout, operation: 'element-extraction' }
+      );
+
+      if (safeResult.success && safeResult.data !== null) {
+        batchRecords.push(safeResult.data);
+        batchElements.push(visits[j].element);
+      }
+
+      visits[j].element = null;
+
+      if (performance.now() - batchStart >= hardCapMs || i >= batchEndTarget) {
+        break;
       }
     }
 
-    if (batchEnd < visits.length) {
+    if (doSelectors && batchElements.length > 0) {
+      const selectors = await generateSelectorsForElements(batchElements);
+      for (let k = 0; k < batchRecords.length; k++) {
+        const sel = selectors[k];
+        if (sel) {
+          batchRecords[k].cssSelector = generateCSS   ? (sel.css   ?? null) : null;
+          batchRecords[k].xpath       = generateXPath ? (sel.xpath ?? null) : null;
+          if (sel.shadowPath) batchRecords[k].shadowPath = sel.shadowPath;
+        }
+      }
+    }
+
+    for (let k = 0; k < batchElements.length; k++) {
+      batchElements[k] = null;
+    }
+
+    for (const record of batchRecords) {
+      results.push(record);
+    }
+
+    if (i < visits.length) {
       await yieldToEventLoop();
     }
   }
 
-  performance.mark('pass2-end');
-  performance.measure('extraction-pass2', 'pass2-start', 'pass2-end');
+  performance.mark('unified-pass-end');
+  performance.measure('extraction-unified-pass', 'unified-pass-start', 'unified-pass-end');
+
+  logger.debug('Unified pass complete', {
+    total:    results.length,
+    adaptive: baseBatchSize
+  });
 
   return results;
 }
 
-function buildVisitIndex(visits) {
-  const index = new Map();
-  for (let i = 0; i < visits.length; i++) {
-    index.set(i, visits[i].element);
-  }
-  return index;
-}
+async function extract(filters) {
+  const perfHandle      = performanceMonitor.start('extraction-total');
+  const startTime       = performance.now();
+  const resolvedFilters = filters ?? null;
 
-async function executePass3SelectorEnrichment(elements, visits) {
-  performance.mark('pass3-start');
-
-  const visitIndex = buildVisitIndex(visits);
-  const liveElements = elements.map(record => visitIndex.get(record.captureIndex) ?? null);
-
-  const selectorResults = await generateSelectorsForElements(liveElements.filter(Boolean));
-
-  let selectorIdx = 0;
-  for (let i = 0; i < elements.length; i++) {
-    if (liveElements[i] !== null) {
-      elements[i].selectors = selectorResults[selectorIdx] ?? null;
-      selectorIdx++;
-    }
-  }
-
-  performance.mark('pass3-end');
-  performance.measure('extraction-pass3', 'pass3-start', 'pass3-end');
-
-  logger.debug('Pass 3 selector enrichment complete', {
-    enriched: selectorIdx,
-    total:    elements.length
+  logger.info('Extraction started', {
+    url:        window.location.href,
+    hasFilters: Boolean(resolvedFilters)
   });
-}
-
-async function extract(filters = null) {
-  const perfHandle = performanceMonitor.start('extraction-total');
-  const startTime  = performance.now();
-
-  logger.info('Extraction started', { url: window.location.href, hasFilters: Boolean(filters) });
 
   try {
     const captureQuality = await waitForReadiness();
 
     performance.mark('traversal-start');
-    const visits = traverseDocument(filters);
+    const visits = traverseDocument(resolvedFilters);
     performance.mark('traversal-end');
     performance.measure('extraction-traversal', 'traversal-start', 'traversal-end');
 
@@ -214,33 +257,44 @@ async function extract(filters = null) {
     const readings = executePass1(visits);
     const { filteredVisits, filteredReadings } = applyVisibilityFilter(visits, readings);
 
-    const maxElements    = get('extraction.maxElements');
-    const overflow       = filteredVisits.length > maxElements;
-    const clampedVisits  = overflow ? filteredVisits.slice(0, maxElements) : filteredVisits;
+    const maxElements     = get('extraction.maxElements');
+    const overflow        = filteredVisits.length > maxElements;
+    const clampedVisits   = overflow ? filteredVisits.slice(0, maxElements) : filteredVisits;
     const clampedReadings = overflow ? filteredReadings.slice(0, maxElements) : filteredReadings;
 
     if (overflow) {
-      logger.warn('Element count truncated', { original: filteredVisits.length, limit: maxElements });
+      logger.warn('Element count truncated', {
+        original: filteredVisits.length,
+        limit:    maxElements
+      });
     }
 
-    const elements = await executePass2Batched(clampedVisits, clampedReadings);
-
-    await executePass3SelectorEnrichment(elements, clampedVisits);
+    const classOccurrenceMap = buildClassOccurrenceMap(clampedVisits);
+    const elements           = await executeUnifiedPass(clampedVisits, clampedReadings, classOccurrenceMap);
 
     const duration = Math.round(performance.now() - startTime);
     performanceMonitor.end(perfHandle);
 
-    logger.info('Extraction complete', { elementCount: elements.length, duration, captureQuality });
+    logger.info('Extraction complete', {
+      elementCount: elements.length,
+      duration,
+      captureQuality
+    });
 
     return {
       url:           window.location.href,
-      title:         document.title,
+      title:         document.title || 'Untitled Page',
       timestamp:     new Date().toISOString(),
-      captureQuality,
       totalElements: elements.length,
+      extractOptions: {
+        schema:         get('schema'),
+        filtersApplied: Boolean(resolvedFilters)
+      },
+      styleCategories: get('extraction.styleCategories'),
+      elements,
       duration,
-      filters:       filters ?? null,
-      elements
+      captureQuality,
+      filters: resolvedFilters
     };
   } catch (err) {
     performanceMonitor.end(perfHandle);

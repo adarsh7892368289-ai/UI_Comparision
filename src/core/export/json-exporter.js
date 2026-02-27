@@ -1,25 +1,9 @@
 import { get } from '../../config/defaults.js';
 
-const URL_REVOKE_DELAY_MS = 1_000;  // ms to wait before revoking object URL after download
-const ID_PREVIEW_LENGTH   = 8;      // first N chars of a UUID used in filename
-const ISO_DATE_SLICE_END  = 19;     // 'YYYY-MM-DDTHH:mm:ss' — drops ms + Z
+const URL_REVOKE_DELAY_MS = 1_000;  
+const ID_PREVIEW_LENGTH   = 8;      
+const ISO_DATE_SLICE_END  = 19;     
 
-/**
- * json-exporter.js — Standalone JSON Export
- *
- * Pure function, no side effects beyond DOM anchor click.
- * Extracted from ExportManager._exportToJSON() to:
- *  - Enable independent unit testing
- *  - Allow external tools to consume the export pipeline
- *  - Respect SRP (ExportManager = router; this = format logic)
- */
-
-/**
- * Serialise a comparison result and trigger a browser download.
- *
- * @param {Object} comparisonResult  Full result from comparator.compare()
- * @returns {{ success: boolean, error?: string }}
- */
 function exportToJSON(comparisonResult) {
   try {
     const payload = _buildPayload(comparisonResult);
@@ -38,7 +22,7 @@ function exportToJSON(comparisonResult) {
     a.click();
     document.body.removeChild(a);
 
-    // Revoke after browser has had time to initiate the download
+    
     setTimeout(() => URL.revokeObjectURL(url), URL_REVOKE_DELAY_MS);
 
     return { success: true, filename };
@@ -47,24 +31,33 @@ function exportToJSON(comparisonResult) {
   }
 }
 
-/**
- * Build the export payload — strips runtime-only fields, adds metadata envelope.
- */
 function _buildPayload(result) {
   return {
     exportVersion: '1.0',
     exportedAt:    new Date().toISOString(),
     baseline: {
-      id:        result.baseline?.id,
-      url:       result.baseline?.url,
-      title:     result.baseline?.title,
-      timestamp: result.baseline?.timestamp
+      id:            result.baseline?.id,
+      url:           result.baseline?.url,
+      pageUrl:       result.baseline?.pageUrl,
+      title:         result.baseline?.title,
+      pageTitle:     result.baseline?.pageTitle,
+      extractedAt:   result.baseline?.extractedAt,
+      timestamp:     result.baseline?.timestamp,
+      totalElements: result.baseline?.totalElements,
+      styleCategories: result.baseline?.styleCategories,
+      extractOptions:  result.baseline?.extractOptions
     },
     compare: {
-      id:        result.compare?.id,
-      url:       result.compare?.url,
-      title:     result.compare?.title,
-      timestamp: result.compare?.timestamp
+      id:            result.compare?.id,
+      url:           result.compare?.url,
+      pageUrl:       result.compare?.pageUrl,
+      title:         result.compare?.title,
+      pageTitle:     result.compare?.pageTitle,
+      extractedAt:   result.compare?.extractedAt,
+      timestamp:     result.compare?.timestamp,
+      totalElements: result.compare?.totalElements,
+      styleCategories: result.compare?.styleCategories,
+      extractOptions:  result.compare?.extractOptions
     },
     mode:      result.mode,
     duration:  result.duration,
