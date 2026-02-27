@@ -47,10 +47,6 @@ const REQUIRED_PATHS = [
   'comparison.tolerances.size',
   'comparison.tolerances.opacity',
   'comparison.matching.positionTolerance',
-  'comparison.confidence.high',
-  'comparison.confidence.medium',
-  'comparison.confidence.low',
-  'comparison.confidence.min',
 
   'comparison.severity.critical',
   'comparison.severity.high',

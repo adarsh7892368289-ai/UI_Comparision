@@ -1155,3 +1155,85 @@ button, [role="button"], input, select {
   margin-top: 2px;
   line-height: 1.4;
 }
+/* ── Match Breakdown Bar ────────────────────────────────────────────────── */
+.match-breakdown { margin: 10px 0 8px; }
+.match-breakdown-title {
+  font-size: 11px; font-weight: 600; color: var(--text-tertiary);
+  text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px;
+}
+.match-breakdown-row {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 4px; margin-bottom: 8px;
+}
+.mbr-item {
+  background: var(--surface-2); border-radius: var(--radius-sm);
+  padding: 6px 4px; text-align: center;
+}
+.mbr-val { font-size: 16px; font-weight: 700; line-height: 1.1; }
+.mbr-lbl { font-size: 10px; color: var(--text-tertiary); margin-top: 2px; }
+.mbr-matched   .mbr-val { color: var(--success); }
+.mbr-modified  .mbr-val { color: var(--warning, #f59e0b); }
+.mbr-unchanged .mbr-val { color: var(--text-secondary); }
+.mbr-unmatched .mbr-val { color: var(--danger, #ef4444); }
+
+.match-bar-wrap {
+  display: flex; height: 6px; border-radius: 3px;
+  overflow: hidden; background: var(--surface-2); gap: 1px;
+}
+.match-bar-seg { height: 100%; min-width: 2px; transition: width .3s ease; }
+.match-bar-unchanged { background: var(--text-tertiary); opacity: .4; }
+.match-bar-modified  { background: var(--warning, #f59e0b); }
+.match-bar-added     { background: var(--success); }
+.match-bar-removed   { background: var(--danger, #ef4444); }
+
+/* ── Added / Removed Element Lists ─────────────────────────────────────── */
+.el-section {
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  margin: 8px 0; overflow: hidden;
+}
+.el-section-summary {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 10px; cursor: pointer; font-size: 12px;
+  font-weight: 600; color: var(--text-primary);
+  background: var(--surface-2); list-style: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.el-section-summary::-webkit-details-marker { display: none; }
+.el-section-summary::after {
+  content: '›'; margin-left: auto; font-size: 14px;
+  color: var(--text-tertiary); transition: transform .15s;
+}
+.el-section[open] .el-section-summary::after { transform: rotate(90deg); }
+
+.badge-added    { background: rgba(34,197,94,.15); color: #16a34a; font-weight: 700; }
+.badge-removed  { background: rgba(239,68,68,.15);  color: #dc2626; font-weight: 700; }
+
+.el-list { padding: 4px 0; max-height: 240px; overflow-y: auto; }
+.el-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 6px 10px; border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.el-row:last-child { border-bottom: none; }
+.el-badge {
+  flex-shrink: 0; width: 16px; height: 16px;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; margin-top: 1px;
+}
+.el-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.el-label { font-weight: 600; color: var(--text-primary); word-break: break-all; }
+.el-hpid  { color: var(--text-tertiary); font-family: monospace; font-size: 10px; }
+.el-text  { color: var(--text-secondary); font-style: italic; }
+.el-sel   { color: var(--text-tertiary); font-family: monospace; font-size: 10px; word-break: break-all; }
+.el-overflow {
+  padding: 6px 10px; font-size: 11px; color: var(--text-tertiary);
+  font-style: italic;
+}
+
+/* ── Ambiguous note ─────────────────────────────────────────────────────── */
+.ambiguous-note {
+  font-size: 11px; color: var(--warning, #f59e0b);
+  padding: 6px 10px; background: rgba(245,158,11,.08);
+  border-radius: var(--radius-sm); margin: 6px 0;
+}

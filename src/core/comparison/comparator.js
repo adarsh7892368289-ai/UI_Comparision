@@ -32,10 +32,17 @@ function buildReportMeta(report) {
 
 function buildUnmatchedSummary(elements) {
   return elements.map(el => ({
-    id:        el.id,
-    tagName:   el.tagName,
-    elementId: el.elementId,
-    className: el.className
+    id:          el.id,
+    hpid:        el.hpid        ?? null,
+    absoluteHpid:el.absoluteHpid ?? null,
+    tagName:     el.tagName,
+    elementId:   el.elementId,
+    className:   el.className,
+    cssSelector: el.cssSelector ?? null,
+    xpath:       el.xpath        ?? null,
+    textContent: el.textContent  ?? null,
+    depth:       el.depth        ?? null,
+    tier:        el.tier         ?? null
   }));
 }
 

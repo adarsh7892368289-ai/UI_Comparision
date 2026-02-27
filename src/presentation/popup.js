@@ -573,6 +573,32 @@ function populateReportSelectors(reports) {
   syncCompareButton();
 }
 
+function elementDetailRow(el, status) {
+  const tag    = (el.tagName  || 'unknown').toLowerCase();
+  const idStr  = el.elementId ? `#${el.elementId}` : '';
+  const cls    = el.className?.trim()
+    ? `.${el.className.trim().split(/\s+/).slice(0, 2).join('.')}`
+    : '';
+  const label  = `${tag}${idStr}${cls}` || 'unknown';
+  const hpid   = el.hpid ? `<span class="el-hpid" title="HPID">${sanitize(el.hpid)}</span>` : '';
+  const text   = el.textContent?.trim()
+    ? `<span class="el-text">"${sanitize(el.textContent.trim().slice(0, 60))}${el.textContent.trim().length > 60 ? '…' : ''}"</span>`
+    : '';
+  const sel    = el.cssSelector
+    ? `<span class="el-sel" title="${sanitize(el.cssSelector)}">${sanitize(el.cssSelector.slice(0, 50))}${el.cssSelector.length > 50 ? '…' : ''}</span>`
+    : '';
+  const badgeCls = status === 'added' ? 'badge-added' : 'badge-removed';
+  const badgeTxt = status === 'added' ? '+' : '−';
+
+  return `<div class="el-row">
+    <span class="el-badge ${badgeCls}">${badgeTxt}</span>
+    <div class="el-info">
+      <span class="el-label">${sanitize(label)}</span>
+      ${hpid}${text}${sel}
+    </div>
+  </div>`;
+}
+
 function displayComparisonResults(result, cachedAt = null) {
   const container = document.getElementById('compare-results');
   if (!container || !result) {return;}
@@ -580,6 +606,9 @@ function displayComparisonResults(result, cachedAt = null) {
   const { matching, comparison, mode, duration } = result;
   const { summary: { severityCounts, totalDifferences, modifiedElements, unchangedElements } } = comparison;
   const { critical, high, medium, low } = severityCounts;
+
+  const added   = result.unmatchedElements?.compare  ?? [];
+  const removed = result.unmatchedElements?.baseline ?? [];
 
   const severityRow = (label, count, type) => count === 0 ? '' : `
     <div class="sev-row">
@@ -593,6 +622,16 @@ function displayComparisonResults(result, cachedAt = null) {
     </div>`;
 
   const rateClass = critical > 0 ? 'rate-critical' : high > 0 ? 'rate-high' : 'rate-ok';
+
+  const totalElements   = matching.totalMatched + matching.unmatchedBaseline + matching.unmatchedCompare;
+  const unmatchedTotal  = matching.unmatchedBaseline + matching.unmatchedCompare;
+
+  // Added/removed element detail panels (capped at 20 to keep popup lean)
+  const DETAIL_CAP = 20;
+  const addedRows   = added.slice(0, DETAIL_CAP).map(el => elementDetailRow(el, 'added')).join('');
+  const removedRows = removed.slice(0, DETAIL_CAP).map(el => elementDetailRow(el, 'removed')).join('');
+  const addedOverflow   = added.length   > DETAIL_CAP ? `<div class="el-overflow">+${added.length   - DETAIL_CAP} more — export for full list</div>` : '';
+  const removedOverflow = removed.length > DETAIL_CAP ? `<div class="el-overflow">+${removed.length - DETAIL_CAP} more — export for full list</div>` : '';
 
   container.innerHTML = `
     <div class="result-card">
@@ -608,33 +647,74 @@ function displayComparisonResults(result, cachedAt = null) {
         </div>
       </div>
 
-      <div class="result-stats">
-        <div class="result-stat">
-          <div class="rs-val">${modifiedElements}</div>
-          <div class="rs-lbl">Modified</div>
+      <!-- Matching breakdown -->
+      <div class="match-breakdown">
+        <div class="match-breakdown-title">Element Coverage — ${totalElements} total</div>
+        <div class="match-breakdown-row">
+          <div class="mbr-item mbr-matched">
+            <div class="mbr-val">${matching.totalMatched}</div>
+            <div class="mbr-lbl">Matched</div>
+          </div>
+          <div class="mbr-item mbr-modified">
+            <div class="mbr-val">${modifiedElements}</div>
+            <div class="mbr-lbl">Modified</div>
+          </div>
+          <div class="mbr-item mbr-unchanged">
+            <div class="mbr-val">${unchangedElements}</div>
+            <div class="mbr-lbl">Unchanged</div>
+          </div>
+          <div class="mbr-item mbr-unmatched">
+            <div class="mbr-val">${unmatchedTotal}</div>
+            <div class="mbr-lbl">Unmatched</div>
+          </div>
         </div>
-        <div class="result-stat">
-          <div class="rs-val">${result.unmatchedElements.compare.length}</div>
-          <div class="rs-lbl">Added</div>
-        </div>
-        <div class="result-stat">
-          <div class="rs-val">${result.unmatchedElements.baseline.length}</div>
-          <div class="rs-lbl">Removed</div>
-        </div>
-        <div class="result-stat">
-          <div class="rs-val">${unchangedElements}</div>
-          <div class="rs-lbl">Unchanged</div>
+        <div class="match-bar-wrap">
+          <div class="match-bar-seg match-bar-unchanged"
+               style="width:${totalElements > 0 ? (unchangedElements / totalElements * 100).toFixed(1) : 0}%"
+               title="${unchangedElements} unchanged"></div>
+          <div class="match-bar-seg match-bar-modified"
+               style="width:${totalElements > 0 ? (modifiedElements / totalElements * 100).toFixed(1) : 0}%"
+               title="${modifiedElements} modified"></div>
+          <div class="match-bar-seg match-bar-added"
+               style="width:${totalElements > 0 ? (added.length / totalElements * 100).toFixed(1) : 0}%"
+               title="${added.length} added"></div>
+          <div class="match-bar-seg match-bar-removed"
+               style="width:${totalElements > 0 ? (removed.length / totalElements * 100).toFixed(1) : 0}%"
+               title="${removed.length} removed"></div>
         </div>
       </div>
 
       ${totalDifferences > 0 ? `
         <div class="severity-section">
-          <div class="severity-section-title">Severity Breakdown</div>
+          <div class="severity-section-title">Severity — ${totalDifferences} difference${totalDifferences !== 1 ? 's' : ''} in ${modifiedElements} element${modifiedElements !== 1 ? 's' : ''}</div>
           ${severityRow('Critical', critical, 'critical')}
           ${severityRow('High', high, 'high')}
           ${severityRow('Medium', medium, 'medium')}
           ${severityRow('Low', low, 'low')}
-        </div>` : '<div class="no-diffs">✓ No differences detected</div>'}
+        </div>` : '<div class="no-diffs">✓ No style differences in matched elements</div>'}
+
+      ${added.length > 0 ? `
+        <details class="el-section">
+          <summary class="el-section-summary">
+            <span class="badge badge-added">+${added.length}</span>
+            Added in compare
+          </summary>
+          <div class="el-list">${addedRows}${addedOverflow}</div>
+        </details>` : ''}
+
+      ${removed.length > 0 ? `
+        <details class="el-section">
+          <summary class="el-section-summary">
+            <span class="badge badge-removed">−${removed.length}</span>
+            Removed from baseline
+          </summary>
+          <div class="el-list">${removedRows}${removedOverflow}</div>
+        </details>` : ''}
+
+      ${matching.ambiguousCount > 0 ? `
+        <div class="ambiguous-note">
+          ⚠ ${matching.ambiguousCount} element${matching.ambiguousCount !== 1 ? 's' : ''} had ambiguous matches — see full report for details
+        </div>` : ''}
 
       <div class="result-actions">
         <div class="export-format-row">

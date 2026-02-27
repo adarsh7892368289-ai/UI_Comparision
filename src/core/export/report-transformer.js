@@ -33,15 +33,36 @@ function buildDiffsByCategory(annotatedDifferences) {
   return map;
 }
 
+function resolveElement(match) {
+  if (match.baselineElement) return match.baselineElement;
+  // Reconstructed from storage (baselineElement was stripped in persistComparison)
+  return {
+    tagName:      match.tagName,
+    elementId:    match.elementId,
+    className:    match.className,
+    cssSelector:  match.cssSelector  ?? null,
+    xpath:        match.xpath         ?? null,
+    hpid:         match.hpid          ?? null,
+    absoluteHpid: match.absoluteHpid  ?? null,
+    textContent:  match.textContent   ?? null,
+    depth:        match.depth         ?? null,
+    tier:         match.tier          ?? null
+  };
+}
+
 function buildMatchedGroups(results) {
   const groups = { critical: [], high: [], medium: [], low: [], unchanged: [] };
 
   for (const match of results) {
-    const el    = match.baselineElement ?? {};
+    const el    = resolveElement(match);
     const diffs = match.annotatedDifferences ?? [];
 
     if ((match.totalDifferences ?? diffs.length) === 0) {
-      groups.unchanged.push({ elementKey: elementLabel(el), tagName: el.tagName });
+      groups.unchanged.push({
+        elementKey:  elementLabel(el),
+        tagName:     el.tagName,
+        hpid:        el.hpid ?? null
+      });
       continue;
     }
 
@@ -51,13 +72,18 @@ function buildMatchedGroups(results) {
     groups[topSeverity].push({
       elementKey:      elementLabel(el),
       breadcrumb:      elementBreadcrumb(el),
-      elementId:       el.elementId,
+      elementId:       el.elementId    ?? null,
       tagName:         el.tagName,
+      hpid:            el.hpid         ?? null,
+      absoluteHpid:    el.absoluteHpid ?? null,
+      textContent:     el.textContent  ?? null,
+      depth:           el.depth        ?? null,
+      tier:            el.tier         ?? null,
       totalDiffs:      match.totalDifferences ?? diffs.length,
       severity:        topSeverity,
       diffsByCategory,
-      cssSelector:     el.cssSelector,
-      xpath:           el.xpath,
+      cssSelector:     el.cssSelector  ?? null,
+      xpath:           el.xpath        ?? null,
       matchConfidence: match.confidence,
       matchStrategy:   match.strategy
     });
@@ -104,11 +130,33 @@ function transformToGroupedReport(comparisonResult) {
 
   const groups = {
     ...matchedGroups,
-    added:     unmatchedCompare.map(el  => ({
-      elementKey: elementLabel(el), tagName: el.tagName, className: el.className, status: 'added'
+    added: unmatchedCompare.map(el => ({
+      elementKey:   elementLabel(el),
+      tagName:      el.tagName,
+      elementId:    el.elementId    ?? null,
+      className:    el.className    ?? null,
+      hpid:         el.hpid         ?? null,
+      absoluteHpid: el.absoluteHpid ?? null,
+      cssSelector:  el.cssSelector  ?? null,
+      xpath:        el.xpath         ?? null,
+      textContent:  el.textContent   ?? null,
+      depth:        el.depth         ?? null,
+      tier:         el.tier          ?? null,
+      status:       'added'
     })),
-    removed:   unmatchedBaseline.map(el => ({
-      elementKey: elementLabel(el), tagName: el.tagName, className: el.className, status: 'removed'
+    removed: unmatchedBaseline.map(el => ({
+      elementKey:   elementLabel(el),
+      tagName:      el.tagName,
+      elementId:    el.elementId    ?? null,
+      className:    el.className    ?? null,
+      hpid:         el.hpid         ?? null,
+      absoluteHpid: el.absoluteHpid ?? null,
+      cssSelector:  el.cssSelector  ?? null,
+      xpath:        el.xpath         ?? null,
+      textContent:  el.textContent   ?? null,
+      depth:        el.depth         ?? null,
+      tier:         el.tier          ?? null,
+      status:       'removed'
     })),
     ambiguous: buildAmbiguousGroup(ambiguousList)
   };

@@ -2,19 +2,23 @@ import logger                                from '../../infrastructure/logger.j
 import { get }                               from '../../config/defaults.js';
 import { yieldToEventLoop, YIELD_CHUNK_SIZE } from '../../shared/async-utils.js';
 
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
 const MatchType = Object.freeze({
   DEFINITIVE:         'definitive',
-  AMBIGUOUS:          'ambiguous',
   POSITIONAL:         'positional',
-  UNMATCHED_BASELINE: 'unmatched-baseline',
+  AMBIGUOUS:          'ambiguous',
+  ADDED:              'added',              // element present in compare only
+  REMOVED:            'removed',            // element present in baseline only
+  UNMATCHED_BASELINE: 'unmatched-baseline', // kept for output contract compatibility
   UNMATCHED_COMPARE:  'unmatched-compare'
 });
 
-const MUTATION_TYPE = Object.freeze({
-  HPID_MOVED:       'hpid-position-moved',
-  SELECTOR_CHANGED: 'selector-changed',
-  TOPOLOGICAL_MOVE: 'topological-move'
-});
+// ---------------------------------------------------------------------------
+// Pure utility helpers
+// ---------------------------------------------------------------------------
 
 function progressFrame(label, pct) {
   return { type: 'progress', label, pct };
@@ -24,13 +28,50 @@ function resultFrame(payload) {
   return { type: 'result', payload };
 }
 
+/**
+ * Returns the first matching test-attribute key found on an element, or null.
+ */
 function getTestAttrKey(el, anchorAttributes) {
   for (const attr of anchorAttributes) {
-    const attrVal = el.attributes?.[attr];
-    if (attrVal) return `${attr}::${attrVal}`;
+    const val = el.attributes?.[attr];
+    if (val) return `${attr}::${val}`;
   }
   return null;
 }
+
+/**
+ * Returns the last `depth` dot-separated segments of an hpid as a string key.
+ * e.g. hpidSuffixKey('1.4.1.1.2.1', 4) => '1.1.2.1'
+ */
+function hpidSuffixKey(hpid, depth) {
+  if (!hpid) return null;
+  const parts = hpid.split('.');
+  return parts.length <= depth ? hpid : parts.slice(-depth).join('.');
+}
+
+/**
+ * Splits an hpid string into an array of integer segments.
+ * e.g. '1.3.2' => [1, 3, 2]
+ */
+function parseHpidSegments(hpid) {
+  if (!hpid) return [];
+  return hpid.split('.').map(Number);
+}
+
+/**
+ * Returns true if two hpid segment arrays are equal.
+ */
+function segmentsEqual(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 0 + Phase 3 helpers (pool-based strategies — kept as legacy passes)
+// ---------------------------------------------------------------------------
 
 function buildMultiMap(items, availableIdxs, keyFn) {
   const map = new Map();
@@ -41,48 +82,6 @@ function buildMultiMap(items, availableIdxs, keyFn) {
     map.get(key).push(i);
   }
   return map;
-}
-
-function gridCellKey(x, y, tag, cellSize) {
-  return `${Math.floor(x / cellSize)}:${Math.floor(y / cellSize)}:${tag}`;
-}
-
-function buildPositionGrid(compareElements, availableIdxs, cellSize) {
-  const grid = new Map();
-  for (const i of availableIdxs) {
-    const { rect, tagName } = compareElements[i];
-    if (!rect || rect.x == null || rect.y == null) continue;
-    const key = gridCellKey(rect.x, rect.y, tagName, cellSize);
-    if (!grid.has(key)) grid.set(key, []);
-    grid.get(key).push({ index: i, x: rect.x, y: rect.y });
-  }
-  return grid;
-}
-
-function pickFromGrid(bx, by, gridCtx, usedCompare) {
-  const { grid, cellSize, tag, baseConfidence } = gridCtx;
-  const cx     = Math.floor(bx / cellSize);
-  const cy     = Math.floor(by / cellSize);
-  let bestIdx  = null;
-  let bestDist = Infinity;
-
-  for (let dx = -1; dx <= 1; dx++) {
-    for (let dy = -1; dy <= 1; dy++) {
-      const bucket = grid.get(`${cx + dx}:${cy + dy}:${tag}`);
-      if (!bucket) continue;
-      for (const { index, x, y } of bucket) {
-        if (usedCompare.has(index)) continue;
-        const dist = Math.hypot(bx - x, by - y);
-        if (dist < cellSize && dist < bestDist) {
-          bestDist = dist;
-          bestIdx  = index;
-        }
-      }
-    }
-  }
-
-  if (bestIdx === null) return null;
-  return { index: bestIdx, confidence: Math.max(0.1, 1 - bestDist / cellSize) * baseConfidence };
 }
 
 function resolveFromMultiMap(indices, confidence, usedCompare, minMatchThreshold, ambiguityWindow) {
@@ -104,29 +103,7 @@ function resolveFromMultiMap(indices, confidence, usedCompare, minMatchThreshold
   return { verdict: 'no_match' };
 }
 
-function detectMutations(baselineEl, compareEl, strategyId) {
-  const mutations = [];
-
-  if (baselineEl.absoluteHpid && compareEl.absoluteHpid &&
-      baselineEl.absoluteHpid !== compareEl.absoluteHpid) {
-    mutations.push(MUTATION_TYPE.HPID_MOVED);
-  }
-
-  if (baselineEl.cssSelector && compareEl.cssSelector &&
-      baselineEl.cssSelector !== compareEl.cssSelector) {
-    mutations.push(MUTATION_TYPE.SELECTOR_CHANGED);
-  }
-
-  if (strategyId === 'hpid-prefix') {
-    mutations.push(MUTATION_TYPE.TOPOLOGICAL_MOVE);
-  }
-
-  return mutations;
-}
-
-function makeDefinitiveMatch(opts) {
-  const { bi, ci, conf, strat, matchType, nodeCtx } = opts;
-  const { baseline, compareElements }               = nodeCtx;
+function makeDefinitiveMatch({ bi, ci, conf, strat, matchType, baseline, compareElements }) {
   return {
     baselineIndex:       bi,
     compareIndex:        ci,
@@ -137,7 +114,7 @@ function makeDefinitiveMatch(opts) {
     ambiguousCandidates: null,
     baselineElement:     baseline[bi],
     compareElement:      compareElements[ci],
-    mutations:           detectMutations(baseline[bi], compareElements[ci], strat)
+    mutations:           []
   };
 }
 
@@ -149,12 +126,424 @@ function makeAmbiguousMatch(bi, conf, strat, candidates, baseline) {
     strategy:            strat,
     matchType:           MatchType.AMBIGUOUS,
     isAmbiguous:         true,
-    ambiguousCandidates: candidates.map(candidate => ({ ...candidate, strategy: strat })),
+    ambiguousCandidates: candidates.map(c => ({ ...c, strategy: strat })),
     baselineElement:     baseline[bi],
     compareElement:      null,
     mutations:           []
   };
 }
+
+// ---------------------------------------------------------------------------
+// Phase 1: Linear Sequence Alignment — the core new engine
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true if two elements pass the Identity Triad for sequence alignment:
+ *   1. hpid segments are equal (relative structural position)
+ *   2. tagName is equal (anatomical match)
+ *
+ * Note: test-attribute match is handled separately in Phase 0 before this
+ * function is called, so we only check structural identity here.
+ */
+function passesIdentityTriad(bEl, cEl) {
+  if (bEl.tagName !== cEl.tagName) return false;
+  const bSegs = parseHpidSegments(bEl.hpid);
+  const cSegs = parseHpidSegments(cEl.hpid);
+  return segmentsEqual(bSegs, cSegs);
+}
+
+/**
+ * Returns true if bEl and cEl are the same tag but at the same hpid with
+ * DIFFERENT tagName — this is a replacement, not a match.
+ */
+function isReplacement(bEl, cEl) {
+  const bSegs = parseHpidSegments(bEl.hpid);
+  const cSegs = parseHpidSegments(cEl.hpid);
+  return segmentsEqual(bSegs, cSegs) && bEl.tagName !== cEl.tagName;
+}
+
+/**
+ * Core dual-pointer sequence alignment engine.
+ *
+ * Walks both arrays simultaneously in DFS order.
+ * Returns four buckets:
+ *   - pairs:          Array<{ bi, ci, confidence, strategy }>
+ *   - added:          Array<ci>  — compare-only elements (insertions)
+ *   - removed:        Array<bi>  — baseline-only elements (deletions)
+ *   - orphanBaseline: Array<bi>  — unresolved baseline (for Phase 2+)
+ *   - orphanCompare:  Array<ci>  — unresolved compare  (for Phase 2+)
+ *
+ * @param {object[]} baseline
+ * @param {object[]} compare
+ * @param {Set<number>} usedBaseline  — pre-claimed indices (Phase 0 matches)
+ * @param {Set<number>} usedCompare   — pre-claimed indices (Phase 0 matches)
+ * @param {object} config
+ * @param {string[]} config.anchorAttributes
+ * @param {number}   config.lookAheadWindow
+ * @param {number}   config.inSequenceConf
+ */
+function sequenceAlign(baseline, compare, usedBaseline, usedCompare, config) {
+  const { anchorAttributes, lookAheadWindow, inSequenceConf } = config;
+
+  const pairs          = [];
+  const added          = [];
+  const removed        = [];
+  const orphanBaseline = [];
+  const orphanCompare  = [];
+
+  let bi = 0;
+  let ci = 0;
+
+  while (bi < baseline.length && ci < compare.length) {
+    // Skip elements already claimed by Phase 0 (test-attribute matches)
+    if (usedBaseline.has(bi)) { bi++; continue; }
+    if (usedCompare.has(ci))  { ci++; continue; }
+
+    const bEl = baseline[bi];
+    const cEl = compare[ci];
+
+    // ── REPLACEMENT CHECK: same position, different tag ──────────────────────
+    // Do NOT try to match — classify immediately as one removal + one addition
+    if (isReplacement(bEl, cEl)) {
+      removed.push(bi);
+      added.push(ci);
+      bi++;
+      ci++;
+      continue;
+    }
+
+    // ── IN-SEQUENCE MATCH ─────────────────────────────────────────────────────
+    if (passesIdentityTriad(bEl, cEl)) {
+      pairs.push({ bi, ci, confidence: inSequenceConf, strategy: 'sequence-hpid' });
+      usedBaseline.add(bi);
+      usedCompare.add(ci);
+      bi++;
+      ci++;
+      continue;
+    }
+
+    // ── MISMATCH: run Skip & Resync ───────────────────────────────────────────
+    const windowEnd = lookAheadWindow;
+
+    // Scenario A: look-ahead in COMPARE for current baseline element
+    // "Did compare insert extra elements before the one we're looking for?"
+    let foundInCompare = -1;
+    for (let k = 1; k <= windowEnd; k++) {
+      const cLook = ci + k;
+      if (cLook >= compare.length) break;
+      if (usedCompare.has(cLook)) continue;
+      if (passesIdentityTriad(bEl, compare[cLook])) {
+        foundInCompare = cLook;
+        break;
+      }
+    }
+
+    if (foundInCompare !== -1) {
+      // Everything from ci to foundInCompare-1 is ADDED in compare
+      for (let k = ci; k < foundInCompare; k++) {
+        if (!usedCompare.has(k)) added.push(k);
+      }
+      // Pair baseline[bi] with compare[foundInCompare]
+      pairs.push({ bi, ci: foundInCompare, confidence: inSequenceConf - 0.05, strategy: 'sequence-resync-add' });
+      usedBaseline.add(bi);
+      usedCompare.add(foundInCompare);
+      ci = foundInCompare + 1;
+      bi++;
+      continue;
+    }
+
+    // Scenario B: look-ahead in BASELINE for current compare element
+    // "Did baseline have elements that were removed before we reach a match?"
+    let foundInBaseline = -1;
+    for (let k = 1; k <= windowEnd; k++) {
+      const bLook = bi + k;
+      if (bLook >= baseline.length) break;
+      if (usedBaseline.has(bLook)) continue;
+      if (passesIdentityTriad(baseline[bLook], cEl)) {
+        foundInBaseline = bLook;
+        break;
+      }
+    }
+
+    if (foundInBaseline !== -1) {
+      // Everything from bi to foundInBaseline-1 is REMOVED in baseline
+      for (let k = bi; k < foundInBaseline; k++) {
+        if (!usedBaseline.has(k)) removed.push(k);
+      }
+      // Pair baseline[foundInBaseline] with compare[ci]
+      pairs.push({ bi: foundInBaseline, ci, confidence: inSequenceConf - 0.05, strategy: 'sequence-resync-remove' });
+      usedBaseline.add(foundInBaseline);
+      usedCompare.add(ci);
+      bi = foundInBaseline + 1;
+      ci++;
+      continue;
+    }
+
+    // ── HARD MISS: neither look-ahead found a match ───────────────────────────
+    // Advance both pointers by 1 and let Phase 2 handle these as orphans
+    orphanBaseline.push(bi);
+    orphanCompare.push(ci);
+    usedBaseline.add(bi);
+    usedCompare.add(ci);
+    bi++;
+    ci++;
+  }
+
+  // Drain remaining unvisited elements
+  while (bi < baseline.length) {
+    if (!usedBaseline.has(bi)) removed.push(bi);
+    bi++;
+  }
+  while (ci < compare.length) {
+    if (!usedCompare.has(ci)) added.push(ci);
+    ci++;
+  }
+
+  return { pairs, added, removed, orphanBaseline, orphanCompare };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: Absolute HPID Suffix Re-alignment
+// Handles root-level shifts where the prefix changed but subtree is identical
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds an index from (suffixKey + tagName) → array of compare indices.
+ * Only indexes elements whose hpid has depth >= minDepth, because shallow
+ * hpids (e.g. '1', '1.1') produce too many collisions.
+ */
+function buildSuffixIndex(compareElements, availableIdxs, suffixDepth) {
+  const index    = new Map();
+  const minDepth = Math.max(2, Math.floor(suffixDepth / 2));
+
+  for (const ci of availableIdxs) {
+    const el   = compareElements[ci];
+    const hpid = el.hpid;
+    if (!hpid || hpid.split('.').length < minDepth) continue;
+    const key = `${hpidSuffixKey(hpid, suffixDepth)}::${el.tagName ?? ''}`;
+    if (!index.has(key)) index.set(key, []);
+    index.get(key).push(ci);
+  }
+  return index;
+}
+
+/**
+ * Phase 2 pass: for each orphan baseline element, attempt a suffix + tagName
+ * match against orphan compare elements. Only accepts unique matches.
+ */
+function suffixRealignPass(
+  baseline,
+  compareElements,
+  orphanBaselineIdxs,
+  orphanCompareIdxs,
+  usedCompare,
+  suffixDepth,
+  suffixConf
+) {
+  const index   = buildSuffixIndex(compareElements, orphanCompareIdxs, suffixDepth);
+  const pairs   = [];
+  const stillOrphanBaseline = [];
+
+  for (const bi of orphanBaselineIdxs) {
+    const bEl  = baseline[bi];
+    const hpid = bEl.hpid;
+    if (!hpid || hpid.split('.').length < Math.max(2, Math.floor(suffixDepth / 2))) {
+      stillOrphanBaseline.push(bi);
+      continue;
+    }
+
+    const key      = `${hpidSuffixKey(hpid, suffixDepth)}::${bEl.tagName ?? ''}`;
+    const hits     = index.get(key);
+    const available = hits ? hits.filter(i => !usedCompare.has(i)) : [];
+
+    if (available.length === 1) {
+      const ci = available[0];
+      usedCompare.add(ci);
+      pairs.push({ bi, ci, confidence: suffixConf, strategy: 'suffix-realign' });
+    } else {
+      stillOrphanBaseline.push(bi);
+    }
+  }
+
+  return { pairs, stillOrphanBaseline };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 legacy classifiers (pool-based — kept as safety net)
+// ---------------------------------------------------------------------------
+
+function buildTestAttributeClassifier(cmpIdxs, usedCompare, baseline, compareElements, matchConfig, strategy) {
+  const { anchorAttributes, minMatchThreshold, ambiguityWindow } = matchConfig;
+  const map = buildMultiMap(compareElements, cmpIdxs, el => getTestAttrKey(el, anchorAttributes));
+
+  return (bi) => {
+    const key = getTestAttrKey(baseline[bi], anchorAttributes);
+    if (!key) return { kind: 'orphan' };
+    const res = resolveFromMultiMap(map.get(key), strategy.confidence, usedCompare, minMatchThreshold, ambiguityWindow);
+    if (res.verdict === 'definitive') {
+      usedCompare.add(res.index);
+      return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, baseline, compareElements }) };
+    }
+    if (res.verdict === 'ambiguous') {
+      return { kind: 'ambiguous', entry: makeAmbiguousMatch(bi, res.confidence, strategy.id, res.candidates, baseline) };
+    }
+    return { kind: 'orphan' };
+  };
+}
+
+function buildAbsoluteHpidClassifier(cmpIdxs, usedCompare, baseline, compareElements, matchConfig, strategy) {
+  const { minMatchThreshold, ambiguityWindow } = matchConfig;
+  const map = buildMultiMap(compareElements, cmpIdxs, el => el.absoluteHpid ?? null);
+
+  return (bi) => {
+    const hpid = baseline[bi].absoluteHpid;
+    if (!hpid) return { kind: 'orphan' };
+    const res = resolveFromMultiMap(map.get(hpid), strategy.confidence, usedCompare, minMatchThreshold, ambiguityWindow);
+    if (res.verdict === 'definitive') {
+      usedCompare.add(res.index);
+      return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, baseline, compareElements }) };
+    }
+    if (res.verdict === 'ambiguous') {
+      return { kind: 'ambiguous', entry: makeAmbiguousMatch(bi, res.confidence, strategy.id, res.candidates, baseline) };
+    }
+    return { kind: 'orphan' };
+  };
+}
+
+function buildIdClassifier(cmpIdxs, usedCompare, baseline, compareElements, matchConfig, strategy) {
+  const { minMatchThreshold, ambiguityWindow } = matchConfig;
+  const map = buildMultiMap(compareElements, cmpIdxs, el => el.elementId || null);
+
+  return (bi) => {
+    const elId = baseline[bi].elementId;
+    if (!elId) return { kind: 'orphan' };
+    const res = resolveFromMultiMap(map.get(elId), strategy.confidence, usedCompare, minMatchThreshold, ambiguityWindow);
+    if (res.verdict === 'definitive') {
+      usedCompare.add(res.index);
+      return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, baseline, compareElements }) };
+    }
+    if (res.verdict === 'ambiguous') {
+      return { kind: 'ambiguous', entry: makeAmbiguousMatch(bi, res.confidence, strategy.id, res.candidates, baseline) };
+    }
+    return { kind: 'orphan' };
+  };
+}
+
+function buildCssSelectorClassifier(cmpIdxs, usedCompare, baseline, compareElements, matchConfig, strategy) {
+  const { minMatchThreshold, ambiguityWindow } = matchConfig;
+  const map = buildMultiMap(compareElements, cmpIdxs, el => el.cssSelector ?? null);
+
+  return (bi) => {
+    const sel = baseline[bi].cssSelector;
+    if (!sel) return { kind: 'orphan' };
+    const res = resolveFromMultiMap(map.get(sel), strategy.confidence, usedCompare, minMatchThreshold, ambiguityWindow);
+    if (res.verdict === 'definitive') {
+      usedCompare.add(res.index);
+      return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, baseline, compareElements }) };
+    }
+    if (res.verdict === 'ambiguous') {
+      return { kind: 'ambiguous', entry: makeAmbiguousMatch(bi, res.confidence, strategy.id, res.candidates, baseline) };
+    }
+    return { kind: 'orphan' };
+  };
+}
+
+function buildXpathClassifier(cmpIdxs, usedCompare, baseline, compareElements, matchConfig, strategy) {
+  const { minMatchThreshold, ambiguityWindow } = matchConfig;
+  const map = buildMultiMap(compareElements, cmpIdxs, el => el.xpath ?? null);
+
+  return (bi) => {
+    const xp = baseline[bi].xpath;
+    if (!xp) return { kind: 'orphan' };
+    const res = resolveFromMultiMap(map.get(xp), strategy.confidence, usedCompare, minMatchThreshold, ambiguityWindow);
+    if (res.verdict === 'definitive') {
+      usedCompare.add(res.index);
+      return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, baseline, compareElements }) };
+    }
+    if (res.verdict === 'ambiguous') {
+      return { kind: 'ambiguous', entry: makeAmbiguousMatch(bi, res.confidence, strategy.id, res.candidates, baseline) };
+    }
+    return { kind: 'orphan' };
+  };
+}
+
+function buildPositionGrid(compareElements, availableIdxs, cellSize) {
+  const grid = new Map();
+  for (const i of availableIdxs) {
+    const { rect, tagName } = compareElements[i];
+    if (!rect || rect.x == null || rect.y == null) continue;
+    const cx  = Math.floor(rect.x / cellSize);
+    const cy  = Math.floor(rect.y / cellSize);
+    const key = `${cx}:${cy}:${tagName}`;
+    if (!grid.has(key)) grid.set(key, []);
+    grid.get(key).push({ index: i, x: rect.x, y: rect.y });
+  }
+  return grid;
+}
+
+function pickFromGrid(bx, by, tag, grid, cellSize, usedCompare) {
+  const cx       = Math.floor(bx / cellSize);
+  const cy       = Math.floor(by / cellSize);
+  let bestIdx    = null;
+  let bestDist   = Infinity;
+
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const bucket = grid.get(`${cx + dx}:${cy + dy}:${tag}`);
+      if (!bucket) continue;
+      for (const { index, x, y } of bucket) {
+        if (usedCompare.has(index)) continue;
+        const dist = Math.hypot(bx - x, by - y);
+        if (dist < cellSize && dist < bestDist) {
+          bestDist = dist;
+          bestIdx  = index;
+        }
+      }
+    }
+  }
+
+  if (bestIdx === null) return null;
+  return { index: bestIdx, confidence: Math.max(0.1, 1 - bestDist / cellSize) * 0.30 };
+}
+
+function buildPositionClassifier(cmpIdxs, usedCompare, baseline, compareElements, cellSize, minConf, strategy) {
+  const grid    = buildPositionGrid(compareElements, cmpIdxs, cellSize);
+  const usedLocal = new Set();
+
+  return (bi) => {
+    const rect = baseline[bi].rect;
+    if (rect?.x == null || rect?.y == null) return { kind: 'orphan' };
+    const hit = pickFromGrid(rect.x, rect.y, baseline[bi].tagName, grid, cellSize, usedCompare);
+    if (hit && hit.confidence >= minConf && !usedLocal.has(hit.index)) {
+      usedLocal.add(hit.index);
+      usedCompare.add(hit.index);
+      return {
+        kind:  'match',
+        match: makeDefinitiveMatch({ bi, ci: hit.index, conf: hit.confidence, strat: strategy.id, matchType: MatchType.POSITIONAL, baseline, compareElements })
+      };
+    }
+    return { kind: 'orphan' };
+  };
+}
+
+const LEGACY_CLASSIFIER_BUILDERS = Object.freeze({
+  'test-attribute': (cmpIdxs, usedCompare, baseline, cmpEls, matchConfig, strategy) =>
+    buildTestAttributeClassifier(cmpIdxs, usedCompare, baseline, cmpEls, matchConfig, strategy),
+  'absolute-hpid': (cmpIdxs, usedCompare, baseline, cmpEls, matchConfig, strategy) =>
+    buildAbsoluteHpidClassifier(cmpIdxs, usedCompare, baseline, cmpEls, matchConfig, strategy),
+  'id': (cmpIdxs, usedCompare, baseline, cmpEls, matchConfig, strategy) =>
+    buildIdClassifier(cmpIdxs, usedCompare, baseline, cmpEls, matchConfig, strategy),
+  'css-selector': (cmpIdxs, usedCompare, baseline, cmpEls, matchConfig, strategy) =>
+    buildCssSelectorClassifier(cmpIdxs, usedCompare, baseline, cmpEls, matchConfig, strategy),
+  'xpath': (cmpIdxs, usedCompare, baseline, cmpEls, matchConfig, strategy) =>
+    buildXpathClassifier(cmpIdxs, usedCompare, baseline, cmpEls, matchConfig, strategy),
+  'position': (cmpIdxs, usedCompare, baseline, cmpEls, matchConfig, strategy, cellSize, minConf) =>
+    buildPositionClassifier(cmpIdxs, usedCompare, baseline, cmpEls, cellSize, minConf, strategy)
+});
+
+// ---------------------------------------------------------------------------
+// Chunked pass runner (used for Phase 3 pool-based strategies)
+// ---------------------------------------------------------------------------
 
 async function* runChunkedPass(indices, classifyFn, progressCtx) {
   const { label, startPct, endPct } = progressCtx;
@@ -169,7 +558,7 @@ async function* runChunkedPass(indices, classifyFn, progressCtx) {
       const hit = classifyFn(indices[i]);
       if (hit.kind === 'match')          matches.push(hit.match);
       else if (hit.kind === 'ambiguous') ambiguous.push(hit.entry);
-      else orphans.push(indices[i]);
+      else                               orphans.push(indices[i]);
     }
     await yieldToEventLoop();
     yield progressFrame(label, Math.round(startPct + (end / total) * (endPct - startPct)));
@@ -179,273 +568,271 @@ async function* runChunkedPass(indices, classifyFn, progressCtx) {
   yield resultFrame({ matches, ambiguous, orphans });
 }
 
-function buildTestAttributeClassifier(cmpIdxs, passCtx, nodeCtx, strategy) {
-  const { usedCompare, matchConfig } = passCtx;
-  const { baseline, compareElements } = nodeCtx;
-  const { anchorAttributes, minMatchThreshold, ambiguityWindow } = matchConfig;
-  const map = buildMultiMap(compareElements, cmpIdxs, el => getTestAttrKey(el, anchorAttributes));
-
-  return (bi) => {
-    const key = getTestAttrKey(baseline[bi], anchorAttributes);
-    if (!key) return { kind: 'orphan' };
-    const res = resolveFromMultiMap(map.get(key), strategy.confidence, usedCompare, minMatchThreshold, ambiguityWindow);
-    if (res.verdict === 'definitive') {
-      usedCompare.add(res.index);
-      return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, nodeCtx }) };
-    }
-    if (res.verdict === 'ambiguous') {
-      return { kind: 'ambiguous', entry: makeAmbiguousMatch(bi, res.confidence, strategy.id, res.candidates, baseline) };
-    }
-    return { kind: 'orphan' };
-  };
-}
-
-function buildAbsoluteHpidClassifier(cmpIdxs, passCtx, nodeCtx, strategy) {
-  const { usedCompare, matchConfig } = passCtx;
-  const { baseline, compareElements } = nodeCtx;
-  const { minMatchThreshold, ambiguityWindow } = matchConfig;
-  const map = buildMultiMap(compareElements, cmpIdxs, el => el.absoluteHpid ?? null);
-
-  return (bi) => {
-    const hpid = baseline[bi].absoluteHpid;
-    if (!hpid) return { kind: 'orphan' };
-    const res = resolveFromMultiMap(map.get(hpid), strategy.confidence, usedCompare, minMatchThreshold, ambiguityWindow);
-    if (res.verdict === 'definitive') {
-      usedCompare.add(res.index);
-      return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, nodeCtx }) };
-    }
-    if (res.verdict === 'ambiguous') {
-      return { kind: 'ambiguous', entry: makeAmbiguousMatch(bi, res.confidence, strategy.id, res.candidates, baseline) };
-    }
-    return { kind: 'orphan' };
-  };
-}
-
-function buildIdClassifier(cmpIdxs, passCtx, nodeCtx, strategy) {
-  const { usedCompare, matchConfig } = passCtx;
-  const { baseline, compareElements } = nodeCtx;
-  const { minMatchThreshold, ambiguityWindow } = matchConfig;
-  const map = buildMultiMap(compareElements, cmpIdxs, el => el.elementId || null);
-
-  return (bi) => {
-    const elId = baseline[bi].elementId;
-    if (!elId) return { kind: 'orphan' };
-    const res = resolveFromMultiMap(map.get(elId), strategy.confidence, usedCompare, minMatchThreshold, ambiguityWindow);
-    if (res.verdict === 'definitive') {
-      usedCompare.add(res.index);
-      return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, nodeCtx }) };
-    }
-    if (res.verdict === 'ambiguous') {
-      return { kind: 'ambiguous', entry: makeAmbiguousMatch(bi, res.confidence, strategy.id, res.candidates, baseline) };
-    }
-    return { kind: 'orphan' };
-  };
-}
-
-function buildCssSelectorClassifier(cmpIdxs, passCtx, nodeCtx, strategy) {
-  const { usedCompare, matchConfig } = passCtx;
-  const { baseline, compareElements } = nodeCtx;
-  const { minMatchThreshold, ambiguityWindow } = matchConfig;
-  const map = buildMultiMap(compareElements, cmpIdxs, el => el.cssSelector ?? null);
-
-  return (bi) => {
-    const sel = baseline[bi].cssSelector;
-    if (!sel) return { kind: 'orphan' };
-    const res = resolveFromMultiMap(map.get(sel), strategy.confidence, usedCompare, minMatchThreshold, ambiguityWindow);
-    if (res.verdict === 'definitive') {
-      usedCompare.add(res.index);
-      return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, nodeCtx }) };
-    }
-    if (res.verdict === 'ambiguous') {
-      return { kind: 'ambiguous', entry: makeAmbiguousMatch(bi, res.confidence, strategy.id, res.candidates, baseline) };
-    }
-    return { kind: 'orphan' };
-  };
-}
-
-function buildXpathClassifier(cmpIdxs, passCtx, nodeCtx, strategy) {
-  const { usedCompare, matchConfig } = passCtx;
-  const { baseline, compareElements } = nodeCtx;
-  const { minMatchThreshold, ambiguityWindow } = matchConfig;
-  const map = buildMultiMap(compareElements, cmpIdxs, el => el.xpath ?? null);
-
-  return (bi) => {
-    const xp = baseline[bi].xpath;
-    if (!xp) return { kind: 'orphan' };
-    const res = resolveFromMultiMap(map.get(xp), strategy.confidence, usedCompare, minMatchThreshold, ambiguityWindow);
-    if (res.verdict === 'definitive') {
-      usedCompare.add(res.index);
-      return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, nodeCtx }) };
-    }
-    if (res.verdict === 'ambiguous') {
-      return { kind: 'ambiguous', entry: makeAmbiguousMatch(bi, res.confidence, strategy.id, res.candidates, baseline) };
-    }
-    return { kind: 'orphan' };
-  };
-}
-
-function buildHpidPrefixClassifier(cmpIdxs, passCtx, nodeCtx, strategy) {
-  const { usedCompare, minConf } = passCtx;
-  const { baseline, compareElements } = nodeCtx;
-  const prefixMap = buildMultiMap(compareElements, cmpIdxs, el => {
-    const hpid = el.absoluteHpid;
-    if (!hpid) return null;
-    const lastDot = hpid.lastIndexOf('.');
-    return lastDot > 0 ? hpid.substring(0, lastDot) : null;
-  });
-
-  return (bi) => {
-    const hpid = baseline[bi].absoluteHpid;
-    if (!hpid) return { kind: 'orphan' };
-
-    const lastDot = hpid.lastIndexOf('.');
-    const prefix  = lastDot > 0 ? hpid.substring(0, lastDot) : null;
-    if (!prefix) return { kind: 'orphan' };
-
-    const indices   = prefixMap.get(prefix);
-    if (!indices) return { kind: 'orphan' };
-    const available = indices.filter(i => !usedCompare.has(i));
-    if (available.length !== 1 || strategy.confidence < minConf) {
-      return { kind: 'orphan' };
-    }
-    const ci = available[0];
-    usedCompare.add(ci);
-    return {
-      kind:  'match',
-      match: makeDefinitiveMatch({ bi, ci, conf: strategy.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, nodeCtx })
-    };
-  };
-}
-
-function buildPositionClassifier(cmpIdxs, passCtx, nodeCtx, strategy) {
-  const { usedCompare, minConf, cellSize } = passCtx;
-  const { baseline } = nodeCtx;
-  const grid        = buildPositionGrid(nodeCtx.compareElements, cmpIdxs, cellSize);
-  const usedLocal   = new Set();
-
-  return (bi) => {
-    const rect = baseline[bi].rect;
-    if (rect?.x == null || rect?.y == null) return { kind: 'orphan' };
-
-    const gridCtx = { grid, cellSize, tag: baseline[bi].tagName, baseConfidence: strategy.confidence };
-    const hit     = pickFromGrid(rect.x, rect.y, gridCtx, usedCompare);
-    if (hit && hit.confidence >= minConf && !usedLocal.has(hit.index)) {
-      usedLocal.add(hit.index);
-      usedCompare.add(hit.index);
-      return {
-        kind:  'match',
-        match: makeDefinitiveMatch({ bi, ci: hit.index, conf: hit.confidence, strat: strategy.id, matchType: MatchType.POSITIONAL, nodeCtx })
-      };
-    }
-    return { kind: 'orphan' };
-  };
-}
-
-const CLASSIFIER_BUILDERS = Object.freeze({
-  'test-attribute': buildTestAttributeClassifier,
-  'absolute-hpid':  buildAbsoluteHpidClassifier,
-  'id':             buildIdClassifier,
-  'css-selector':   buildCssSelectorClassifier,
-  'xpath':          buildXpathClassifier,
-  'hpid-prefix':    buildHpidPrefixClassifier,
-  'position':       buildPositionClassifier
-});
-
-function buildClassifierForStrategy(cmpIdxs, passCtx, nodeCtx, strategy) {
-  const builder = CLASSIFIER_BUILDERS[strategy.id];
-  return builder ? builder(cmpIdxs, passCtx, nodeCtx, strategy) : null;
-}
+// ---------------------------------------------------------------------------
+// ElementMatcher — public class
+// ---------------------------------------------------------------------------
 
 class ElementMatcher {
+  // Private config fields
   #minConf;
   #minMatchThreshold;
   #ambiguityWindow;
   #cellSize;
   #anchorAttributes;
+  #lookAheadWindow;
+  #suffixDepth;
+  #inSequenceConf;
+  #suffixConf;
+  #sequenceAlignEnabled;
 
   constructor() {
-    this.#minConf           = get('comparison.matching.confidenceThreshold', 0.5);
-    this.#minMatchThreshold = get('comparison.matching.minMatchThreshold', 0.70);
-    this.#ambiguityWindow   = get('comparison.matching.ambiguityWindow', 0.12);
-    this.#cellSize          = get('comparison.matching.positionTolerance', 50);
-    this.#anchorAttributes  = get('comparison.matching.anchorAttributes');
+    this.#minConf              = get('comparison.matching.confidenceThreshold', 0.5);
+    this.#minMatchThreshold    = get('comparison.matching.minMatchThreshold', 0.70);
+    this.#ambiguityWindow      = get('comparison.matching.ambiguityWindow', 0.12);
+    this.#cellSize             = get('comparison.matching.positionTolerance', 50);
+    this.#anchorAttributes     = get('comparison.matching.anchorAttributes');
+    this.#lookAheadWindow      = get('comparison.matching.sequenceAlignment.lookAheadWindow', 5);
+    this.#suffixDepth          = get('comparison.matching.sequenceAlignment.suffixDepth', 5);
+    this.#inSequenceConf       = get('comparison.matching.sequenceAlignment.inSequenceConf', 0.99);
+    this.#suffixConf           = get('comparison.matching.sequenceAlignment.suffixConf', 0.85);
+    this.#sequenceAlignEnabled = get('comparison.matching.sequenceAlignment.enabled', true);
   }
 
   async* matchElements(baseline, compareElements) {
-    const enabledStrategies = get('comparison.matching.strategies')
-      .filter(s => s.enabled)
-      .sort((a, b) => b.confidence - a.confidence);
-
-    logger.info('Config-driven matching start', {
-      baseline:   baseline.length,
-      compare:    compareElements.length,
-      strategies: enabledStrategies.map(s => s.id)
+    logger.info('Sequence-aware matching start', {
+      baseline: baseline.length,
+      compare:  compareElements.length
     });
 
-    const usedCompare   = new Set();
-    const allCmpIdxs    = Array.from({ length: compareElements.length }, (_, i) => i);
-    const allBaseIdxs   = Array.from({ length: baseline.length },        (_, i) => i);
-    const nodeCtx       = { baseline, compareElements };
-    const matchConfig   = {
-      anchorAttributes:  this.#anchorAttributes,
-      minMatchThreshold: this.#minMatchThreshold,
-      ambiguityWindow:   this.#ambiguityWindow
-    };
-    const passCtx = {
-      usedCompare,
-      matchConfig,
-      minConf:  this.#minConf,
-      cellSize: this.#cellSize
-    };
-
+    const usedBaseline = new Set();
+    const usedCompare  = new Set();
     const allMatches   = [];
     const allAmbiguous = [];
-    let baselineOrphans = allBaseIdxs;
-    let cmpOrphans      = allCmpIdxs;
-    const total         = enabledStrategies.length;
 
-    for (let si = 0; si < total; si++) {
-      const strategy = enabledStrategies[si];
-      const startPct = Math.round((si       / total) * 100);
-      const endPct   = Math.round(((si + 1) / total) * 100);
-      const classify = buildClassifierForStrategy(cmpOrphans, passCtx, nodeCtx, strategy);
+    // ── PHASE 0: Test-attribute anchoring (pool-based, runs first) ──────────
+    yield progressFrame('Anchoring by test attributes…', 5);
 
-      if (!classify) continue;
+    const testAttrStrategy = get('comparison.matching.strategies')
+      .find(s => s.id === 'test-attribute' && s.enabled);
 
-      let passResult = null;
+    if (testAttrStrategy) {
+      const allBaseIdxs = Array.from({ length: baseline.length },        (_, i) => i);
+      const allCmpIdxs  = Array.from({ length: compareElements.length }, (_, i) => i);
+      const matchConfig = {
+        anchorAttributes:  this.#anchorAttributes,
+        minMatchThreshold: this.#minMatchThreshold,
+        ambiguityWindow:   this.#ambiguityWindow
+      };
+
+      const phase0Classify = buildTestAttributeClassifier(
+        allCmpIdxs, usedCompare, baseline, compareElements, matchConfig, testAttrStrategy
+      );
+
+      let phase0Result = null;
       for await (const frame of runChunkedPass(
-        baselineOrphans,
-        classify,
-        { label: strategy.label, startPct, endPct }
+        allBaseIdxs,
+        phase0Classify,
+        { label: testAttrStrategy.label, startPct: 5, endPct: 20 }
       )) {
-        if (frame.type === 'result') passResult = frame.payload;
+        if (frame.type === 'result') phase0Result = frame.payload;
         else yield frame;
       }
 
-      allMatches.push(...passResult.matches);
-      allAmbiguous.push(...passResult.ambiguous);
-      baselineOrphans = passResult.orphans;
-      cmpOrphans      = cmpOrphans.filter(i => !usedCompare.has(i));
+      for (const match of phase0Result.matches) {
+        usedBaseline.add(match.baselineIndex);
+        usedCompare.add(match.compareIndex);
+        allMatches.push(match);
+      }
+      allAmbiguous.push(...phase0Result.ambiguous);
     }
 
-    const reservedByAmbiguous = new Set(
-      allAmbiguous.flatMap(entry => (entry.ambiguousCandidates ?? []).map(c => c.compareIndex))
-    );
+    yield progressFrame('Running sequence alignment…', 20);
 
-    const unmatchedBaseline = baselineOrphans.map(i => baseline[i]);
-    const unmatchedCompare  = cmpOrphans
-      .filter(i => !reservedByAmbiguous.has(i))
-      .map(i => compareElements[i]);
+    // ── PHASE 1: Linear Sequence Alignment ──────────────────────────────────
+    if (this.#sequenceAlignEnabled) {
+      await yieldToEventLoop();
 
-    logger.info('Config-driven matching complete', {
-      matched:           allMatches.length,
-      ambiguous:         allAmbiguous.length,
-      unmatchedBaseline: unmatchedBaseline.length,
-      unmatchedCompare:  unmatchedCompare.length
-    });
+      const alignResult = sequenceAlign(baseline, compareElements, usedBaseline, usedCompare, {
+        anchorAttributes: this.#anchorAttributes,
+        lookAheadWindow:  this.#lookAheadWindow,
+        inSequenceConf:   this.#inSequenceConf
+      });
 
-    yield resultFrame({ matches: allMatches, ambiguous: allAmbiguous, unmatchedBaseline, unmatchedCompare });
+      for (const { bi, ci, confidence, strategy } of alignResult.pairs) {
+        allMatches.push(makeDefinitiveMatch({
+          bi, ci, conf: confidence, strat: strategy,
+          matchType: MatchType.DEFINITIVE,
+          baseline, compareElements
+        }));
+      }
+
+      // Mark added and removed elements in usedCompare / usedBaseline
+      // so they don't get claimed by Phase 2+
+      for (const ci of alignResult.added)   usedCompare.add(ci);
+      for (const bi of alignResult.removed)  usedBaseline.add(bi);
+
+      yield progressFrame('Sequence alignment complete…', 45);
+      await yieldToEventLoop();
+
+      // ── PHASE 2: Suffix Re-alignment (handles root shifts) ─────────────────
+      const orphanCompareIdxs = alignResult.orphanCompare.filter(i => !usedCompare.has(i));
+
+      const { pairs: suffixPairs, stillOrphanBaseline } = suffixRealignPass(
+        baseline,
+        compareElements,
+        alignResult.orphanBaseline,
+        orphanCompareIdxs,
+        usedCompare,
+        this.#suffixDepth,
+        this.#suffixConf
+      );
+
+      for (const { bi, ci, confidence, strategy } of suffixPairs) {
+        allMatches.push(makeDefinitiveMatch({
+          bi, ci, conf: confidence, strat: strategy,
+          matchType: MatchType.DEFINITIVE,
+          baseline, compareElements
+        }));
+        usedBaseline.add(bi);
+      }
+
+      yield progressFrame('Re-alignment complete…', 55);
+
+      // ── PHASE 3: Legacy pool-based fallback passes ──────────────────────────
+      // Run absolute-hpid, id, css-selector, xpath, position on remaining orphans
+      const legacyStrategies = get('comparison.matching.strategies')
+        .filter(s => s.enabled && s.id !== 'test-attribute')
+        .sort((a, b) => b.confidence - a.confidence);
+
+      // Re-build orphan lists from anything still unused
+      const legacyBaseOrphans = stillOrphanBaseline.filter(i => !usedBaseline.has(i));
+      const legacyCmpOrphans  = Array.from({ length: compareElements.length }, (_, i) => i)
+        .filter(i => !usedCompare.has(i));
+
+      const matchConfig = {
+        anchorAttributes:  this.#anchorAttributes,
+        minMatchThreshold: this.#minMatchThreshold,
+        ambiguityWindow:   this.#ambiguityWindow
+      };
+
+      let mutableBaseOrphans = legacyBaseOrphans.slice();
+      let mutableCmpOrphans  = legacyCmpOrphans.slice();
+
+      const totalLegacy = legacyStrategies.length;
+      for (let si = 0; si < totalLegacy; si++) {
+        const strategy  = legacyStrategies[si];
+        const startPct  = 55 + Math.round((si       / totalLegacy) * 35);
+        const endPct    = 55 + Math.round(((si + 1) / totalLegacy) * 35);
+        const builder   = LEGACY_CLASSIFIER_BUILDERS[strategy.id];
+        if (!builder) continue;
+
+        const classify = builder(
+          mutableCmpOrphans, usedCompare, baseline, compareElements,
+          matchConfig, strategy, this.#cellSize, this.#minConf
+        );
+
+        let passResult = null;
+        for await (const frame of runChunkedPass(
+          mutableBaseOrphans,
+          classify,
+          { label: strategy.label, startPct, endPct }
+        )) {
+          if (frame.type === 'result') passResult = frame.payload;
+          else yield frame;
+        }
+
+        allMatches.push(...passResult.matches);
+        allAmbiguous.push(...passResult.ambiguous);
+        mutableBaseOrphans = passResult.orphans;
+        mutableCmpOrphans  = mutableCmpOrphans.filter(i => !usedCompare.has(i));
+      }
+
+      // ── Finalise unmatched sets ─────────────────────────────────────────────
+      const reservedByAmbiguous = new Set(
+        allAmbiguous.flatMap(e => (e.ambiguousCandidates ?? []).map(c => c.compareIndex))
+      );
+
+      // Merge: items explicitly marked as REMOVED in Phase 1 + legacy orphans
+      const finalUnmatchedBaselineIdxs = new Set([
+        ...alignResult.removed,
+        ...mutableBaseOrphans
+      ]);
+      const finalUnmatchedCompareIdxs = new Set([
+        ...alignResult.added,
+        ...mutableCmpOrphans.filter(i => !reservedByAmbiguous.has(i))
+      ]);
+
+      const unmatchedBaseline = [...finalUnmatchedBaselineIdxs].map(i => baseline[i]);
+      const unmatchedCompare  = [...finalUnmatchedCompareIdxs].map(i => compareElements[i]);
+
+      logger.info('Sequence-aware matching complete', {
+        phase0:            allMatches.filter(m => m.strategy === 'test-attribute').length,
+        phase1Pairs:       alignResult.pairs.length,
+        phase1Added:       alignResult.added.length,
+        phase1Removed:     alignResult.removed.length,
+        phase2Realigned:   suffixPairs.length,
+        phase3:            allMatches.length - alignResult.pairs.length - suffixPairs.length -
+                           allMatches.filter(m => m.strategy === 'test-attribute').length,
+        totalMatched:      allMatches.length,
+        ambiguous:         allAmbiguous.length,
+        unmatchedBaseline: unmatchedBaseline.length,
+        unmatchedCompare:  unmatchedCompare.length
+      });
+
+      yield progressFrame('Finalising match results…', 99);
+      yield resultFrame({ matches: allMatches, ambiguous: allAmbiguous, unmatchedBaseline, unmatchedCompare });
+
+    } else {
+      // Sequence alignment disabled — fall through to full legacy pool matching
+      const allBaseIdxs  = Array.from({ length: baseline.length },        (_, i) => i).filter(i => !usedBaseline.has(i));
+      const allCmpIdxs   = Array.from({ length: compareElements.length }, (_, i) => i).filter(i => !usedCompare.has(i));
+      const legacyStrategies = get('comparison.matching.strategies')
+        .filter(s => s.enabled && s.id !== 'test-attribute')
+        .sort((a, b) => b.confidence - a.confidence);
+      const matchConfig = {
+        anchorAttributes:  this.#anchorAttributes,
+        minMatchThreshold: this.#minMatchThreshold,
+        ambiguityWindow:   this.#ambiguityWindow
+      };
+
+      let baseOrphans = allBaseIdxs;
+      let cmpOrphans  = allCmpIdxs;
+      const total     = legacyStrategies.length;
+
+      for (let si = 0; si < total; si++) {
+        const strategy = legacyStrategies[si];
+        const startPct = Math.round((si       / total) * 79) + 20;
+        const endPct   = Math.round(((si + 1) / total) * 79) + 20;
+        const builder  = LEGACY_CLASSIFIER_BUILDERS[strategy.id];
+        if (!builder) continue;
+
+        const classify = builder(
+          cmpOrphans, usedCompare, baseline, compareElements,
+          matchConfig, strategy, this.#cellSize, this.#minConf
+        );
+
+        let passResult = null;
+        for await (const frame of runChunkedPass(baseOrphans, classify, { label: strategy.label, startPct, endPct })) {
+          if (frame.type === 'result') passResult = frame.payload;
+          else yield frame;
+        }
+
+        allMatches.push(...passResult.matches);
+        allAmbiguous.push(...passResult.ambiguous);
+        baseOrphans = passResult.orphans;
+        cmpOrphans  = cmpOrphans.filter(i => !usedCompare.has(i));
+      }
+
+      const reservedByAmbiguous = new Set(
+        allAmbiguous.flatMap(e => (e.ambiguousCandidates ?? []).map(c => c.compareIndex))
+      );
+      const unmatchedBaseline = baseOrphans.map(i => baseline[i]);
+      const unmatchedCompare  = cmpOrphans.filter(i => !reservedByAmbiguous.has(i)).map(i => compareElements[i]);
+
+      yield progressFrame('Finalising match results…', 99);
+      yield resultFrame({ matches: allMatches, ambiguous: allAmbiguous, unmatchedBaseline, unmatchedCompare });
+    }
   }
 }
 
-export { ElementMatcher, MatchType, MUTATION_TYPE };
+export { ElementMatcher, MatchType };

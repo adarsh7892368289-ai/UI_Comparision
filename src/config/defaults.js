@@ -118,13 +118,20 @@ const rawConfig = {
 
       strategies: [
         { id: 'test-attribute', confidence: 1.00, enabled: true, label: 'Anchoring by test attributes\u2026' },
-        { id: 'absolute-hpid', confidence: 0.98, enabled: true, label: 'Anchoring by absolute position\u2026' },
+        { id: 'absolute-hpid', confidence: 0.95, enabled: true, label: 'Anchoring by absolute position\u2026' },
         { id: 'id',            confidence: 0.90, enabled: true, label: 'Anchoring by element ID\u2026' },
-        { id: 'css-selector',  confidence: 0.85, enabled: true, label: 'Structural match by CSS\u2026' },
-        { id: 'xpath',         confidence: 0.82, enabled: true, label: 'Structural match by XPath\u2026' },
-        { id: 'hpid-prefix',  confidence: 0.65, enabled: true, label: 'Topological matching\u2026' },
-        { id: 'position',     confidence: 0.30, enabled: true, label: 'Positional matching\u2026' }
+        { id: 'css-selector',  confidence: 0.80, enabled: true, label: 'Structural match by CSS\u2026' },
+        { id: 'xpath',         confidence: 0.78, enabled: true, label: 'Structural match by XPath\u2026' },
+        { id: 'position',      confidence: 0.30, enabled: true, label: 'Positional matching\u2026' }
       ],
+
+      sequenceAlignment: {
+        enabled:         true,
+        lookAheadWindow: 5,
+        suffixDepth:     5,
+        inSequenceConf:  0.99,
+        suffixConf:      0.85
+      },
 
       confidenceThreshold: 0.5,
       positionTolerance:   50,
@@ -210,12 +217,6 @@ const rawConfig = {
       }
     },
 
-    confidence: {
-      high:   0.9,
-      medium: 0.7,
-      low:    0.5,
-      min:    0.5
-    }
   },
 
   normalization: {

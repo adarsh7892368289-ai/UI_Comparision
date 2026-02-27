@@ -252,11 +252,17 @@ async function persistComparison(result, baselineId, compareId, mode) {
     ({ baselineElement, compareElement, ...rest }) => ({
       ...rest,
       baselineElementId: baselineElement.id,
-      compareElementId:  compareElement?.id ?? null,
+      compareElementId:  compareElement?.id   ?? null,
       tagName:           baselineElement.tagName,
       elementId:         baselineElement.elementId,
       className:         baselineElement.className,
-      selectors:         baselineElement.selectors
+      cssSelector:       baselineElement.cssSelector  ?? null,
+      xpath:             baselineElement.xpath         ?? null,
+      hpid:              baselineElement.hpid          ?? null,
+      absoluteHpid:      baselineElement.absoluteHpid  ?? null,
+      textContent:       baselineElement.textContent   ?? null,
+      depth:             baselineElement.depth         ?? null,
+      tier:              baselineElement.tier          ?? null
     })
   );
 
