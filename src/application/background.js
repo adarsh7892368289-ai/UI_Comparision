@@ -1,7 +1,7 @@
 import { validateConfig } from '../config/validator.js';
 import { MessageTypes, onMessage } from '../infrastructure/chrome-messaging.js';
 import logger from '../infrastructure/logger.js';
-import { StorageTransport } from '../infrastructure/storage-transport.js';
+import { StorageTransport } from '../infrastructure/logger.js';
 import storage from '../infrastructure/storage.js';
 import { compareReports, exportComparisonAsHTML, getCachedComparison } from './compare-workflow.js';
 import { extractFromActiveTab } from './extract-workflow.js';
@@ -16,8 +16,6 @@ try {
   logger.error('STARTUP FAILED: Config validation error', { error: err.message });
   throw err;
 }
-
-storage.init();
 
 const handlers = {
   [MessageTypes.EXTRACT_ELEMENTS]:       handleExtractElements,

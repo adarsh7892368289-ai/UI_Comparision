@@ -1,5 +1,5 @@
-import logger from '../../infrastructure/logger.js';
-import { transformToGroupedReport, elementLabel } from './report-transformer.js';
+import logger from '../../../infrastructure/logger.js';
+import { transformToGroupedReport, elementLabel } from '../shared/report-transformer.js';
 
 async function exportToHTML(comparisonResult) {
   try {

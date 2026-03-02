@@ -1,9 +1,3 @@
-/**
- * WEEK 6: Performance Monitor
- * Tracks timing metrics for extraction, comparison, and rendering operations.
- * Provides before/after comparison to validate optimization impact.
- */
-
 class PerformanceMonitor {
   constructor() {
     this.metrics = {};
@@ -113,62 +107,8 @@ class PerformanceMonitor {
     }
   }
 
-  generateReport() {
-    const stats = this.getAllStats();
-    const lines = ['=== PERFORMANCE REPORT ===\n'];
-    
-    for (const [op, data] of Object.entries(stats)) {
-      if (!data) {continue;}
-      lines.push(`${op}:`);
-      lines.push(`  Count:   ${data.count}`);
-      lines.push(`  Total:   ${data.total}ms`);
-      lines.push(`  Average: ${data.average}ms`);
-      lines.push(`  Min/Max: ${data.min}ms / ${data.max}ms`);
-      lines.push(`  P50/P95: ${data.p50}ms / ${data.p95}ms`);
-      lines.push(`  StdDev:  ${data.stdDev}ms\n`);
-    }
-    
-    return lines.join('\n');
-  }
-
-  /**
-   * Week 6 specific: Estimate performance improvement vs baseline.
-   * Baseline timings from artifact (pre-optimization).
-   */
-  estimateImprovement() {
-    const baseline = {
-      'dom-batch-reads':      800,   // Pre-optimization: interleaved reads
-      'style-collection':     1200,  // Pre-optimization: redundant getComputedStyle
-      'selector-generation':  9000,  // Pre-optimization: serial processing
-      'normalization':        400,   // Pre-optimization: cold cache every comparison
-      'matching':             800,   // Pre-optimization: O(N²) nested loops
-      'extraction-total':     12000, // Sum of extraction phases
-      'comparison-total':     2100   // Sum of comparison phases
-    };
-    
-    const improvements = {};
-    const current = this.getAllStats();
-    
-    for (const [op, baseTime] of Object.entries(baseline)) {
-      const stat = current[op];
-      if (stat && stat.average > 0) {
-        const improvement = ((baseTime - stat.average) / baseTime) * 100;
-        const speedup = baseTime / stat.average;
-        improvements[op] = {
-          baseline:    baseTime,
-          current:     stat.average,
-          improvement: Math.round(improvement),
-          speedup:     speedup.toFixed(1)
-        };
-      }
-    }
-    
-    return improvements;
-  }
 }
 
-// Export singleton instance
 const performanceMonitor = new PerformanceMonitor();
 
 export { PerformanceMonitor, performanceMonitor };
-

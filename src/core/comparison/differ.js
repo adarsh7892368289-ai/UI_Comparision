@@ -1,6 +1,6 @@
 import { get } from '../../config/defaults.js';
 import { normalizerEngine } from '../normalization/normalizer-engine.js';
-import { parseRgba, parsePx } from '../../shared/color-utils.js';
+import { parseRgba, parsePx } from './color-utils.js';
 
 const DIFF_TYPES = {
   UNCHANGED: 'unchanged',

@@ -231,16 +231,6 @@ const rawConfig = {
   },
 
   infrastructure: {
-    circuitBreaker: {
-      failureThreshold: 5,
-      cooldownPeriod:   5_000,
-      resetTimeout:     30_000
-    },
-    retry: {
-      maxRetries: 3,
-      baseDelay:  100,
-      maxDelay:   5_000
-    },
     timeout: {
       default:       5_000,
       extraction:    200,

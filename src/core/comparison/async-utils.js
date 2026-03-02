@@ -1,4 +1,4 @@
-import { get } from '../config/defaults.js';
+import { get } from '../../config/defaults.js';
 
 const YIELD_CHUNK_SIZE = get('comparison.matching.yieldChunkSize', 64);
 const yieldChannel     = new MessageChannel();
@@ -11,4 +11,12 @@ function yieldToEventLoop() {
   });
 }
 
-export { yieldToEventLoop, YIELD_CHUNK_SIZE };
+export { yieldToEventLoop, YIELD_CHUNK_SIZE, progressFrame, resultFrame };
+
+function progressFrame(label, pct) {
+  return { type: 'progress', label, pct };
+}
+
+function resultFrame(payload) {
+  return { type: 'result', payload };
+}

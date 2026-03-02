@@ -1,5 +1,5 @@
-import { get }           from '../../config/defaults.js';
-import { rowsToCsv }     from './csv-utils.js';
+import { get }        from '../../../config/defaults.js';
+import { rowsToCsv }  from '../shared/csv-utils.js';
 
 const UTF8_BOM         = '\uFEFF';
 const CSV_TEXT_MAX     = 200;

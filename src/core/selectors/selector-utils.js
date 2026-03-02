@@ -1,5 +1,5 @@
-import { get } from '../config/defaults.js';
-import logger from '../infrastructure/logger.js';
+import { get } from '../../config/defaults.js';
+import logger from '../../infrastructure/logger.js';
 
 let _compiledIdPatterns = null;
 let _compiledClassPatterns = null;
@@ -58,72 +58,6 @@ export function getUniversalTag(element) {
   }
   
   return element.tagName.toLowerCase();
-}
-
-export function extractTagFromUniversal(tag) {
-  return tag.toLowerCase().replace(/\*\s*\[local-name\(\)\s*=\s*'([^']+)'\]/, '$1');
-}
-
-export function walkUpTree(element, maxDepth = 7) {
-  const parents = [];
-  let current = element?.parentElement;
-  let depth = 0;
-
-  while (current && depth < maxDepth) {
-    parents.push(current);
-    current = current.parentElement;
-    depth++;
-  }
-
-  return parents;
-}
-
-export function getElementPosition(element) {
-  if (!element?.getBoundingClientRect) {
-    return { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
-  }
-
-  try {
-    const rect = element.getBoundingClientRect();
-    const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
-    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-
-    return {
-      x: rect.left + scrollLeft,
-      y: rect.top + scrollTop,
-      width: rect.width,
-      height: rect.height,
-      top: rect.top + scrollTop,
-      left: rect.left + scrollLeft,
-      right: rect.right + scrollLeft,
-      bottom: rect.bottom + scrollTop
-    };
-  } catch (error) {
-    logger.warn('Failed to get element position', { 
-      error: error.message,
-      element: element.tagName 
-    });
-    return { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
-  }
-}
-
-function calculateCenterPoint(element) {
-  const pos = getElementPosition(element);
-  return {
-    x: pos.x + pos.width / 2,
-    y: pos.y + pos.height / 2
-  };
-}
-
-export function calculateDistance(elem1, elem2) {
-  if (!elem1 || !elem2) {return Infinity;}
-
-  const center1 = calculateCenterPoint(elem1);
-  const center2 = calculateCenterPoint(elem2);
-
-  return Math.sqrt(
-    Math.pow(center2.x - center1.x, 2) + Math.pow(center2.y - center1.y, 2)
-  );
 }
 
 export function isStableId(id) {
@@ -246,43 +180,4 @@ export function findBestSemanticAncestor(element) {
   }
 
   return null;
-}
-
-export function findNearbyTextElements(element, maxDistance = 200) {
-  const rect = element.getBoundingClientRect();
-  const centerX = rect.left + rect.width / 2;
-  const centerY = rect.top + rect.height / 2;
-  
-  const textElements = [];
-  
-  try {
-    const candidates = document.querySelectorAll('label, span, div, p, h1, h2, h3, h4, h5, h6, legend, button, a, td, th');
-    
-    for (const el of candidates) {
-      if (el === element || el.contains(element) || element.contains(el)) {continue;}
-      
-      const text = cleanText(el.textContent);
-      if (!text || text.length === 0 || text.length > 100) {continue;}
-      
-      const elRect = el.getBoundingClientRect();
-      const elCenterX = elRect.left + elRect.width / 2;
-      const elCenterY = elRect.top + elRect.height / 2;
-      
-      const distance = Math.sqrt(
-        Math.pow(elCenterX - centerX, 2) + Math.pow(elCenterY - centerY, 2)
-      );
-      
-      if (distance <= maxDistance) {
-        const direction = (elCenterX < centerX || elCenterY < centerY) ? 'before' : 'after';
-        textElements.push({ element: el, text, distance, direction });
-      }
-    }
-  } catch (error) {
-    logger.warn('Failed to find nearby text elements', { 
-      error: error.message,
-      element: element.tagName 
-    });
-  }
-  
-  return textElements.sort((a, b) => a.distance - b.distance);
 }

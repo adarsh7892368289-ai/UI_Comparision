@@ -18,16 +18,6 @@ const ERROR_CODES = {
   UNKNOWN_ERROR: 'UNKNOWN_ERROR'
 };
 
-class TrackedError extends Error {
-  constructor(code, message, context = {}) {
-    super(message);
-    this.code = code;
-    this.context = context;
-    this.timestamp = new Date().toISOString();
-    this.name = 'TrackedError';
-  }
-}
-
 class ErrorTracker {
   constructor() {
     this.errors = new Map();
@@ -69,40 +59,9 @@ class ErrorTracker {
       }
     }
   }
-
-  createError(code, message, context = {}) {
-    return new TrackedError(code, message, context);
-  }
-
-  getErrors() {
-    return Array.from(this.errors.values());
-  }
-
-  getErrorsByCode(code) {
-    return this.getErrors().filter(e => e.code === code);
-  }
-
-  getMostFrequent(limit = 10) {
-    return this.getErrors()
-      .sort((a, b) => b.count - a.count)
-      .slice(0, limit);
-  }
-
-  clear() {
-    this.errors.clear();
-  }
-
-  clearByCode(code) {
-    const keys = Array.from(this.errors.keys());
-    for (const key of keys) {
-      if (this.errors.get(key).code === code) {
-        this.errors.delete(key);
-      }
-    }
-  }
 }
 
 const errorTracker = new ErrorTracker();
 
-export { errorTracker, ERROR_CODES, TrackedError };
+export { errorTracker, ERROR_CODES };
 export default errorTracker;

@@ -1,4 +1,4 @@
-import { isStableId, isStableValue, isStableClass } from '../../../shared/dom-utils.js';
+import { isStableId, isStableValue, isStableClass } from '../selector-utils.js';
 import { escapeCss } from './validator.js';
 
 const TIER_ROBUSTNESS = {

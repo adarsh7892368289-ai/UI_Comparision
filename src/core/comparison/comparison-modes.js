@@ -2,7 +2,7 @@ import { get } from '../../config/defaults.js';
 import logger from '../../infrastructure/logger.js';
 import { PropertyDiffer } from './differ.js';
 import { SeverityAnalyzer } from './severity-analyzer.js';
-import { yieldToEventLoop, YIELD_CHUNK_SIZE } from '../../shared/async-utils.js';
+import { yieldToEventLoop, YIELD_CHUNK_SIZE, progressFrame, resultFrame } from './async-utils.js';
 
 const STATIC_FILTER = {
   ignoredProperties:        new Set(get('comparison.modes.static.ignoredProperties')),
@@ -20,14 +20,6 @@ const DYNAMIC_FILTER = {
   ])),
   tolerances:               get('comparison.modes.dynamic.tolerances')
 };
-
-function progressFrame(label, pct) {
-  return { type: 'progress', label, pct };
-}
-
-function resultFrame(payload) {
-  return { type: 'result', payload };
-}
 
 class BaseComparisonMode {
   #differ;

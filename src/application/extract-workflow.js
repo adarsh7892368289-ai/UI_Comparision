@@ -65,16 +65,18 @@ function estimatePayloadBytes(data) {
 
 function buildReport(data) {
   return {
-    id:             crypto.randomUUID(),
-    version:        REPORT_VERSION,
-    url:            data.url,
-    title:          data.title,
-    timestamp:      data.timestamp,
-    captureQuality: data.captureQuality,
-    totalElements:  data.totalElements,
-    duration:       data.duration,
-    filters:        data.filters ?? null,
-    elements:       data.elements
+    id:              crypto.randomUUID(),
+    version:         REPORT_VERSION,
+    url:             data.url,
+    title:           data.title,
+    timestamp:       data.timestamp,
+    captureQuality:  data.captureQuality,
+    totalElements:   data.totalElements,
+    duration:        data.duration,
+    filters:         data.filters         ?? null,
+    extractOptions:  data.extractOptions  ?? null,
+    styleCategories: data.styleCategories ?? [],
+    elements:        data.elements
   };
 }
 

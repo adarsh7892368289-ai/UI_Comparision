@@ -1,42 +1,4 @@
-const CACHE_BUST_PATTERN = /^[0-9a-f]{6,64}$|^\d{10,13}$/i;
-const NON_NAVIGABLE_PATTERN = /^(mailto:|tel:|javascript:|data:)/i;
 const TRACKING_PARAM_PATTERN = /^(utm_|gclid$|gad_source$|fbclid$|msclkid$|_ga$|_gl$)/i;
-
-function extractUrlPath(rawHref) {
-  if (!rawHref) {
-    return '';
-  }
-  if (NON_NAVIGABLE_PATTERN.test(rawHref)) {
-    return '';
-  }
-  if (rawHref.startsWith('#')) {
-    return '';
-  }
-  try {
-    return new URL(rawHref, document.baseURI).pathname;
-  } catch {
-    return rawHref.split('?')[0].split('#')[0];
-  }
-}
-
-function extractSrcPath(rawSrc) {
-  if (!rawSrc) {
-    return '';
-  }
-  try {
-    const parsed = new URL(rawSrc, document.baseURI);
-    const semanticParams = [];
-    for (const [k, v] of parsed.searchParams) {
-      if (!CACHE_BUST_PATTERN.test(v)) {
-        semanticParams.push(`${k}=${v}`);
-      }
-    }
-    const suffix = semanticParams.length > 0 ? '?' + semanticParams.join('&') : '';
-    return parsed.pathname + suffix;
-  } catch {
-    return rawSrc.split('?')[0].split('#')[0];
-  }
-}
 
 function stripTrackingParams(parsed) {
   const cleaned = new URL(parsed.toString());
@@ -139,4 +101,4 @@ function assessUrlCompatibility(baselineUrl, compareUrl) {
   };
 }
 
-export { extractUrlPath, extractSrcPath, assessUrlCompatibility };
+export { assessUrlCompatibility };

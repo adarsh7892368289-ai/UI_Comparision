@@ -1,6 +1,6 @@
 import logger                                from '../../infrastructure/logger.js';
 import { get }                               from '../../config/defaults.js';
-import { yieldToEventLoop, YIELD_CHUNK_SIZE } from '../../shared/async-utils.js';
+import { yieldToEventLoop, YIELD_CHUNK_SIZE } from './async-utils.js';
 
 // ---------------------------------------------------------------------------
 // Constants

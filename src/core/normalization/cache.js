@@ -67,7 +67,8 @@ class NormalizationCache {
 
   getCacheKey(property, value, context = null) {
     if (context) {
-      return `${property}:${value}:${JSON.stringify(context)}`;
+      const ctxKey = `${context.fontSize}|${context.rootFontSize}|${context.viewportWidth}|${context.viewportHeight}`;
+      return `${property}:${value}:${ctxKey}`;
     }
     return `${property}:${value}`;
   }

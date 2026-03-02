@@ -1,6 +1,6 @@
 import { get } from '../../config/defaults.js';
 import { PROPERTY_CATEGORIES } from './differ.js';
-import { parseRgba, parsePx, relativeLuminance } from '../../shared/color-utils.js';
+import { parseRgba, parsePx, relativeLuminance } from './color-utils.js';
 
 const SEVERITY_LEVELS = {
   CRITICAL: 'critical',

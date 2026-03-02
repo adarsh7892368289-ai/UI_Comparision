@@ -1,6 +1,6 @@
 import { get } from '../../../config/defaults.js';
 import logger from '../../../infrastructure/logger.js';
-import { getUniversalTag, isStableId } from '../../../shared/dom-utils.js';
+import { getUniversalTag, isStableId } from '../selector-utils.js';
 import { getAllStrategies, TIER_ROBUSTNESS } from './strategies.js';
 import { countXPathMatches, ensureUniqueness, isUniqueXPath, escapeXPath } from './validator.js';
 

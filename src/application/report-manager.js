@@ -1,6 +1,84 @@
 import logger   from '../infrastructure/logger.js';
 import storage   from '../infrastructure/storage.js';
-import { isValidMeta, isValidReport, sanitizeReport } from '../shared/report-validator.js';
+
+function isValidTimestamp(timestamp) {
+  if (typeof timestamp !== 'string') {return false;}
+  return !isNaN(new Date(timestamp).getTime());
+}
+
+function isValidReport(report) {
+  if (!report || typeof report !== 'object') {
+    return { valid: false, errors: ['Report must be an object'] };
+  }
+
+  const errors = [];
+
+  if (!report.id || typeof report.id !== 'string') {
+    errors.push('Missing or invalid report ID');
+  }
+  if (!report.version || typeof report.version !== 'string') {
+    errors.push('Missing or invalid version');
+  }
+  if (!report.url || typeof report.url !== 'string') {
+    errors.push('Missing or invalid URL');
+  }
+  if (!report.timestamp || !isValidTimestamp(report.timestamp)) {
+    errors.push('Missing or invalid timestamp');
+  }
+  if (typeof report.totalElements !== 'number' || report.totalElements < 0) {
+    errors.push('Invalid totalElements count');
+  }
+  if (!Array.isArray(report.elements)) {
+    errors.push('Elements must be an array');
+  }
+  if (report.elements && report.elements.length !== report.totalElements) {
+    errors.push(`Element count mismatch: expected ${report.totalElements}, got ${report.elements.length}`);
+  }
+
+  if (errors.length > 0) {
+    logger.warn('Report validation failed', { errors, reportId: report.id });
+    return { valid: false, errors };
+  }
+
+  return { valid: true, errors: [] };
+}
+
+function isValidMeta(meta) {
+  if (!meta || typeof meta !== 'object') {
+    return { valid: false, errors: ['Meta must be an object'] };
+  }
+
+  const errors = [];
+
+  if (!meta.id || typeof meta.id !== 'string') {
+    errors.push('Missing or invalid report ID');
+  }
+  if (!meta.url || typeof meta.url !== 'string') {
+    errors.push('Missing or invalid URL');
+  }
+  if (!meta.timestamp || !isValidTimestamp(meta.timestamp)) {
+    errors.push('Missing or invalid timestamp');
+  }
+  if (typeof meta.totalElements !== 'number' || meta.totalElements < 0) {
+    errors.push('Invalid totalElements count');
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+function sanitizeReport(report) {
+  return {
+    id:            String(report.id || Date.now()),
+    version:       String(report.version || '1.0'),
+    url:           String(report.url || ''),
+    title:         String(report.title || 'Untitled'),
+    timestamp:     report.timestamp || new Date().toISOString(),
+    totalElements: Number(report.totalElements || 0),
+    duration:      Number(report.duration || 0),
+    filters:       report.filters || null,
+    elements:      Array.isArray(report.elements) ? report.elements : []
+  };
+}
 
 async function loadAllReports() {
   try {

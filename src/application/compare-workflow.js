@@ -3,11 +3,8 @@ import storage from '../infrastructure/storage.js';
 import { getReportById } from './report-manager.js';
 import { Comparator } from '../core/comparison/comparator.js';
 import { buildPairKey } from '../infrastructure/idb-repository.js';
-import { runVisualDiffWorkflow } from './visual-workflow.js';
-import { diffBlobs } from '../core/comparison/pixel-differ.js';
-import { elementLabel } from '../core/export/report-transformer.js';
-import { exportToHTML } from '../core/export/html-exporter.js';
-import { assessUrlCompatibility } from '../shared/url-utils.js';
+import { exportToHTML } from '../core/export/comparison/html-exporter.js';
+import { assessUrlCompatibility } from './url-compatibility.js';
 
 const MINIMUM_SCHEMA_VERSION = '3.0';
 
@@ -163,46 +160,8 @@ async function runVisualPhase(result, tabContext, includeScreenshots) {
     return skip('Visual diff screenshots were disabled for this comparison.');
   }
 
-  const { baselineTabId, compareTabId } = tabContext ?? {};
-
-  if (!Number.isInteger(baselineTabId) || !Number.isInteger(compareTabId)) {
-    logger.info('Visual phase skipped: tabContext not provided', { baselineTabId, compareTabId });
-    return skip('Source tabs must be open to capture visual diffs.');
-  }
-
-  const allModified = result.comparison.results.filter(m => (m.totalDifferences ?? 0) > 0);
-
-  const modifiedElements = allModified
-    .slice()
-    .sort((a, b) => {
-      const sa = a.severityCounts ?? {};
-      const sb = b.severityCounts ?? {};
-      if ((sb.critical ?? 0) !== (sa.critical ?? 0)) { return (sb.critical ?? 0) - (sa.critical ?? 0); }
-      if ((sb.high    ?? 0) !== (sa.high    ?? 0)) { return (sb.high    ?? 0) - (sa.high    ?? 0); }
-      if ((sb.medium  ?? 0) !== (sa.medium  ?? 0)) { return (sb.medium  ?? 0) - (sa.medium  ?? 0); }
-      if ((sb.low     ?? 0) !== (sa.low     ?? 0)) { return (sb.low     ?? 0) - (sa.low     ?? 0); }
-      return (b.totalDifferences ?? 0) - (a.totalDifferences ?? 0);
-    })
-    .slice(0, 100)
-    .map(m => ({ ...m.baselineElement, elementKey: elementLabel(m.baselineElement) }));
-
-  if (modifiedElements.length === 0) {
-    logger.info('Visual phase skipped: no modified elements');
-    return skip('No modified elements were found that require visual capture.');
-  }
-
-  logger.info('Visual phase: element selection complete', {
-    total:    allModified.length,
-    selected: modifiedElements.length,
-    capped:   allModified.length > 100
-  });
-
-  try {
-    return await runVisualDiffWorkflow({ modifiedElements, baselineTabId, compareTabId, pixelDiffer: diffBlobs });
-  } catch (visualErr) {
-    logger.error('runVisualDiffWorkflow threw unexpectedly', { error: visualErr.message });
-    return { status: 'error', reason: `Unexpected visual diff error: ${visualErr.message}`, diffs: new Map() };
-  }
+  logger.info('Visual phase skipped: visual system pending implementation');
+  return skip('Visual capture system is not yet available.');
 }
 
 function slimAmbiguousEntry(entry) {

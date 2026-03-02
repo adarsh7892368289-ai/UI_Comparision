@@ -1,7 +1,6 @@
 import { get }                                  from '../../config/defaults.js';
 import logger                                   from '../../infrastructure/logger.js';
 import { performanceMonitor }                   from '../../infrastructure/performance-monitor.js';
-import { safeExecute }                          from '../../infrastructure/safe-execute.js';
 import { collectAttributes }                    from './attribute-collector.js';
 import { serializeHpid, traverseDocument }      from './dom-traversal.js';
 import { classifyTier, isTierZero, isVisible }  from './element-classifier.js';
@@ -161,7 +160,6 @@ async function executeUnifiedPass(visits, readings, classOccurrenceMap) {
   performance.mark('unified-pass-start');
 
   const hardCapMs     = get('extraction.batchHardCapMs', 30);
-  const perTimeout    = get('extraction.perElementTimeout');
   const schema        = get('schema');
   const generateCSS   = get('selectors.generateCSS', true);
   const generateXPath = get('selectors.generateXPath', true);
@@ -181,17 +179,22 @@ async function executeUnifiedPass(visits, readings, classOccurrenceMap) {
       const j = i;
       i++;
 
-      const safeResult = await safeExecute(
-        () => buildElementRecord(visits[j], readings[j], ctx),
-        { timeout: perTimeout, operation: 'element-extraction' }
-      );
-
-      if (safeResult.success && safeResult.data !== null) {
-        batchRecords.push(safeResult.data);
-        batchElements.push(visits[j].element);
+      let record;
+      try {
+        record = buildElementRecord(visits[j], readings[j], ctx);
+      } catch (err) {
+        logger.warn('Element record build failed', { index: j, error: err.message });
+        visits[j].element = null;
+        continue;
       }
 
-      visits[j].element = null;
+      if (record !== null) {
+        batchRecords.push(record);
+        batchElements.push(visits[j].element);
+        visits[j].element = null;
+      } else {
+        visits[j].element = null;
+      }
 
       if (performance.now() - batchStart >= hardCapMs || i >= batchEndTarget) {
         break;

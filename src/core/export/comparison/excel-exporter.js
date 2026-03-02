@@ -1,5 +1,5 @@
-import { get } from '../../config/defaults.js';
-import logger from '../../infrastructure/logger.js';
+import { get }  from '../../../config/defaults.js';
+import logger    from '../../../infrastructure/logger.js';
 
 const HEADER_FONT_COLOR = 'FFFFFF';
 

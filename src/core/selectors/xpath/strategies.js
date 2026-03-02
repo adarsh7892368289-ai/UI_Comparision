@@ -8,7 +8,7 @@ import {
   getStableAncestorChain,
   findBestSemanticAncestor,
   getUniversalTag
-} from '../../../shared/dom-utils.js';
+} from '../selector-utils.js';
 import { escapeXPath } from './validator.js';
 
 const TIER_ROBUSTNESS = {

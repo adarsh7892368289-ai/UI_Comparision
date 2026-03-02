@@ -32,7 +32,6 @@ module.exports = (env, argv) => {
           { from: 'src/presentation/popup.css',  to: 'popup.css' },
           { from: 'icons',                       to: 'icons' },
           { from: 'libs',                        to: 'libs' },
-          { from: 'src/core/extraction/visual-capture.js', to: 'extraction/visual-capture.js' },
         ],
       }),
     ],

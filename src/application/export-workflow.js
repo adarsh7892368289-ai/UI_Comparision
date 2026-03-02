@@ -1,18 +1,25 @@
 import logger                            from '../infrastructure/logger.js';
 import { getReportById }                 from './report-manager.js';
 import storage                           from '../infrastructure/storage.js';
-import { triggerDownload }               from '../core/export/download-trigger.js';
-import { safeTimestamp }                 from '../core/export/csv-utils.js';
+import { triggerDownload }               from '../core/export/shared/download-trigger.js';
+import { safeTimestamp }                 from '../core/export/shared/csv-utils.js';
 import {
   buildExtractedReportCsv,
   buildExtractedReportJson,
   buildAllExtractedReportsCsv,
   buildAllExtractedReportsJson
-}                                        from '../core/export/extracted-report-exporter.js';
-import {
-  exportComparison,
-  EXPORT_FORMAT
-}                                        from '../core/export/export-manager.js';
+}                                        from '../core/export/extraction/report-exporter.js';
+import { exportComparisonToCsv }         from '../core/export/comparison/csv-exporter.js';
+import { exportComparisonToJson }        from '../core/export/comparison/json-exporter.js';
+import { exportToExcel }                 from '../core/export/comparison/excel-exporter.js';
+import { exportToHTML }                  from '../core/export/comparison/html-exporter.js';
+
+const EXPORT_FORMAT = Object.freeze({
+  EXCEL: 'excel',
+  CSV:   'csv',
+  HTML:  'html',
+  JSON:  'json'
+});
 
 const EXTRACTED_FORMAT = Object.freeze({
   JSON: 'json',
@@ -62,6 +69,24 @@ async function exportAllReports(format) {
   triggerDownload(csv, 'text/csv;charset=utf-8;', filename);
   logger.info('All extracted reports exported as CSV', { count: full.length });
   return { success: true, count: full.length };
+}
+
+async function exportComparison(comparisonResult, format) {
+  logger.info('Comparison export requested', { format });
+
+  try {
+    switch (format) {
+      case EXPORT_FORMAT.EXCEL: return await exportToExcel(comparisonResult);
+      case EXPORT_FORMAT.CSV:   return exportComparisonToCsv(comparisonResult);
+      case EXPORT_FORMAT.HTML:  return await exportToHTML(comparisonResult);
+      case EXPORT_FORMAT.JSON:  return exportComparisonToJson(comparisonResult);
+      default:
+        throw new Error(`Unsupported export format: "${format}"`);
+    }
+  } catch (err) {
+    logger.error('Comparison export failed', { format, error: err.message });
+    return { success: false, error: err.message };
+  }
 }
 
 export { exportReport, exportAllReports, exportComparison, EXPORT_FORMAT, EXTRACTED_FORMAT };

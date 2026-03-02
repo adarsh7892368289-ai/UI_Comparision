@@ -1,5 +1,6 @@
 import { ElementMatcher } from './matcher.js';
 import { StaticComparisonMode, DynamicComparisonMode } from './comparison-modes.js';
+import { progressFrame, resultFrame } from './async-utils.js';
 
 const MATCHING_PCT_WEIGHT    = 0.5;
 const MATCHING_PHASE_CEILING = 50;
@@ -10,14 +11,6 @@ function calculateMatchRate(matched, unmatchedBaseline, unmatchedCompare) {
     return 0;
   }
   return Math.round((matched / denominator) * 100);
-}
-
-function progressFrame(label, pct) {
-  return { type: 'progress', label, pct };
-}
-
-function resultFrame(payload) {
-  return { type: 'result', payload };
 }
 
 function buildReportMeta(report) {

@@ -1,6 +1,6 @@
 import { get } from '../../../config/defaults.js';
 import logger from '../../../infrastructure/logger.js';
-import { isStableId } from '../../../shared/dom-utils.js';
+import { isStableId } from '../selector-utils.js';
 import { getAllStrategies, TIER_ROBUSTNESS } from './strategies.js';
 import { isUniqueCssSelector, isValidCssSelector, escapeCss } from './validator.js';
 

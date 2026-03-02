@@ -69,12 +69,6 @@ const REQUIRED_PATHS = [
   'normalization.cache.maxEntries',
   'normalization.rounding.decimals',
 
-  'infrastructure.circuitBreaker.failureThreshold',
-  'infrastructure.circuitBreaker.cooldownPeriod',
-  'infrastructure.circuitBreaker.resetTimeout',
-  'infrastructure.retry.maxRetries',
-  'infrastructure.retry.baseDelay',
-  'infrastructure.retry.maxDelay',
   'infrastructure.timeout.default',
   'infrastructure.timeout.extraction',
   'infrastructure.timeout.tabLoad',
@@ -143,8 +137,6 @@ const TYPE_EXPECTATIONS = [
   { path: 'comparison.severity.high',       type: 'array' },
   { path: 'comparison.severity.medium',     type: 'array' },
   { path: 'comparison.modes.dynamic.ignoredProperties', type: 'array' },
-  { path: 'infrastructure.circuitBreaker.failureThreshold', type: 'number' },
-  { path: 'infrastructure.circuitBreaker.cooldownPeriod',   type: 'number' },
   { path: 'infrastructure.timeout.default', type: 'number' },
   { path: 'logging.slowOperationThreshold', type: 'number' },
   { path: 'attributes.priority',            type: 'array' },
@@ -170,7 +162,6 @@ const SANITY_CHECKS = [
   { path: 'selectors.css.perStrategyTimeout',   min: 5,    max: 1000   },
   { path: 'comparison.tolerances.color',        min: 0,    max: 255    },
   { path: 'comparison.tolerances.size',         min: 0,    max: 100    },
-  { path: 'infrastructure.circuitBreaker.failureThreshold', min: 1, max: 100 },
   { path: 'infrastructure.timeout.default',     min: 100,  max: 300000 },
   { path: 'logging.slowOperationThreshold',     min: 50,   max: 30000  }
 ];
