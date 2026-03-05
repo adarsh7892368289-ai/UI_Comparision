@@ -1,7 +1,6 @@
 import logger from '../infrastructure/logger.js';
 import storage from '../infrastructure/storage.js';
 import { groupIntoKeyframes } from '../core/comparison/keyframe-grouper.js';
-import { elementLabel } from '../core/export/shared/report-transformer.js';
 
 const NORMALIZED_DPR        = 2;
 const CAPTURE_QUALITY       = 85;
@@ -199,11 +198,10 @@ function buildDiffMap(elements, baselineManifest, compareManifest) {
 
   for (const el of elements) {
     const hpid          = el.baselineElement.hpid;
-    const key           = elementLabel(el.baselineElement);
     const baselineEntry = baselineManifest.get(hpid) ?? null;
     const compareEntry  = compareManifest.get(hpid)  ?? null;
     if (!baselineEntry && !compareEntry) continue;
-    diffs.set(key, {
+    diffs.set(hpid, {
       baseline: baselineEntry,
       compare:  compareEntry,
       diffs:    el.annotatedDifferences ?? []

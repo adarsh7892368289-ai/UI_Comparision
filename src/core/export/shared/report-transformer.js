@@ -1,8 +1,8 @@
 const SEVERITY_ORDER = Object.freeze({ critical: 0, high: 1, medium: 2, low: 3 });
 
 function elementLabel(el) {
-  const tag     = (el.tagName   || 'unknown').toLowerCase();
-  const idPart  = el.elementId  ? `#${el.elementId}` : '';
+  const tag     = (el.tagName  || 'unknown').toLowerCase();
+  const idPart  = el.elementId ? `#${el.elementId}` : '';
   const clsPart = el.className?.trim()
     ? `.${el.className.trim().split(/\s+/).slice(0, 2).join('.')}`
     : '';
@@ -33,9 +33,38 @@ function buildDiffsByCategory(annotatedDifferences) {
   return map;
 }
 
+function diffSignature(diffsByCategory) {
+  const parts = [];
+  for (const diffs of Object.values(diffsByCategory || {})) {
+    for (const d of diffs) {
+      parts.push(`${d.property}\x02${d.baseValue}\x02${d.compareValue}`);
+    }
+  }
+  return parts.sort().join('\x00');
+}
+
+function deduplicateGroup(items) {
+  const seen   = new Map();
+  const result = [];
+
+  for (const item of items) {
+    const sig = `${item.elementKey}\x01${diffSignature(item.diffsByCategory)}`;
+    if (seen.has(sig)) {
+      const rep = result[seen.get(sig)];
+      rep.recurrenceCount = (rep.recurrenceCount ?? 1) + 1;
+      if (!rep.recurrenceHpids) rep.recurrenceHpids = [rep.hpid];
+      if (item.hpid) rep.recurrenceHpids.push(item.hpid);
+    } else {
+      seen.set(sig, result.length);
+      result.push({ ...item, recurrenceCount: 1, recurrenceHpids: item.hpid ? [item.hpid] : [] });
+    }
+  }
+
+  return result;
+}
+
 function resolveElement(match) {
   if (match.baselineElement) return match.baselineElement;
-  // Reconstructed from storage (baselineElement was stripped in persistComparison)
   return {
     tagName:      match.tagName,
     elementId:    match.elementId,
@@ -59,37 +88,39 @@ function buildMatchedGroups(results) {
 
     if ((match.totalDifferences ?? diffs.length) === 0) {
       groups.unchanged.push({
-        elementKey:  elementLabel(el),
-        tagName:     el.tagName,
-        hpid:        el.hpid ?? null
+        elementKey: elementLabel(el),
+        tagName:    el.tagName,
+        hpid:       el.hpid ?? null
       });
       continue;
     }
 
-    const topSeverity     = getTopSeverity(diffs);
-    const diffsByCategory = buildDiffsByCategory(diffs);
+    const topSeverity      = getTopSeverity(diffs);
+    const diffsByCategory  = buildDiffsByCategory(diffs);
 
     groups[topSeverity].push({
-      elementKey:      elementLabel(el),
-      breadcrumb:      elementBreadcrumb(el),
-      elementId:       el.elementId    ?? null,
-      tagName:         el.tagName,
-      hpid:            el.hpid         ?? null,
-      absoluteHpid:    el.absoluteHpid ?? null,
-      textContent:     el.textContent  ?? null,
-      depth:           el.depth        ?? null,
-      tier:            el.tier         ?? null,
-      totalDiffs:      match.totalDifferences ?? diffs.length,
-      severity:        topSeverity,
+      elementKey:          elementLabel(el),
+      breadcrumb:          elementBreadcrumb(el),
+      elementId:           el.elementId    ?? null,
+      tagName:             el.tagName,
+      hpid:                el.hpid         ?? null,
+      absoluteHpid:        el.absoluteHpid ?? null,
+      textContent:         el.textContent  ?? null,
+      depth:               el.depth        ?? null,
+      tier:                el.tier         ?? null,
+      totalDiffs:          match.totalDifferences ?? diffs.length,
+      suppressedDiffsCount: match.suppressedDiffs?.length ?? 0,
+      severity:            topSeverity,
       diffsByCategory,
-      cssSelector:     el.cssSelector  ?? null,
-      xpath:           el.xpath        ?? null,
-      matchConfidence: match.confidence,
-      matchStrategy:   match.strategy
+      cssSelector:         el.cssSelector  ?? null,
+      xpath:               el.xpath        ?? null,
+      matchConfidence:     match.confidence,
+      matchStrategy:       match.strategy
     });
   }
 
   for (const severity of ['critical', 'high', 'medium', 'low']) {
+    groups[severity] = deduplicateGroup(groups[severity]);
     groups[severity].sort((a, b) => b.totalDiffs - a.totalDiffs);
   }
 
@@ -138,8 +169,8 @@ function transformToGroupedReport(comparisonResult) {
       hpid:         el.hpid         ?? null,
       absoluteHpid: el.absoluteHpid ?? null,
       cssSelector:  el.cssSelector  ?? null,
-      xpath:        el.xpath         ?? null,
-      textContent:  el.textContent   ?? null,
+      xpath:         el.xpath        ?? null,
+      textContent:  el.textContent  ?? null,
       depth:        el.depth         ?? null,
       tier:         el.tier          ?? null,
       status:       'added'
@@ -152,8 +183,8 @@ function transformToGroupedReport(comparisonResult) {
       hpid:         el.hpid         ?? null,
       absoluteHpid: el.absoluteHpid ?? null,
       cssSelector:  el.cssSelector  ?? null,
-      xpath:        el.xpath         ?? null,
-      textContent:  el.textContent   ?? null,
+      xpath:         el.xpath        ?? null,
+      textContent:  el.textContent  ?? null,
       depth:        el.depth         ?? null,
       tier:         el.tier          ?? null,
       status:       'removed'

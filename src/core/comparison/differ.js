@@ -20,12 +20,14 @@ const PROPERTY_CATEGORIES = {
 
 const DIMENSIONAL_KEYWORDS = ['width', 'height', 'size'];
 
+const CURRENT_COLOR_PROPS = new Set([
+  'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color'
+]);
+
 function colorWithinTolerance(baseValue, compareValue, tolerance) {
-  const baseRgba = parseRgba(baseValue);
+  const baseRgba    = parseRgba(baseValue);
   const compareRgba = parseRgba(compareValue);
-  if (!baseRgba || !compareRgba) {
-    return baseValue === compareValue;
-  }
+  if (!baseRgba || !compareRgba) return baseValue === compareValue;
   return (
     Math.abs(baseRgba.r - compareRgba.r) <= tolerance &&
     Math.abs(baseRgba.g - compareRgba.g) <= tolerance &&
@@ -35,16 +37,14 @@ function colorWithinTolerance(baseValue, compareValue, tolerance) {
 }
 
 function sizeWithinTolerance(baseValue, compareValue, tolerance) {
-  const basePx = parsePx(baseValue);
+  const basePx    = parsePx(baseValue);
   const comparePx = parsePx(compareValue);
-  if (basePx === null || comparePx === null) {
-    return baseValue === compareValue;
-  }
+  if (basePx === null || comparePx === null) return baseValue === compareValue;
   return Math.abs(basePx - comparePx) <= tolerance;
 }
 
 function opacityWithinTolerance(baseValue, compareValue, tolerance) {
-  const base = parseFloat(baseValue);
+  const base    = parseFloat(baseValue);
   const compare = parseFloat(compareValue);
   return !isNaN(base) && !isNaN(compare) && Math.abs(base - compare) <= tolerance;
 }
@@ -55,8 +55,8 @@ function isColorProperty(prop, cats) {
 
 function isSizeProperty(prop, cats) {
   return (
-    cats.layout.has(prop) ||
-    cats.spacing.has(prop) ||
+    cats.layout.has(prop)   ||
+    cats.spacing.has(prop)  ||
     cats.position.has(prop) ||
     DIMENSIONAL_KEYWORDS.some(k => prop.includes(k))
   );
@@ -102,9 +102,9 @@ class PropertyDiffer {
 
   compareElements(baselineElement, compareElement, options = {}) {
     const ignoredProperties = options.ignoredProperties ?? new Set();
-    const tolerances = options.tolerances ?? get('comparison.modes.static.tolerances');
+    const tolerances        = options.tolerances ?? get('comparison.modes.static.tolerances');
 
-    const baseNorm = this.#normalizer.normalize(
+    const baseNorm    = this.#normalizer.normalize(
       baselineElement.styles || {},
       baselineElement.contextSnapshot ?? null
     );
@@ -114,25 +114,19 @@ class PropertyDiffer {
     );
 
     const allProperties = new Set([...Object.keys(baseNorm), ...Object.keys(compareNorm)]);
-    const differences = [];
+    const rawDifferences = [];
 
     for (const property of allProperties) {
-      if (ignoredProperties.has(property)) {
-        continue;
-      }
+      if (ignoredProperties.has(property)) continue;
 
-      const baseValue = baseNorm[property];
+      const baseValue    = baseNorm[property];
       const compareValue = compareNorm[property];
-      const diffType = this.#getDiffType(baseValue, compareValue);
+      const diffType     = this.#getDiffType(baseValue, compareValue);
 
-      if (diffType === DIFF_TYPES.UNCHANGED) {
-        continue;
-      }
-      if (this.#withinTolerance(property, baseValue, compareValue, tolerances)) {
-        continue;
-      }
+      if (diffType === DIFF_TYPES.UNCHANGED) continue;
+      if (this.#withinTolerance(property, baseValue, compareValue, tolerances)) continue;
 
-      differences.push({
+      rawDifferences.push({
         property,
         baseValue,
         compareValue,
@@ -140,6 +134,8 @@ class PropertyDiffer {
         category: this.#categorizeProperty(property)
       });
     }
+
+    const differences = this.#dedupeCurrentColor(rawDifferences);
 
     return {
       elementId:        baselineElement.id,
@@ -149,23 +145,25 @@ class PropertyDiffer {
     };
   }
 
+  #dedupeCurrentColor(differences) {
+    const colorDiff = differences.find(d => d.property === 'color');
+    if (!colorDiff) return differences;
+
+    return differences.filter(d => {
+      if (!CURRENT_COLOR_PROPS.has(d.property)) return true;
+      return !(d.baseValue === colorDiff.baseValue && d.compareValue === colorDiff.compareValue);
+    });
+  }
+
   #getDiffType(baseValue, compareValue) {
-    if (baseValue === undefined && compareValue !== undefined) {
-      return DIFF_TYPES.ADDED;
-    }
-    if (baseValue !== undefined && compareValue === undefined) {
-      return DIFF_TYPES.REMOVED;
-    }
-    if (baseValue === compareValue) {
-      return DIFF_TYPES.UNCHANGED;
-    }
+    if (baseValue === undefined && compareValue !== undefined) return DIFF_TYPES.ADDED;
+    if (baseValue !== undefined && compareValue === undefined) return DIFF_TYPES.REMOVED;
+    if (baseValue === compareValue)                            return DIFF_TYPES.UNCHANGED;
     return DIFF_TYPES.MODIFIED;
   }
 
   #withinTolerance(property, baseValue, compareValue, tolerances) {
-    if (baseValue === undefined || compareValue === undefined) {
-      return false;
-    }
+    if (baseValue === undefined || compareValue === undefined) return false;
     const strategy = TOLERANCE_STRATEGIES.find(s => s.matches(property, this.#categories));
     return strategy ? strategy.check(baseValue, compareValue, tolerances) : false;
   }

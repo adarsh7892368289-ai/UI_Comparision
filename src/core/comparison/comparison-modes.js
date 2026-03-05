@@ -4,6 +4,21 @@ import { PropertyDiffer } from './differ.js';
 import { SeverityAnalyzer } from './severity-analyzer.js';
 import { yieldToEventLoop, YIELD_CHUNK_SIZE, progressFrame, resultFrame } from './async-utils.js';
 
+const CSS_INHERITABLE = new Set([
+  'color', 'visibility',
+  'font-size', 'font-weight', 'font-style', 'font-family',
+  'font-variant', 'font-stretch', 'line-height', 'letter-spacing', 'word-spacing',
+  'text-align', 'text-indent', 'text-transform', 'text-decoration',
+  'white-space', 'word-break', 'overflow-wrap', 'direction',
+  'list-style-type', 'list-style-position',
+  'border-collapse', 'border-spacing', 'caption-side',
+  'quotes', 'tab-size', 'orphans', 'widows'
+]);
+
+const CURRENT_COLOR_DERIVED = new Set([
+  'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color'
+]);
+
 const STATIC_FILTER = {
   ignoredProperties:        new Set(get('comparison.modes.static.ignoredProperties')),
   compareTextContent:       get('comparison.modes.static.compareTextContent'),
@@ -66,9 +81,7 @@ class BaseComparisonMode {
   compareTextContent(baselineElement, compareElement) {
     const baseText    = (baselineElement.textContent ?? '').trim();
     const compareText = (compareElement.textContent  ?? '').trim();
-    if (baseText === compareText) {
-      return [];
-    }
+    if (baseText === compareText) return [];
     return [{
       property:     'textContent',
       baseValue:    baseText,
@@ -85,12 +98,8 @@ class BaseComparisonMode {
     const diffs        = [];
 
     for (const key of allKeys) {
-      if (allowList && !allowList.has(key)) {
-        continue;
-      }
-      if (baseAttrs[key] === compareAttrs[key]) {
-        continue;
-      }
+      if (allowList && !allowList.has(key)) continue;
+      if (baseAttrs[key] === compareAttrs[key]) continue;
       diffs.push({
         property:     `attr:${key}`,
         baseValue:    baseAttrs[key]    ?? null,
@@ -103,12 +112,8 @@ class BaseComparisonMode {
   }
 
   attrDiffType(baseVal, compareVal) {
-    if (baseVal == null && compareVal != null) {
-      return 'added';
-    }
-    if (baseVal != null && compareVal == null) {
-      return 'removed';
-    }
+    if (baseVal == null && compareVal != null) return 'added';
+    if (baseVal != null && compareVal == null) return 'removed';
     return 'modified';
   }
 
@@ -144,6 +149,75 @@ class BaseComparisonMode {
     };
   }
 
+  #suppressInheritedCascades(diffResults) {
+    const changedByHpid = new Map();
+    for (const r of diffResults) {
+      if (!r.differences?.length) continue;
+      const hpid = r.baselineElement?.hpid ?? r.hpid ?? null;
+      if (hpid) changedByHpid.set(hpid, r.differences);
+    }
+
+    if (!changedByHpid.size) return diffResults;
+
+    return diffResults.map(r => {
+      if (!r.differences?.length) return r;
+      const hpid = r.baselineElement?.hpid ?? r.hpid ?? null;
+      if (!hpid) return r;
+
+      const ancestorDiffMap   = new Map();
+      let   ancestorColorDiff = null;
+
+      for (const [ancHpid, ancDiffs] of changedByHpid) {
+        if (ancHpid === hpid) continue;
+        if (!hpid.startsWith(ancHpid + '.')) continue;
+        for (const d of ancDiffs) {
+          if (!ancestorDiffMap.has(d.property)) {
+            ancestorDiffMap.set(d.property, d);
+          }
+          if (d.property === 'color' && !ancestorColorDiff) {
+            ancestorColorDiff = d;
+          }
+        }
+      }
+
+      if (!ancestorDiffMap.size) return r;
+
+      const suppressed = [];
+      const ownDiffs   = r.differences.filter(d => {
+        if (CSS_INHERITABLE.has(d.property)) {
+          const anc = ancestorDiffMap.get(d.property);
+          if (anc && anc.baseValue === d.baseValue && anc.compareValue === d.compareValue) {
+            suppressed.push({ ...d, inherited: true });
+            return false;
+          }
+        }
+        if (CURRENT_COLOR_DERIVED.has(d.property) && ancestorColorDiff) {
+          if (
+            ancestorColorDiff.baseValue    === d.baseValue &&
+            ancestorColorDiff.compareValue === d.compareValue
+          ) {
+            suppressed.push({ ...d, inherited: true, derivedFrom: 'color' });
+            return false;
+          }
+        }
+        return true;
+      });
+
+      if (!suppressed.length) return r;
+
+      const severity = this.#severityAnalyzer.analyzeDifferences(ownDiffs);
+      return {
+        ...r,
+        differences:          ownDiffs,
+        suppressedDiffs:      suppressed,
+        totalDifferences:     ownDiffs.length,
+        overallSeverity:      severity.overallSeverity,
+        severityCounts:       severity.severityCounts,
+        annotatedDifferences: severity.annotatedDifferences
+      };
+    });
+  }
+
   async* compareChunked(matches, ambiguous, filter, modeName) {
     const total       = matches.length;
     const diffResults = [];
@@ -154,33 +228,29 @@ class BaseComparisonMode {
         diffResults.push(this.compareMatch(matches[i], filter));
       }
       await yieldToEventLoop();
-      yield progressFrame('Comparing properties…', end);
+      yield progressFrame('Comparing properties\u2026', end);
     }
+
+    const cleaned = this.#suppressInheritedCascades(diffResults);
 
     yield resultFrame({
       modeName,
-      results:  diffResults,
+      results:  cleaned,
       ambiguous,
-      summary:  this.generateSummary(diffResults, ambiguous, modeName)
+      summary:  this.generateSummary(cleaned, ambiguous, modeName)
     });
   }
 }
 
 class StaticComparisonMode extends BaseComparisonMode {
-  constructor(deps = {}) {
-    super(deps);
-  }
-
+  constructor(deps = {}) { super(deps); }
   async* compare(matches, ambiguous = []) {
     yield* this.compareChunked(matches, ambiguous, STATIC_FILTER, 'static');
   }
 }
 
 class DynamicComparisonMode extends BaseComparisonMode {
-  constructor(deps = {}) {
-    super(deps);
-  }
-
+  constructor(deps = {}) { super(deps); }
   async* compare(matches, ambiguous = []) {
     yield* this.compareChunked(matches, ambiguous, DYNAMIC_FILTER, 'dynamic');
   }
