@@ -23,7 +23,8 @@ const handlers = {
   [MessageTypes.EXPORT_COMPARISON_HTML]: handleExportComparisonHTML,
   [MessageTypes.SAVE_REPORT]:            handleSaveReport,
   [MessageTypes.LOAD_REPORTS]:           handleLoadReports,
-  [MessageTypes.DELETE_REPORT]:          handleDeleteReport
+  [MessageTypes.DELETE_REPORT]:          handleDeleteReport,
+  [MessageTypes.GET_VISUAL_BLOB]:        handleGetVisualBlob
 };
 
 onMessage(async (msgType, payload, sender) => {
@@ -33,6 +34,23 @@ onMessage(async (msgType, payload, sender) => {
     throw new Error(`Unknown message type: ${msgType}`);
   }
   return handler(payload, sender);
+});
+
+self.addEventListener('fetch', event => {
+  const url = new URL(event.request.url);
+  if (!url.pathname.startsWith('/blob/')) return;
+  const blobId = url.pathname.slice(6);
+  event.respondWith(
+    storage.loadVisualBlob(blobId).then(blob => {
+      if (!blob) return new Response('Not found', { status: 404 });
+      return new Response(blob, {
+        headers: {
+          'Content-Type':  blob.type || 'image/webp',
+          'Cache-Control': 'private, max-age=3600'
+        }
+      });
+    }).catch(() => new Response('Internal error', { status: 500 }))
+  );
 });
 
 chrome.runtime.onConnect.addListener((port) => {
@@ -145,6 +163,20 @@ async function handleLoadCachedComparison(payload) {
   const { baselineId, compareId, mode } = payload;
   const cached = await getCachedComparison(baselineId, compareId, mode);
   return { cached };
+}
+
+async function handleGetVisualBlob(payload) {
+  const { blobId } = payload;
+  const blob = await storage.loadVisualBlob(blobId);
+  if (!blob) return { dataUri: null };
+  const buf     = await blob.arrayBuffer();
+  const bytes   = new Uint8Array(buf);
+  const chunk   = 0x8000;
+  let binary    = '';
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return { dataUri: `data:${blob.type || 'image/webp'};base64,${btoa(binary)}` };
 }
 
 logger.info('Background service worker initialized');

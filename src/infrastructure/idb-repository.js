@@ -1,20 +1,22 @@
 import { get } from '../config/defaults.js';
-import { errorTracker, ERROR_CODES } from './error-tracker.js';
+import { ERROR_CODES, errorTracker } from './error-tracker.js';
 import logger from './logger.js';
 
-const DB_NAME               = 'ui_comparison_db';
-const DB_VERSION            = 5;
-const STORE_REPORTS         = 'reports';
-const STORE_ELEMENTS        = 'elements';
-const STORE_COMPARISONS     = 'comparisons';
-const STORE_COMP_DIFFS      = 'comparison_diffs';
-const STORE_COMP_SUMMARY    = 'comparison_summary';
-const STORE_VISUAL_BLOBS    = 'visual_blobs';
-const STORE_OP_LOG          = 'operation_log';
-const MAX_COMPARISONS       = 20;
-const OP_STATUS_PENDING     = 'PENDING';
-const OP_STATUS_COMPLETE    = 'COMPLETE';
-const CIRCUIT_BREAKER_LIMIT = 3;
+const DB_NAME                    = 'ui_comparison_db';
+const DB_VERSION                 = 6;
+const STORE_REPORTS              = 'reports';
+const STORE_ELEMENTS             = 'elements';
+const STORE_COMPARISONS          = 'comparisons';
+const STORE_COMP_DIFFS           = 'comparison_diffs';
+const STORE_COMP_SUMMARY         = 'comparison_summary';
+const STORE_VISUAL_BLOBS         = 'visual_blobs';
+const STORE_VISUAL_KEYFRAMES     = 'visual_keyframes';
+const STORE_VISUAL_ELEMENT_RECTS = 'visual_element_rects';
+const STORE_OP_LOG               = 'operation_log';
+const MAX_COMPARISONS            = 20;
+const OP_STATUS_PENDING          = 'PENDING';
+const OP_STATUS_COMPLETE         = 'COMPLETE';
+const CIRCUIT_BREAKER_LIMIT      = 3;
 
 function requestToPromise(request) {
   return new Promise((resolve, reject) => {
@@ -103,19 +105,29 @@ function upgradeToV5(upgradeTx) {
   }
 }
 
+function upgradeToV6(db) {
+  const kfStore = db.createObjectStore(STORE_VISUAL_KEYFRAMES, { keyPath: 'id' });
+  kfStore.createIndex('by_session', 'sessionId', { unique: false });
+
+  const rectStore = db.createObjectStore(STORE_VISUAL_ELEMENT_RECTS, { keyPath: 'id' });
+  rectStore.createIndex('by_session',         'sessionId',              { unique: false });
+  rectStore.createIndex('by_session_element', ['sessionId', 'elementKey'], { unique: false });
+}
+
 function runUpgrade(db, upgradeTx, oldVersion) {
   if (oldVersion < 1) buildReportStores(db);
   if (oldVersion < 2) buildComparisonStores(db);
   if (oldVersion < 4) buildAuxStores(db);
   if (oldVersion < 5) upgradeToV5(upgradeTx);
+  if (oldVersion < 6) upgradeToV6(db);
 }
 
 class IDBRepository {
-  #db                 = null;
-  #opening            = null;
-  #writeQueue         = Promise.resolve();
+  #db                  = null;
+  #opening             = null;
+  #writeQueue          = Promise.resolve();
   #consecutiveFailures = 0;
-  #circuitOpen        = false;
+  #circuitOpen         = false;
 
   #handleWriteFailure(err) {
     this.#consecutiveFailures += 1;
@@ -225,7 +237,7 @@ class IDBRepository {
 
   #writeReportWithEviction(db, meta, elements, reportId, maxReports) {
     return new Promise((resolve, reject) => {
-      const tx          = db.transaction([STORE_REPORTS, STORE_ELEMENTS], 'readwrite');
+      const tx           = db.transaction([STORE_REPORTS, STORE_ELEMENTS], 'readwrite');
       const reportStore  = tx.objectStore(STORE_REPORTS);
       const elementStore = tx.objectStore(STORE_ELEMENTS);
 
@@ -234,8 +246,8 @@ class IDBRepository {
       const countReq = reportStore.count();
       countReq.onerror  = () => tx.abort();
       countReq.onsuccess = () => {
-        const excess      = countReq.result - maxReports + 1;
-        const reportCtx   = { meta, elements, id: reportId };
+        const excess    = countReq.result - maxReports + 1;
+        const reportCtx = { meta, elements, id: reportId };
         if (excess <= 0) {
           commitReportWrite(reportStore, elementStore, reportCtx);
           return;
@@ -292,7 +304,7 @@ class IDBRepository {
 
   async #deleteReportInner(id) {
     try {
-      const db             = await this.#getDB();
+      const db              = await this.#getDB();
       const compIdsToDelete = await this.#getComparisonIdsByReportId(db, id);
 
       const stores = [STORE_REPORTS, STORE_ELEMENTS, STORE_COMPARISONS, STORE_COMP_DIFFS, STORE_COMP_SUMMARY];
@@ -337,8 +349,12 @@ class IDBRepository {
   async #deleteAllInner() {
     try {
       const db     = await this.#getDB();
-      const stores = [STORE_REPORTS, STORE_ELEMENTS, STORE_COMPARISONS, STORE_COMP_DIFFS, STORE_COMP_SUMMARY, STORE_VISUAL_BLOBS];
-      const tx     = db.transaction(stores, 'readwrite');
+      const stores = [
+        STORE_REPORTS, STORE_ELEMENTS,
+        STORE_COMPARISONS, STORE_COMP_DIFFS, STORE_COMP_SUMMARY,
+        STORE_VISUAL_BLOBS, STORE_VISUAL_KEYFRAMES, STORE_VISUAL_ELEMENT_RECTS
+      ];
+      const tx = db.transaction(stores, 'readwrite');
       for (const storeName of stores) {
         tx.objectStore(storeName).clear();
       }
@@ -532,8 +548,8 @@ class IDBRepository {
 
   async #deleteVisualBlobsInner(comparisonId) {
     try {
-      const db      = await this.#getDB();
-      const readTx  = db.transaction(STORE_VISUAL_BLOBS, 'readonly');
+      const db       = await this.#getDB();
+      const readTx   = db.transaction(STORE_VISUAL_BLOBS, 'readonly');
       const blobKeys = await requestToPromise(
         readTx.objectStore(STORE_VISUAL_BLOBS).index('by_comparisonId').getAllKeys(IDBKeyRange.only(comparisonId))
       );
@@ -553,6 +569,140 @@ class IDBRepository {
     }
   }
 
+  saveVisualKeyframe(keyframe) {
+    return this.#enqueue(() => this.#saveVisualKeyframeInner(keyframe));
+  }
+
+  async #saveVisualKeyframeInner(keyframe) {
+    try {
+      const db = await this.#getDB();
+      const tx = db.transaction(STORE_VISUAL_KEYFRAMES, 'readwrite');
+      tx.objectStore(STORE_VISUAL_KEYFRAMES).put(keyframe);
+      await transactionToPromise(tx);
+      return { success: true };
+    } catch (writeError) {
+      trackError(ERROR_CODES.STORAGE_WRITE_FAILED, writeError.message);
+      return { success: false, error: writeError.message };
+    }
+  }
+
+  async loadKeyframesBySession(sessionId) {
+    try {
+      const db      = await this.#getDB();
+      const tx      = db.transaction(STORE_VISUAL_KEYFRAMES, 'readonly');
+      const records = await requestToPromise(
+        tx.objectStore(STORE_VISUAL_KEYFRAMES).index('by_session').getAll(IDBKeyRange.only(sessionId))
+      );
+      return new Map((records ?? []).map(r => [r.id, r]));
+    } catch (readError) {
+      trackError(ERROR_CODES.STORAGE_READ_FAILED, readError.message);
+      return new Map();
+    }
+  }
+
+  saveVisualElementRect(rectRecord) {
+    return this.#enqueue(() => this.#saveVisualElementRectInner(rectRecord));
+  }
+
+  async #saveVisualElementRectInner(rectRecord) {
+    try {
+      const db = await this.#getDB();
+      const tx = db.transaction(STORE_VISUAL_ELEMENT_RECTS, 'readwrite');
+      tx.objectStore(STORE_VISUAL_ELEMENT_RECTS).put(rectRecord);
+      await transactionToPromise(tx);
+      return { success: true };
+    } catch (writeError) {
+      trackError(ERROR_CODES.STORAGE_WRITE_FAILED, writeError.message);
+      return { success: false, error: writeError.message };
+    }
+  }
+
+  saveVisualElementRects(rectRecords) {
+    return this.#enqueue(() => this.#saveVisualElementRectsInner(rectRecords));
+  }
+
+  async #saveVisualElementRectsInner(rectRecords) {
+    if (!rectRecords?.length) return { success: true };
+    try {
+      const db    = await this.#getDB();
+      const tx    = db.transaction(STORE_VISUAL_ELEMENT_RECTS, 'readwrite');
+      const store = tx.objectStore(STORE_VISUAL_ELEMENT_RECTS);
+      for (const record of rectRecords) {
+        store.put(record);
+      }
+      await transactionToPromise(tx);
+      return { success: true };
+    } catch (writeError) {
+      trackError(ERROR_CODES.STORAGE_WRITE_FAILED, writeError.message);
+      return { success: false, error: writeError.message };
+    }
+  }
+
+  async loadElementRectsBySession(sessionId) {
+    try {
+      const db      = await this.#getDB();
+      const tx      = db.transaction(STORE_VISUAL_ELEMENT_RECTS, 'readonly');
+      const records = await requestToPromise(
+        tx.objectStore(STORE_VISUAL_ELEMENT_RECTS).index('by_session').getAll(IDBKeyRange.only(sessionId))
+      );
+
+      const out = new Map();
+      for (const record of (records ?? [])) {
+        if (!out.has(record.elementKey)) {
+          out.set(record.elementKey, {});
+        }
+        out.get(record.elementKey)[record.tabRole] = record;
+      }
+      return out;
+    } catch (readError) {
+      trackError(ERROR_CODES.STORAGE_READ_FAILED, readError.message);
+      return new Map();
+    }
+  }
+
+  deleteVisualDataBySession(sessionId) {
+    return this.#enqueue(() => this.#deleteVisualDataBySessionInner(sessionId));
+  }
+
+  async #deleteVisualDataBySessionInner(sessionId) {
+    try {
+      const db = await this.#getDB();
+
+      const [blobKeys, kfKeys, rectKeys] = await Promise.all([
+        this.#getAllKeysByIndex(db, STORE_VISUAL_BLOBS,         'by_comparisonId', sessionId),
+        this.#getAllKeysByIndex(db, STORE_VISUAL_KEYFRAMES,     'by_session',      sessionId),
+        this.#getAllKeysByIndex(db, STORE_VISUAL_ELEMENT_RECTS, 'by_session',      sessionId)
+      ]);
+
+      const hasData = blobKeys.length || kfKeys.length || rectKeys.length;
+      if (!hasData) return { success: true };
+
+      const stores  = [STORE_VISUAL_BLOBS, STORE_VISUAL_KEYFRAMES, STORE_VISUAL_ELEMENT_RECTS];
+      const writeTx = db.transaction(stores, 'readwrite');
+
+      for (const k of blobKeys) writeTx.objectStore(STORE_VISUAL_BLOBS).delete(k);
+      for (const k of kfKeys)   writeTx.objectStore(STORE_VISUAL_KEYFRAMES).delete(k);
+      for (const k of rectKeys) writeTx.objectStore(STORE_VISUAL_ELEMENT_RECTS).delete(k);
+
+      await transactionToPromise(writeTx);
+      return { success: true };
+    } catch (deleteError) {
+      trackError(ERROR_CODES.STORAGE_WRITE_FAILED, deleteError.message, { sessionId });
+      return { success: false, error: deleteError.message };
+    }
+  }
+
+  async #getAllKeysByIndex(db, storeName, indexName, value) {
+    try {
+      const tx = db.transaction(storeName, 'readonly');
+      return await requestToPromise(
+        tx.objectStore(storeName).index(indexName).getAllKeys(IDBKeyRange.only(value))
+      ) ?? [];
+    } catch {
+      return [];
+    }
+  }
+
   async checkQuota() {
     try {
       if (!navigator.storage?.estimate) {
@@ -567,4 +717,5 @@ class IDBRepository {
   }
 }
 
-export { IDBRepository, buildPairKey };
+export { buildPairKey, IDBRepository };
+

@@ -24,6 +24,8 @@ export const MessageTypes = Object.freeze({
   WRITE_COMPLETE:         'writeComplete',
   WRITE_ERROR:            'writeError',
 
+  GET_VISUAL_BLOB:        'getVisualBlob',
+
   VISUAL_PREPARE:         'VISUAL_PREPARE',
   VISUAL_REVERT:          'VISUAL_REVERT'
 });

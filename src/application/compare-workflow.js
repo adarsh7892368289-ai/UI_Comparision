@@ -5,6 +5,7 @@ import { Comparator } from '../core/comparison/comparator.js';
 import { buildPairKey } from '../infrastructure/idb-repository.js';
 import { exportToHTML } from '../core/export/comparison/html-exporter.js';
 import { assessUrlCompatibility } from './url-compatibility.js';
+import { captureVisualDiffs } from './visual-workflow.js';
 
 const MINIMUM_SCHEMA_VERSION = '3.0';
 
@@ -133,7 +134,8 @@ async function compareReports(options = {}) {
     });
 
     const visualResult = await runVisualPhase(result, tabContext, includeScreenshots);
-    result.visualDiffs = visualResult.diffs;
+    result.visualDiffs   = visualResult.diffs;
+    result.visualSessionId = visualResult.sessionId ?? null;
     if (includeScreenshots) {
       result.visualDiffStatus = { status: visualResult.status, reason: visualResult.reason };
     }
@@ -160,8 +162,7 @@ async function runVisualPhase(result, tabContext, includeScreenshots) {
     return skip('Visual diff screenshots were disabled for this comparison.');
   }
 
-  logger.info('Visual phase skipped: visual system pending implementation');
-  return skip('Visual capture system is not yet available.');
+  return captureVisualDiffs(result, tabContext);
 }
 
 function slimAmbiguousEntry(entry) {
@@ -204,6 +205,7 @@ async function persistComparison(result, baselineId, compareId, mode) {
     ambiguous:         ambiguousEntries.map(slimAmbiguousEntry),
     visualDiffs:       serializedDiffs,
     visualDiffStatus:  result.visualDiffStatus  ?? null,
+    visualSessionId:   result.visualSessionId   ?? null,
     preFlightWarning:  result.preFlightWarning   ?? null
   };
 
