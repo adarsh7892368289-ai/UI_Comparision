@@ -112,8 +112,9 @@ function _addSummarySheet(wb, result, XLSX) {
     ['', ''],
     ['Total Elements',        s.totalElements],
     ['Unchanged Elements',    s.unchangedElements],
-    ['Modified Elements',     s.modifiedElements],
-    ['Total Differences',     s.totalDifferences],
+    ['Modified Elements (apex only)',  s.rootCauseCount ?? s.modifiedElements],
+    ['Modified Elements (pre-filter)', s.modifiedElements],
+    ['CSS Property Changes (propertyDiffCount)', s.propertyDiffCount ?? s.totalDifferences],
     ['', ''],
     ['Critical',              s.severityCounts.critical],
     ['High',                  s.severityCounts.high],
@@ -177,7 +178,7 @@ function _addDifferencesSheet(wb, result, XLSX) {
 function _addMatchedElementsSheet(wb, result, XLSX) {
   const headers = [
     'Element ID', 'Tag Name', 'Element ID Attr', 'Class Name',
-    'Match Strategy', 'Match Confidence', 'Total Differences', 'Overall Severity'
+    'Match Strategy', 'Match Confidence', 'CSS Property Changes', 'Overall Severity'
   ];
 
   const rows = result.comparison.results.map(r => [
@@ -209,14 +210,14 @@ function _addUnmatchedSheet(wb, result, XLSX) {
   const rows    = [];
 
   for (const el of result.unmatchedElements.baseline) {
-    rows.push(['REMOVED', el.id, el.tagName, el.elementId || '', el.className || '']);
+    rows.push(['Only in Baseline (removed)', el.id, el.tagName, el.elementId || '', el.className || '']);
   }
   for (const el of result.unmatchedElements.compare) {
-    rows.push(['ADDED', el.id, el.tagName, el.elementId || '', el.className || '']);
+    rows.push(['Only in Compare (added)', el.id, el.tagName, el.elementId || '', el.className || '']);
   }
 
   const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-  ws['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 20 }, { wch: 28 }];
+  ws['!cols'] = [{ wch: 26 }, { wch: 12 }, { wch: 10 }, { wch: 20 }, { wch: 28 }];
 
   _applyHeaderRow(ws, XLSX);
   _applyFreezePane(ws);
@@ -227,7 +228,7 @@ function _addUnmatchedSheet(wb, result, XLSX) {
       const statusAddr = XLSX.utils.encode_cell({ r, c: 0 });
       const cell = ws[statusAddr];
       if (!cell) {continue;}
-      const color = cell.v === 'REMOVED' ? 'FFE0E0' : 'E0FFE0';
+      const color = cell.v.includes('Baseline') ? 'FFE0E0' : 'E0FFE0';
       cell.s = { fill: { patternType: 'solid', fgColor: { rgb: color } }, font: { bold: true } };
     }
   }
@@ -259,7 +260,7 @@ function _addSeveritySheet(wb, result, XLSX) {
     const items = groups[severity];
 
     const sectionRow = dataRows.length;
-    dataRows.push([`${severity.toUpperCase()} — ${items.length} difference${items.length !== 1 ? 's' : ''}`, '', '', '', '']);
+    dataRows.push([`${severity.toUpperCase()} — ${items.length} property change${items.length !== 1 ? 's' : ''}`, '', '', '', '']);
     styleQueue.push({ row: sectionRow, type: 'section', severity });
 
     if (items.length > 0) {

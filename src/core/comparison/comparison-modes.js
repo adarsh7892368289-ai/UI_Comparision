@@ -20,14 +20,14 @@ const CURRENT_COLOR_DERIVED = new Set([
 ]);
 
 const STATIC_FILTER = {
-  ignoredProperties:        new Set(get('comparison.modes.static.ignoredProperties')),
+  compareProperties:        null,
   compareTextContent:       get('comparison.modes.static.compareTextContent'),
   structuralAttributesOnly: false,
   tolerances:               get('comparison.modes.static.tolerances')
 };
 
 const DYNAMIC_FILTER = {
-  ignoredProperties:        new Set(get('comparison.modes.dynamic.ignoredProperties')),
+  compareProperties:        new Set(get('comparison.modes.dynamic.compareProperties', [])),
   compareTextContent:       get('comparison.modes.dynamic.compareTextContent'),
   structuralAttributesOnly: true,
   structuralAttributes:     new Set(get('comparison.modes.dynamic.structuralOnlyAttributes', [
@@ -49,7 +49,7 @@ class BaseComparisonMode {
     const { baselineElement, compareElement } = match;
 
     const styleResult = this.#differ.compareElements(baselineElement, compareElement, {
-      ignoredProperties: filter.ignoredProperties,
+      compareProperties: filter.compareProperties,
       tolerances:        filter.tolerances
     });
 
@@ -124,14 +124,15 @@ class BaseComparisonMode {
     const totalDifferences  = diffResults.reduce((sum, r) => sum + r.totalDifferences, 0);
     const ambiguousCount    = ambiguous.length;
 
+    // Count elements by their worst (overallSeverity) — NOT by summing per-property
+    // severity counts across all properties. Summing per-property counts produces
+    // inflated totals (one element with 6 critical props counted as 6, not 1).
+    // popup.js, csv-exporter, excel-exporter all consume this field; it must
+    // represent element counts so '14 Critical' means 14 elements, not 14 properties.
     const severityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
     for (const resultItem of diffResults) {
-      if (resultItem.severityCounts) {
-        severityCounts.critical += resultItem.severityCounts.critical;
-        severityCounts.high     += resultItem.severityCounts.high;
-        severityCounts.medium   += resultItem.severityCounts.medium;
-        severityCounts.low      += resultItem.severityCounts.low;
-      }
+      const sev = resultItem.overallSeverity;
+      if (sev && sev in severityCounts) severityCounts[sev]++;
     }
 
     logger.info(`${modeName} comparison summary`, {
@@ -256,4 +257,22 @@ class DynamicComparisonMode extends BaseComparisonMode {
   }
 }
 
-export { StaticComparisonMode, DynamicComparisonMode, STATIC_FILTER, DYNAMIC_FILTER };
+export { StaticComparisonMode, DynamicComparisonMode, STATIC_FILTER, DYNAMIC_FILTER, computeSeverityBreakdown };
+
+function computeSeverityBreakdown(diffResults) {
+  const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const r of diffResults) {
+    if (!r.differences?.length) continue;
+    const hpid = r.baselineElement?.hpid ?? r.hpid ?? null;
+    if (!hpid) continue;
+    const parentHpid = hpid.split('.').slice(0, -1).join('.');
+    const isChild = diffResults.some(p => {
+      const pH = p.baselineElement?.hpid ?? p.hpid ?? null;
+      return pH === parentHpid && p.differences?.length;
+    });
+    if (isChild) continue;
+    const sev = r.overallSeverity;
+    if (sev && sev in counts) counts[sev]++;
+  }
+  return counts;
+}

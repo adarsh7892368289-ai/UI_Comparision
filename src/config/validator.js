@@ -58,10 +58,9 @@ const REQUIRED_PATHS = [
   'comparison.propertyCategories.spacing',
   'comparison.propertyCategories.position',
 
-  'comparison.modes.dynamic.ignoredProperties',
+  'comparison.modes.dynamic.compareProperties',
   'comparison.modes.dynamic.compareTextContent',
   'comparison.modes.dynamic.tolerances',
-  'comparison.modes.static.ignoredProperties',
   'comparison.modes.static.compareTextContent',
   'comparison.modes.static.tolerances',
 
@@ -136,7 +135,7 @@ const TYPE_EXPECTATIONS = [
   { path: 'comparison.severity.critical',   type: 'array' },
   { path: 'comparison.severity.high',       type: 'array' },
   { path: 'comparison.severity.medium',     type: 'array' },
-  { path: 'comparison.modes.dynamic.ignoredProperties', type: 'array' },
+  { path: 'comparison.modes.dynamic.compareProperties', type: 'array' },
   { path: 'infrastructure.timeout.default', type: 'number' },
   { path: 'logging.slowOperationThreshold', type: 'number' },
   { path: 'attributes.priority',            type: 'array' },

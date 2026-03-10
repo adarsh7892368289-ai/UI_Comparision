@@ -2,6 +2,7 @@ import logger from '../infrastructure/logger.js';
 import storage from '../infrastructure/storage.js';
 import { getReportById } from './report-manager.js';
 import { Comparator } from '../core/comparison/comparator.js';
+import { computeSeverityBreakdown } from '../core/comparison/comparison-modes.js';
 import { buildPairKey } from '../infrastructure/idb-repository.js';
 import { exportToHTML } from '../core/export/comparison/html-exporter.js';
 import { assessUrlCompatibility } from './url-compatibility.js';
@@ -200,7 +201,10 @@ async function persistComparison(result, baselineId, compareId, mode) {
     baseline:          result.baseline,
     compare:           result.compare,
     matching:          result.matching,
-    summary:           result.comparison.summary,
+    summary: {
+      ...result.comparison.summary,
+      severityBreakdown: computeSeverityBreakdown(result.comparison.results)
+    },
     unmatchedElements: result.unmatchedElements,
     ambiguous:         ambiguousEntries.map(slimAmbiguousEntry),
     visualDiffs:       serializedDiffs,

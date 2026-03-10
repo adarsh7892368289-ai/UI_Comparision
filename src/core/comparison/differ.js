@@ -101,7 +101,7 @@ class PropertyDiffer {
   }
 
   compareElements(baselineElement, compareElement, options = {}) {
-    const ignoredProperties = options.ignoredProperties ?? new Set();
+    const compareProperties = options.compareProperties ?? null;
     const tolerances        = options.tolerances ?? get('comparison.modes.static.tolerances');
 
     const baseNorm    = this.#normalizer.normalize(
@@ -113,12 +113,12 @@ class PropertyDiffer {
       compareElement.contextSnapshot ?? null
     );
 
-    const allProperties = new Set([...Object.keys(baseNorm), ...Object.keys(compareNorm)]);
+    const allProperties = compareProperties !== null
+      ? compareProperties
+      : new Set([...Object.keys(baseNorm), ...Object.keys(compareNorm)]);
     const rawDifferences = [];
 
     for (const property of allProperties) {
-      if (ignoredProperties.has(property)) continue;
-
       const baseValue    = baseNorm[property];
       const compareValue = compareNorm[property];
       const diffType     = this.#getDiffType(baseValue, compareValue);

@@ -108,12 +108,14 @@ chrome.runtime.onConnect.addListener((port) => {
         : Object.keys(visualDiffs ?? {}).length > 0;
 
       send(MessageTypes.COMPARISON_COMPLETE, { result: slim });
+      try { await chrome.action.openPopup(); } catch {}
       logger.info('Comparison complete via port', { baselineId, compareId });
 
     } catch (error) {
       const errorMsg = error?.message || String(error) || 'Unknown error';
       logger.error('Comparison failed via port', { error: errorMsg });
       send(MessageTypes.COMPARISON_ERROR, { error: errorMsg });
+      try { await chrome.action.openPopup(); } catch {}
     }
   });
 });

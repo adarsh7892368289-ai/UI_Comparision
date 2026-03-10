@@ -88,10 +88,14 @@ function hasVisualMutations(records) {
 }
 
 function hasUnloadedImages() {
+  const vH = window.innerHeight;
+  const vW = window.innerWidth;
   for (const img of document.querySelectorAll('img')) {
-    if (!img.complete) {
-      return true;
-    }
+    if (img.complete) continue;
+    const r = img.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) continue;
+    if (r.bottom < 0 || r.top > vH || r.right < 0 || r.left > vW) continue;
+    return true;
   }
   return false;
 }

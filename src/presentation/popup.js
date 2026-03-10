@@ -331,8 +331,8 @@ async function handleComparison() {
         Progress.update('compare', 100, 'Complete');
         setTimeout(() => Progress.hide('compare'), 500);
         popupState.dispatch('COMPARISON_COMPLETE', { result, cachedAt: null });
-        const diffs = result?.comparison?.summary?.totalDifferences ?? 0;
-        Toast.success(`Done — ${diffs} difference${diffs !== 1 ? 's' : ''} found`);
+        const diffs = result?.comparison?.summary?.propertyDiffCount ?? result?.comparison?.summary?.totalDifferences ?? 0;
+        Toast.success(`Done — ${diffs} CSS change${diffs !== 1 ? 's' : ''} found`);
         return;
       }
 
@@ -500,6 +500,8 @@ function renderReportCard(report) {
         <span>${sanitize(report.totalElements)} el</span>
         <span class="meta-sep">·</span>
         <span>${relativeTime(report.timestamp)}</span>
+        <span class="meta-sep">·</span>
+        <span class="meta-shortid" title="${sanitize(report.id)}">#${sanitize(report.id.slice(-6))}</span>
       </div>
     </div>
     <div class="report-card-actions">
@@ -563,7 +565,7 @@ function populateReportSelectors(reports) {
     sel.appendChild(placeholder);
     reports.forEach(r => {
       const opt = new Option(
-        `${r.title || 'Untitled'} · ${r.totalElements} el · ${relativeTime(r.timestamp)}`,
+        `${r.title || 'Untitled'} · ${r.totalElements} el · ${relativeTime(r.timestamp)} · #${r.id.slice(-6)}`,
         r.id
       );
       if (r.id === current) {opt.selected = true;}
@@ -604,8 +606,11 @@ function displayComparisonResults(result, cachedAt = null) {
   if (!container || !result) {return;}
 
   const { matching, comparison, mode, duration } = result;
-  const { summary: { severityCounts, totalDifferences, modifiedElements, unchangedElements } } = comparison;
-  const { critical, high, medium, low } = severityCounts;
+  const { summary: { severityCounts, severityBreakdown, totalDifferences, propertyDiffCount, modifiedElements, unchangedElements } } = comparison;
+  const { critical, high, medium, low } = severityBreakdown ?? severityCounts;
+  // severityCounts now counts elements by overallSeverity (not per-property events).
+  // Use their sum as the severity bar denominator — accurate element-level percentages.
+  const sevTotal = critical + high + medium + low || 1;
 
   const added   = result.unmatchedElements?.compare  ?? [];
   const removed = result.unmatchedElements?.baseline ?? [];
@@ -615,7 +620,7 @@ function displayComparisonResults(result, cachedAt = null) {
       <span class="badge badge-${type}">${label}</span>
       <div class="sev-bar-wrap">
         <div class="sev-bar-fill sev-${type}"
-             style="width:${totalDifferences > 0 ? ((count / totalDifferences) * 100).toFixed(1) : 0}%">
+             style="width:${sevTotal > 0 ? ((count / sevTotal) * 100).toFixed(1) : 0}%">
         </div>
       </div>
       <span class="sev-count">${count}</span>
@@ -684,9 +689,9 @@ function displayComparisonResults(result, cachedAt = null) {
         </div>
       </div>
 
-      ${totalDifferences > 0 ? `
+      ${sevTotal > 0 ? `
         <div class="severity-section">
-          <div class="severity-section-title">Severity — ${totalDifferences} difference${totalDifferences !== 1 ? 's' : ''} in ${modifiedElements} element${modifiedElements !== 1 ? 's' : ''}</div>
+          <div class="severity-section-title">Severity — ${propertyDiffCount ?? totalDifferences} CSS property change${(propertyDiffCount ?? totalDifferences) !== 1 ? 's' : ''} across ${critical+high+medium+low} modified element${(critical+high+medium+low) !== 1 ? 's' : ''}</div>
           ${severityRow('Critical', critical, 'critical')}
           ${severityRow('High', high, 'high')}
           ${severityRow('Medium', medium, 'medium')}

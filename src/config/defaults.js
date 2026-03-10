@@ -36,7 +36,7 @@ const rawConfig = {
     maxElements:       10_000,
     skipInvisible:     true,
     stabilityWindowMs: 500,
-    hardTimeoutMs:     1000,
+    hardTimeoutMs:     3000,
 
     section: {
       headerPositionRatio:  0.20,
@@ -185,23 +185,22 @@ const rawConfig = {
 
     modes: {
       dynamic: {
-        ignoredProperties: [
-          'background-image', 'background-position', 'background-size',
-          'background-repeat', 'background-attachment',
-          'content', 'cursor', 'pointer-events', 'user-select',
-          'outline', 'caret-color',
-          'transform', 'transform-origin', 'transform-style',
-          'transition', 'transition-property', 'transition-duration',
-          'transition-timing-function', 'transition-delay',
-          'animation', 'animation-name', 'animation-duration',
-          'animation-timing-function', 'animation-delay',
-          'animation-iteration-count', 'animation-direction',
-          'animation-fill-mode', 'animation-play-state',
-          'will-change', 'contain',
-          'scroll-behavior', 'touch-action', 'overscroll-behavior',
-          'overflow', 'overflow-x', 'overflow-y',
-          'filter', 'backdrop-filter',
-          'object-fit', 'object-position'
+        compareProperties: [
+          'font-family', 'font-size', 'font-weight', 'font-style',
+          'line-height', 'letter-spacing', 'text-align', 'text-decoration',
+          'text-transform',
+          'color', 'background-color', 'opacity', 'visibility',
+          'display', 'position', 'float',
+          'width', 'height', 'max-width', 'max-height', 'min-width', 'min-height',
+          'top', 'right', 'bottom', 'left', 'z-index',
+          'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+          'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+          'gap',
+          'flex-direction', 'flex-wrap', 'flex-grow', 'flex-shrink', 'flex-basis',
+          'justify-content', 'align-items', 'align-self',
+          'grid-template-columns', 'grid-template-rows',
+          'border-width', 'border-style', 'border-color', 'border-radius',
+          'box-shadow'
         ],
         compareTextContent:       false,
         structuralOnlyAttributes: [
@@ -211,7 +210,7 @@ const rawConfig = {
         tolerances: { color: 8, size: 5, opacity: 0.05 }
       },
       static: {
-        ignoredProperties:  [],
+        compareProperties:  null,
         compareTextContent: true,
         tolerances:         { color: 5, size: 3, opacity: 0.01 }
       }

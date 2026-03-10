@@ -25,13 +25,14 @@ function buildComparisonCsv(result) {
   rows.push(['Unmatched Compare',  result.matching.unmatchedCompare]);
   rows.push([]);
 
-  rows.push(['SEVERITY BREAKDOWN']);
+  rows.push(['SEVERITY BREAKDOWN — counts elements by worst severity (1 element = 1 count)']);
   rows.push(['Critical',           s.severityCounts.critical]);
   rows.push(['High',               s.severityCounts.high]);
   rows.push(['Medium',             s.severityCounts.medium]);
   rows.push(['Low',                s.severityCounts.low]);
-  rows.push(['Total Differences',  s.totalDifferences]);
-  rows.push(['Modified Elements',  s.modifiedElements]);
+  rows.push(['CSS Property Changes (propertyDiffCount)', s.propertyDiffCount ?? s.totalDifferences]);
+  rows.push(['Modified Elements (apex only)',   s.rootCauseCount ?? s.modifiedElements]);
+  rows.push(['Modified Elements (pre-filter)',  s.modifiedElements]);
   rows.push(['Unchanged Elements', s.unchangedElements]);
   rows.push([]);
 
@@ -76,7 +77,7 @@ function buildComparisonCsv(result) {
 
   for (const el of result.unmatchedElements.baseline) {
     rows.push([
-      'REMOVED', el.hpid ?? '', el.absoluteHpid ?? '', el.tagName ?? '',
+      'Only in Baseline (removed)', el.hpid ?? '', el.absoluteHpid ?? '', el.tagName ?? '',
       el.elementId ?? '', el.className ?? '', el.textContent ?? '',
       el.tier ?? '', el.depth ?? '', el.cssSelector ?? '', el.xpath ?? ''
     ]);
@@ -84,7 +85,7 @@ function buildComparisonCsv(result) {
 
   for (const el of result.unmatchedElements.compare) {
     rows.push([
-      'ADDED', el.hpid ?? '', el.absoluteHpid ?? '', el.tagName ?? '',
+      'Only in Compare (added)', el.hpid ?? '', el.absoluteHpid ?? '', el.tagName ?? '',
       el.elementId ?? '', el.className ?? '', el.textContent ?? '',
       el.tier ?? '', el.depth ?? '', el.cssSelector ?? '', el.xpath ?? ''
     ]);

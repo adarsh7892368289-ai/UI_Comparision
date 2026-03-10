@@ -2,16 +2,19 @@ import logger from '../infrastructure/logger.js';
 import storage from '../infrastructure/storage.js';
 import { groupIntoKeyframes } from '../core/comparison/keyframe-grouper.js';
 
-const NORMALIZED_DPR        = 2;
-const CAPTURE_QUALITY       = 85;
-const FREEZE_STYLE_ID       = 'vdiff-freeze-styles';
-const SUPPRESS_ATTR         = 'data-vdiff-suppress';
-const CDP_PROTOCOL          = '1.3';
-const WEBP_MIME             = 'image/webp';
-const CDP_ATTACH_TIMEOUT_MS = 8_000;
+const CAPTURE_SCALE_FACTOR   = 2;
+const CAPTURE_QUALITY        = 85;
+const FREEZE_STYLE_ID        = 'vdiff-freeze-styles';
+const SUPPRESS_ATTR          = 'data-vdiff-suppress';
+const CDP_PROTOCOL           = '1.3';
+const WEBP_MIME              = 'image/webp';
+const CDP_ATTACH_TIMEOUT_MS  = 8_000;
 const CDP_CAPTURE_TIMEOUT_MS = 15_000;
 const CDP_COMMAND_TIMEOUT_MS = 5_000;
-const SCROLL_SETTLE_TIMEOUT_MS = 500;
+const SCROLL_SETTLE_TIMEOUT_MS   = 800;
+const SCROLL_VERIFY_TOLERANCE_PX = 5;
+const SCROLL_VERIFY_RETRY_MAX    = 2;
+const SCROLL_VERIFY_RETRY_MS     = 400;
 
 function ms(start) {
   return `${Date.now() - start}ms`;
@@ -27,9 +30,30 @@ function withTimeout(promise, timeoutMs, label) {
 }
 
 function inPageGetViewport() {
-  const { innerWidth: width, innerHeight: height } = window;
+  const width  = Math.floor(window.innerWidth);
+  const height = Math.floor(window.innerHeight);
   const documentHeight = document.documentElement.scrollHeight;
   return { width, height, documentHeight };
+}
+
+function inPageGetDPR() {
+  return window.devicePixelRatio;
+}
+
+function inPageLockScrollbar() {
+  const before = window.innerWidth;
+  document.body.style.setProperty('overflow', 'hidden', 'important');
+  const after      = window.innerWidth;
+  const scrollbarW = after - before;
+  if (scrollbarW > 0) {
+    document.body.style.setProperty('padding-right', scrollbarW + 'px', 'important');
+  }
+  return { scrollbarWidth: scrollbarW };
+}
+
+function inPageUnlockScrollbar() {
+  document.body.style.removeProperty('overflow');
+  document.body.style.removeProperty('padding-right');
 }
 
 function inPageFreezeAnimations(styleId) {
@@ -45,8 +69,6 @@ function inPageRestoreAnimations(styleId) {
 }
 
 function inPageSuppressFixed(markAttr, diffSelectors) {
-  document.documentElement.style.setProperty('overflow-y', 'scroll', 'important');
-
   const protectedEls       = new Set();
   const protectedAncestors = new Set();
 
@@ -76,7 +98,6 @@ function inPageSuppressFixed(markAttr, diffSelectors) {
 }
 
 function inPageRestoreFixed(markAttr) {
-  document.documentElement.style.removeProperty('overflow-y');
   for (const domEl of document.querySelectorAll(`[${markAttr}]`)) {
     domEl.style.removeProperty('display');
     domEl.removeAttribute(markAttr);
@@ -87,10 +108,10 @@ function inPageScrollAndSettle(targetY, fallbackMs) {
   window.scrollTo(0, targetY);
   return new Promise(resolve => {
     const fallback = setTimeout(resolve, fallbackMs);
-    requestAnimationFrame(() => requestAnimationFrame(() => {
+    requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => {
       clearTimeout(fallback);
       resolve();
-    }));
+    })));
   });
 }
 
@@ -111,6 +132,37 @@ function inPageGetRects(selectorPairs) {
       height:    h,
       width:     w,
       left:      Math.round(r.left)
+    };
+  });
+}
+
+function inPageGetPseudoStyles(selectorPairs) {
+  const PSEUDO_PROPS = [
+    'content', 'display', 'width', 'height', 'background-color', 'color',
+    'font-size', 'font-family', 'position', 'top', 'left', 'right', 'bottom',
+    'transform', 'opacity', 'border', 'padding', 'margin', 'box-shadow',
+    'border-radius', 'z-index', 'visibility'
+  ];
+
+  function collectPseudo(el, pseudo) {
+    const cs      = window.getComputedStyle(el, pseudo);
+    const content = cs.getPropertyValue('content');
+    if (!content || content === 'none' || content === 'normal' || content === '""' || content === "''") return null;
+    const styles = Object.create(null);
+    for (const p of PSEUDO_PROPS) {
+      const val = cs.getPropertyValue(p);
+      if (val) styles[p] = val;
+    }
+    return styles;
+  }
+
+  return selectorPairs.map(({ id, selector }) => {
+    const el = selector ? document.querySelector(selector) : null;
+    if (!el) return { id, before: null, after: null };
+    return {
+      id,
+      before: collectPseudo(el, '::before'),
+      after:  collectPseudo(el, '::after')
     };
   });
 }
@@ -141,7 +193,7 @@ function buildMetricsOverride(viewport) {
   return {
     width:             Math.round(viewport.width),
     height:            Math.round(viewport.height),
-    deviceScaleFactor: NORMALIZED_DPR,
+    deviceScaleFactor: CAPTURE_SCALE_FACTOR,
     mobile:            false
   };
 }
@@ -155,7 +207,7 @@ function prefixKeyframes(keyframes, sessionId, role) {
   }));
 }
 
-function buildViewportRects(keyframes, validRects) {
+function buildViewportRects(keyframes, validRects, actualDPR, documentHeight) {
   const rectById = new Map(validRects.map(r => [r.id, r]));
   const manifest = new Map();
 
@@ -164,7 +216,12 @@ function buildViewportRects(keyframes, validRects) {
       const el = rectById.get(elId);
       if (!el) continue;
       manifest.set(elId, {
-        keyframeId:   kf.id,
+        keyframeId:          kf.id,
+        actualDPR,
+        dpr:                 CAPTURE_SCALE_FACTOR,
+        kfScrollY:           kf.scrollY,
+        documentY:           el.documentY,
+        totalDocumentHeight: documentHeight,
         viewportRect: {
           x:      el.left,
           y:      el.documentY - kf.scrollY,
@@ -178,16 +235,32 @@ function buildViewportRects(keyframes, validRects) {
   return manifest;
 }
 
+function attachPseudoDataToManifest(manifest, pseudoResults) {
+  if (!pseudoResults?.length) return;
+  for (const { id, before, after } of pseudoResults) {
+    const entry = manifest.get(id);
+    if (!entry) continue;
+    if (before) entry.pseudoBefore = { ...before, parentHpid: id, pseudoType: 'before' };
+    if (after)  entry.pseudoAfter  = { ...after,  parentHpid: id, pseudoType: 'after'  };
+  }
+}
+
 function buildElementRectRecords(sessionId, role, manifest) {
   const records = [];
-  for (const [elementKey, { keyframeId, viewportRect }] of manifest.entries()) {
+  for (const [elementKey, entry] of manifest.entries()) {
+    const { keyframeId, viewportRect, actualDPR, documentY, totalDocumentHeight, pseudoBefore, pseudoAfter } = entry;
     records.push({
-      id:         `${sessionId}_${role}_rect_${elementKey}`,
+      id:                  `${sessionId}_${role}_rect_${elementKey}`,
       sessionId,
       elementKey,
-      tabRole:    role,
+      tabRole:             role,
       keyframeId,
-      rect:       viewportRect
+      rect:                viewportRect,
+      actualDPR,
+      documentY,
+      totalDocumentHeight,
+      pseudoBefore:        pseudoBefore ?? null,
+      pseudoAfter:         pseudoAfter  ?? null
     });
   }
   return records;
@@ -227,7 +300,7 @@ function buildSelectorPairs(elements, role) {
   return elements.map(el => extractSelectorPair(el, role)).filter(Boolean);
 }
 
-async function captureKeyframe(tabId, keyframe, sessionId, index, total, roleStart) {
+async function captureKeyframe(tabId, keyframe, sessionId, index, total, roleStart, actualDPR, documentHeight) {
   const { id, scrollY, viewportWidth, viewportHeight, tabRole } = keyframe;
   const kfTag = `[kf ${index + 1}/${total} scrollY=${scrollY}]`;
 
@@ -235,6 +308,13 @@ async function captureKeyframe(tabId, keyframe, sessionId, index, total, roleSta
   logger.info(`VDIFF ${kfTag} scroll START`, { tabId, role: tabRole });
   await execInPage(tabId, inPageScrollAndSettle, [scrollY, SCROLL_SETTLE_TIMEOUT_MS]);
   logger.info(`VDIFF ${kfTag} scroll+paint DONE`, { elapsed: ms(t0) });
+
+  for (let attempt = 0; attempt < SCROLL_VERIFY_RETRY_MAX; attempt++) {
+    const actualY = await execInPage(tabId, () => window.scrollY);
+    if (Math.abs(actualY - scrollY) <= SCROLL_VERIFY_TOLERANCE_PX) break;
+    logger.warn(`VDIFF ${kfTag} scroll mismatch`, { expected: scrollY, actual: actualY, attempt });
+    await execInPage(tabId, inPageScrollAndSettle, [scrollY, SCROLL_VERIFY_RETRY_MS]);
+  }
 
   const t1 = Date.now();
   await sendCDP(tabId, 'Page.bringToFront');
@@ -261,21 +341,28 @@ async function captureKeyframe(tabId, keyframe, sessionId, index, total, roleSta
 
   const t4 = Date.now();
   await storage.saveVisualKeyframe({
-    id, sessionId, tabRole, scrollY, viewportWidth, viewportHeight,
-    devicePixelRatio: NORMALIZED_DPR,
-    capturedAt:       Date.now()
+    id,
+    sessionId,
+    tabRole,
+    scrollY,
+    viewportWidth,
+    viewportHeight,
+    documentHeight,
+    captureScaleFactor: CAPTURE_SCALE_FACTOR,
+    devicePixelRatio:   actualDPR,
+    capturedAt:         Date.now()
   });
   logger.info(`VDIFF ${kfTag} IDB saveVisualKeyframe DONE`, { elapsed: ms(t4) });
   logger.info(`VDIFF ${kfTag} COMPLETE`, { totalElapsed: ms(roleStart) });
 }
 
-async function captureAllKeyframes(tabId, keyframes, sessionId, role) {
+async function captureAllKeyframes(tabId, keyframes, sessionId, role, actualDPR, documentHeight) {
   const total     = keyframes.length;
   const roleStart = Date.now();
   logger.info(`VDIFF [${role}] captureAllKeyframes START`, { tabId, keyframeCount: total });
 
   for (let i = 0; i < total; i++) {
-    await captureKeyframe(tabId, keyframes[i], sessionId, i, total, roleStart);
+    await captureKeyframe(tabId, keyframes[i], sessionId, i, total, roleStart, actualDPR, documentHeight);
   }
 
   logger.info(`VDIFF [${role}] captureAllKeyframes DONE`, {
@@ -284,6 +371,7 @@ async function captureAllKeyframes(tabId, keyframes, sessionId, role) {
 }
 
 async function safeRestorePage(tabId) {
+  await execInPage(tabId, inPageUnlockScrollbar).catch(() => undefined);
   await execInPage(tabId, inPageRestoreFixed, [SUPPRESS_ATTR]).catch(() => undefined);
   await execInPage(tabId, inPageRestoreAnimations, [FREEZE_STYLE_ID]).catch(() => undefined);
   await execInPage(tabId, inPageScrollAndSettle, [0, SCROLL_SETTLE_TIMEOUT_MS]).catch(() => undefined);
@@ -318,12 +406,20 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
   const t0 = Date.now();
   logger.info(`VDIFF [${role}] executeTabCapture START`, { tabId, selectorCount: selectorPairs.length });
 
-  const t1 = Date.now();
+  const t1       = Date.now();
   const viewport = await execInPage(tabId, inPageGetViewport);
   logger.info(`VDIFF [${role}] inPageGetViewport DONE`, { elapsed: ms(t1), viewport });
   if (!viewport) throw new Error(`Failed to read viewport from tab ${tabId}`);
 
-  const diffSelectors = selectorPairs.map(p => p.selector).filter(Boolean);
+  const t1b       = Date.now();
+  const actualDPR = (await execInPage(tabId, inPageGetDPR)) ?? 1;
+  logger.info(`VDIFF [${role}] inPageGetDPR DONE`, { elapsed: ms(t1b), actualDPR });
+
+  const t1c        = Date.now();
+  const lockResult = await execInPage(tabId, inPageLockScrollbar);
+  logger.info(`VDIFF [${role}] inPageLockScrollbar DONE`, {
+    elapsed: ms(t1c), scrollbarWidth: lockResult?.scrollbarWidth ?? 0
+  });
 
   const t2 = Date.now();
   await sendCDP(tabId, 'Emulation.setDeviceMetricsOverride', buildMetricsOverride(viewport));
@@ -333,7 +429,9 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
   await execInPage(tabId, inPageFreezeAnimations, [FREEZE_STYLE_ID]);
   logger.info(`VDIFF [${role}] inPageFreezeAnimations DONE`, { elapsed: ms(t3) });
 
-  const t4 = Date.now();
+  const diffSelectors = selectorPairs.map(p => p.selector).filter(Boolean);
+
+  const t4             = Date.now();
   const suppressResult = await execInPage(tabId, inPageSuppressFixed, [SUPPRESS_ATTR, diffSelectors]);
   logger.info(`VDIFF [${role}] inPageSuppressFixed DONE`, {
     elapsed:    ms(t4),
@@ -345,7 +443,7 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
   await execInPage(tabId, inPageScrollAndSettle, [0, SCROLL_SETTLE_TIMEOUT_MS]);
   logger.info(`VDIFF [${role}] scroll-to-0 DONE`, { elapsed: ms(t5) });
 
-  const t6 = Date.now();
+  const t6         = Date.now();
   const raw        = await execInPage(tabId, inPageGetRects, [selectorPairs]);
   const validRects = (raw ?? []).filter(r => r.found && r.usable);
   logger.info(`VDIFF [${role}] inPageGetRects DONE`, {
@@ -361,10 +459,20 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
     return new Map();
   }
 
+  const t6b           = Date.now();
+  const pseudoResults = await execInPage(tabId, inPageGetPseudoStyles, [selectorPairs]);
+  logger.info(`VDIFF [${role}] inPageGetPseudoStyles DONE`, {
+    elapsed:    ms(t6b),
+    withBefore: (pseudoResults ?? []).filter(p => p.before).length,
+    withAfter:  (pseudoResults ?? []).filter(p => p.after).length
+  });
+
   const { height: vpHeight, width: vpWidth, documentHeight } = viewport;
   const rawFrames = groupIntoKeyframes(validRects, vpHeight, vpWidth, documentHeight);
   const keyframes = prefixKeyframes(rawFrames, sessionId, role);
-  const manifest  = buildViewportRects(keyframes, validRects);
+  const manifest  = buildViewportRects(keyframes, validRects, actualDPR, documentHeight);
+
+  attachPseudoDataToManifest(manifest, pseudoResults ?? []);
 
   logger.info(`VDIFF [${role}] keyframes grouped`, {
     validRects:    validRects.length,
@@ -372,9 +480,9 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
     scrollYValues: keyframes.map(k => k.scrollY)
   });
 
-  await captureAllKeyframes(tabId, keyframes, sessionId, role);
+  await captureAllKeyframes(tabId, keyframes, sessionId, role, actualDPR, documentHeight);
 
-  const t7 = Date.now();
+  const t7          = Date.now();
   const rectRecords = buildElementRectRecords(sessionId, role, manifest);
   await storage.saveVisualElementRects(rectRecords);
   logger.info(`VDIFF [${role}] saveVisualElementRects DONE`, { elapsed: ms(t7), count: rectRecords.length });
@@ -451,11 +559,10 @@ async function captureVisualDiffs(comparisonResult, tabContext) {
   const { baselineTabId, compareTabId } = tabContext;
   const baselinePairs                   = buildSelectorPairs(modified, 'baseline');
   const comparePairs                    = buildSelectorPairs(modified, 'compare');
-  const sameTab                         = baselineTabId === compareTabId;
 
   logger.info('VDIFF session init', {
     sessionId,
-    sameTab,
+    sameTab:       baselineTabId === compareTabId,
     baselinePairs: baselinePairs.length,
     comparePairs:  comparePairs.length,
     baselineTabId,
@@ -463,17 +570,9 @@ async function captureVisualDiffs(comparisonResult, tabContext) {
   });
 
   try {
-    let baselineManifest, compareManifest;
-
-    if (sameTab) {
-      logger.info('VDIFF running SEQUENTIAL (same tab detected)');
-      baselineManifest = await captureRoleSequential(baselineTabId, baselinePairs, sessionId, 'baseline');
-      compareManifest  = await captureRoleSequential(compareTabId,  comparePairs,  sessionId, 'compare');
-    } else {
-      logger.info('VDIFF running SEQUENTIAL (bringToFront requires exclusive focus)');
-      baselineManifest = await captureRoleSequential(baselineTabId, baselinePairs, sessionId, 'baseline');
-      compareManifest  = await captureRoleSequential(compareTabId,  comparePairs,  sessionId, 'compare');
-    }
+    logger.info('VDIFF running SEQUENTIAL (bringToFront requires exclusive focus)');
+    const baselineManifest = await captureRoleSequential(baselineTabId, baselinePairs, sessionId, 'baseline');
+    const compareManifest  = await captureRoleSequential(compareTabId,  comparePairs,  sessionId, 'compare');
 
     logger.info('VDIFF both tabs captured', {
       baselineSize: baselineManifest.size,
