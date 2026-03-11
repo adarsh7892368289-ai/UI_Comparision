@@ -4,28 +4,26 @@
   <a href="https://chrome.google.com/webstore">
     <img src="https://img.shields.io/chrome-web-store/v/placeholder?color=blue&style=flat" alt="Chrome Web Store">
   </a>
+  <img src="https://img.shields.io/github/package-json/v/your-org/ui-comparison?style=flat" alt="Version">
   <a href="https://github.com/your-org/ui-comparison/blob/main/LICENSE">
     <img src="https://img.shields.io/github/license/your-org/ui-comparison?style=flat" alt="MIT License">
   </a>
-  <a href="https://github.com/your-org/ui-comparison/actions">
-    <img src="https://img.shields.io/github/actions/workflow/status/your-org/ui-comparison/ci.yml?branch=main&style=flat" alt="Build Status">
-  </a>
-  <a href="https://github.com/your-org/ui-comparison/releases">
-    <img src="https://img.shields.io/github/v/release/your-org/ui-comparison?include_prereleases&style=flat" alt="Latest Release">
-  </a>
+  <img src="https://img.shields.io/node/v18?style=flat" alt="Node.js">
 </p>
 
 > A powerful Chrome extension for visual and structural UI comparison, regression testing, and element analysis across web pages.
 
 ## ✨ Features
 
-- 🔍 **Intelligent Element Matching** - Advanced DOM element comparison with smart matching algorithms
-- 🎨 **Visual & Structural Comparison** - Compare both visual appearance and DOM structure
+- 🔍 **Intelligent Element Matching** - Advanced DOM element comparison using smart matching algorithms with confidence scoring
+- 🎨 **Visual & Structural Comparison** - Compare both visual appearance (screenshots) and DOM structure
 - 📊 **Multi-Format Export** - Export results to CSV, Excel, HTML, and JSON formats
-- ⚙️ **CSS Normalization** - Built-in style normalization for accurate cross-browser comparisons
-- 🎯 **Flexible Selectors** - Generate CSS and XPath selectors automatically
-- 📈 **Performance Monitoring** - Built-in performance tracking and error reporting
+- ⚙️ **CSS Normalization** - Built-in style normalization (colors, fonts, units, shorthands) for accurate cross-browser comparisons
+- 🎯 **Flexible Selectors** - Generate CSS and XPath selectors automatically for element identification
+- 📈 **Performance Monitoring** - Built-in performance tracking with detailed timing metrics
+- 🐛 **Error Tracking** - Comprehensive error reporting and logging
 - 🧪 **Regression Testing** - Detect UI changes over time with severity analysis
+- 🔄 **Static & Dynamic Modes** - Support for both static page comparisons and dynamic content analysis
 
 ## 🚀 Quick Start
 
@@ -57,22 +55,32 @@ npm run build
 
 ## 📖 Usage
 
-### Basic Comparison
+### Basic Comparison Workflow
 
-1. Navigate to the first page you want to compare
-2. Click the extension icon in the Chrome toolbar
-3. Select "Extract & Compare"
-4. Navigate to the second page
-5. View the comparison results in the popup
+1. **Navigate to the first page** you want to use as baseline
+2. **Click the extension icon** in the Chrome toolbar
+3. **Extract elements** - Click "Extract" to capture the current page state
+4. **Navigate to the second page** you want to compare
+5. **Run comparison** - Click "Compare" to analyze differences
+6. **View results** - Review matched elements, differences, and visual diffs in the popup
 
 ### Exporting Results
 
-After running a comparison, you can export results in multiple formats:
+After running a comparison, export results in multiple formats:
 
-- **CSV** - For spreadsheet applications
-- **Excel** - For detailed analysis with formatting
-- **HTML** - For visual reports
-- **JSON** - For programmatic access
+| Format    | Use Case                                  |
+| --------- | ----------------------------------------- |
+| **CSV**   | Spreadsheet applications, data analysis   |
+| **Excel** | Detailed analysis with formatting, charts |
+| **HTML**  | Visual reports, sharing with stakeholders |
+| **JSON**  | Programmatic access, API integration      |
+
+### Comparison Modes
+
+| Mode        | Description                                                   |
+| ----------- | ------------------------------------------------------------- |
+| **Static**  | Best for comparing static pages with consistent DOM structure |
+| **Dynamic** | Handles dynamic content, animations, and state changes        |
 
 ## 🏗️ Architecture
 
@@ -80,33 +88,59 @@ After running a comparison, you can export results in multiple formats:
 UI_Comparison/
 ├── src/
 │   ├── application/        # High-level workflows
-│   │   ├── background.js
-│   │   ├── compare-workflow.js
-│   │   ├── export-workflow.js
-│   │   ├── extract-workflow.js
-│   │   ├── report-manager.js
-│   │   ├── url-compatibility.js
-│   │   └── visual-workflow.js
+│   │   ├── background.js          # Service worker
+│   │   ├── compare-workflow.js    # Comparison orchestration
+│   │   ├── extract-workflow.js    # Extraction orchestration
+│   │   ├── export-workflow.js     # Export handling
+│   │   ├── visual-workflow.js     # Visual diff capture
+│   │   ├── report-manager.js      # Report storage
+│   │   └── url-compatibility.js   # URL compatibility checks
 │   │
 │   ├── core/               # Business logic
 │   │   ├── comparison/     # Comparison engine
+│   │   │   ├── comparator.js      # Main comparison logic
+│   │   │   ├── matcher.js          # Element matching
+│   │   │   ├── differ.js           # Difference detection
+│   │   │   ├── severity-analyzer.js # Severity scoring
+│   │   │   └── ...
+│   │   │
 │   │   ├── export/         # Export functionality
+│   │   │   ├── comparison/  # Comparison exporters
+│   │   │   │   ├── csv-exporter.js
+│   │   │   │   ├── excel-exporter.js
+│   │   │   │   ├── html-exporter.js
+│   │   │   │   └── json-exporter.js
+│   │   │   └── extraction/  # Report exporters
+│   │   │
 │   │   ├── extraction/     # DOM extraction
+│   │   │   ├── extractor.js       # Main extraction logic
+│   │   │   ├── dom-traversal.js   # DOM traversal
+│   │   │   ├── element-classifier.js
+│   │   │   ├── style-collector.js
+│   │   │   └── ...
+│   │   │
 │   │   ├── normalization/  # Style normalization
-│   │   ├── selectors/      # Selector generation
-│   │   └── visual/         # Visual comparison
+│   │   │   ├── color-normalizer.js
+│   │   │   ├── font-normalizer.js
+│   │   │   ├── unit-normalizer.js
+│   │   │   └── normalizer-engine.js
+│   │   │
+│   │   └── selectors/      # Selector generation
+│   │       ├── css/        # CSS selector generation
+│   │       └── xpath/      # XPath generation
 │   │
 │   ├── infrastructure/    # Platform integrations
 │   │   ├── chrome-messaging.js
+│   │   ├── storage.js
 │   │   ├── error-tracker.js
 │   │   ├── performance-monitor.js
-│   │   └── storage.js
+│   │   └── logger.js
 │   │
 │   └── presentation/      # UI components
-│       ├── content.js
 │       ├── popup.js
 │       ├── popup.html
-│       └── popup.css
+│       ├── popup.css
+│       └── content.js
 │
 ├── icons/                  # Extension icons
 ├── libs/                   # Third-party libraries
@@ -117,19 +151,36 @@ UI_Comparison/
 
 ### Core Modules
 
-| Module           | Description                                      |
-| ---------------- | ------------------------------------------------ |
-| `comparison/`    | Visual and structural element comparison engine  |
-| `export/`        | Multi-format export (CSV, Excel, HTML, JSON)     |
-| `extraction/`    | DOM element extraction and analysis              |
-| `normalization/` | CSS/style normalization for accurate comparisons |
-| `selectors/`     | CSS and XPath selector generation                |
+| Module           | Description                                                         |
+| ---------------- | ------------------------------------------------------------------- |
+| `comparison/`    | Visual and structural element comparison engine with smart matching |
+| `export/`        | Multi-format export (CSV, Excel, HTML, JSON)                        |
+| `extraction/`    | DOM element extraction with styles, attributes, selectors           |
+| `normalization/` | CSS/style normalization for accurate cross-browser comparisons      |
+| `selectors/`     | CSS and XPath selector generation with validation                   |
 
 ## 🛠️ Development
 
+### Available Scripts
+
 ```bash
+# Production build
+npm run build
+
+# Development build
+npm run build:dev
+
 # Watch mode for development
 npm run watch
+
+# Run all tests with coverage
+npm run test
+
+# Run tests in watch mode
+npm run test:watch
+
+# Run unit tests only
+npm run test:unit
 
 # Run linter
 npm run lint
@@ -137,26 +188,22 @@ npm run lint
 # Fix linting issues
 npm run lint:fix
 
-# Run tests
-npm run test
-
-# Run tests in watch mode
-npm run test:watch
-
 # Check for circular dependencies
 npm run check:circular
 ```
 
-## 📦 Available Scripts
+## 📦 Dependencies
 
-| Command             | Description                 |
-| ------------------- | --------------------------- |
-| `npm run build`     | Production build            |
-| `npm run build:dev` | Development build           |
-| `npm run watch`     | Watch mode for development  |
-| `npm run test`      | Run all tests with coverage |
-| `npm run lint`      | Run ESLint                  |
-| `npm run lint:fix`  | Fix ESLint issues           |
+### Production
+
+- [xlsx](https://sheetjs.com/) - Excel file handling
+
+### Development
+
+- [webpack](https://webpack.js.org/) - Module bundler
+- [jest](https://jestjs.io/) - Testing framework
+- [eslint](https://eslint.org/) - JavaScript linting
+- [madge](https://github.com/pahen/madge) - Circular dependency checker
 
 ## 🤝 Contributing
 

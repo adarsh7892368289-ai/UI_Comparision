@@ -136,6 +136,48 @@ function inPageGetRects(selectorPairs) {
   });
 }
 
+/**
+ * Called AFTER the page has been scrolled to the keyframe position.
+ * Returns the actual viewport-relative bounding rect of each element as the
+ * browser renders it at this scroll position — NOT a computed approximation.
+ * This is the ground-truth measurement that replaces the old
+ * `documentY - plannedScrollY` formula which silently diverged whenever the
+ * page layout differed between baseline and compare or when the actual scroll
+ * landed even a few pixels off the planned target.
+ */
+function inPageRemeasureRects(selectorPairs) {
+  const actualScrollY = Math.round(window.scrollY);
+  const vpH           = window.innerHeight;
+  const vpW           = window.innerWidth;
+
+  const rects = selectorPairs.map(({ id, selector }) => {
+    const el = selector ? document.querySelector(selector) : null;
+    if (!el) {
+      return { id, found: false, inViewport: false, misalignReason: 'element-not-found' };
+    }
+    const r = el.getBoundingClientRect();
+    const w = Math.round(r.width);
+    const h = Math.round(r.height);
+    if (w === 0 && h === 0) {
+      return { id, found: true, inViewport: false, misalignReason: 'zero-dimension',
+               viewportX: Math.round(r.left), viewportY: Math.round(r.top), width: 0, height: 0 };
+    }
+    const inViewport = r.bottom > 0 && r.top < vpH && r.right > 0 && r.left < vpW;
+    return {
+      id,
+      found:          true,
+      inViewport,
+      misalignReason: inViewport ? null : 'out-of-viewport',
+      viewportX:      Math.round(r.left),
+      viewportY:      Math.round(r.top),
+      width:          w,
+      height:         h
+    };
+  });
+
+  return { actualScrollY, rects };
+}
+
 function inPageGetPseudoStyles(selectorPairs) {
   const PSEUDO_PROPS = [
     'content', 'display', 'width', 'height', 'background-color', 'color',
@@ -207,27 +249,80 @@ function prefixKeyframes(keyframes, sessionId, role) {
   }));
 }
 
-function buildViewportRects(keyframes, validRects, actualDPR, documentHeight) {
-  const rectById = new Map(validRects.map(r => [r.id, r]));
-  const manifest = new Map();
+/**
+ * Builds the per-element manifest from the remeasured viewport rects that were
+ * observed AFTER scrolling to each keyframe position.
+ *
+ * Why this replaces the old `buildViewportRects`:
+ *   Old:  viewportRect.y = el.documentY (measured at scrollY=0) - kf.plannedScrollY
+ *         → silently wrong whenever:
+ *           (a) actualScrollY ≠ plannedScrollY (scroll clamping / content reflow)
+ *           (b) page layout differs at different scroll positions (sticky headers,
+ *               lazy content, compare page has taller hero section, etc.)
+ *   New:  viewportRect comes directly from getBoundingClientRect() at the actual
+ *         scroll position — the browser gives us the pixel-perfect answer.
+ *
+ * @param {Array}  keyframes        - prefixed keyframe objects (id + elementIds)
+ * @param {Array}  remeasureResults - [{keyframeId, actualScrollY, rects:[…]}]
+ * @param {Map}    documentYById    - hpid → documentY at scrollY=0 (for fallback logging)
+ * @param {number} actualDPR
+ * @param {number} documentHeight
+ * @returns {Map<string, object>}   hpid → manifest entry
+ */
+function buildManifestFromRemeasured(keyframes, remeasureResults, documentYById, actualDPR, documentHeight) {
+  const resultByKfId = new Map(remeasureResults.map(r => [r.keyframeId, r]));
+  const manifest     = new Map();
 
   for (const kf of keyframes) {
+    const remeasure = resultByKfId.get(kf.id);
+    if (!remeasure) continue;
+
+    const { actualScrollY, rects } = remeasure;
+    const measuredById = new Map(rects.map(r => [r.id, r]));
+
     for (const elId of kf.elementIds) {
-      const el = rectById.get(elId);
-      if (!el) continue;
+      const m    = measuredById.get(elId);
+      const docY = documentYById.get(elId) ?? null;
+
+      if (!m || !m.found) {
+        // Element not present in the DOM at capture time (dynamic content / DOM diff).
+        // Store a null viewportRect so the renderer knows to show the misalignment badge.
+        manifest.set(elId, {
+          keyframeId:          kf.id,
+          actualDPR,
+          dpr:                 CAPTURE_SCALE_FACTOR,
+          kfScrollY:           actualScrollY,
+          documentY:           docY,
+          totalDocumentHeight: documentHeight,
+          viewportRect:        null,
+          misaligned:          true,
+          misalignReason:      (m?.misalignReason) ?? 'element-not-found'
+        });
+        continue;
+      }
+
+      // Element found. Build viewport rect from observed coordinates.
+      const viewportRect = {
+        x:      m.viewportX,
+        y:      m.viewportY,
+        width:  m.width,
+        height: m.height
+      };
+
+      // Flag elements that exist in DOM but weren't visible inside the viewport
+      // when the screenshot was taken (e.g. pushed below fold by layout changes).
+      const misaligned = !m.inViewport;
+
       manifest.set(elId, {
         keyframeId:          kf.id,
         actualDPR,
         dpr:                 CAPTURE_SCALE_FACTOR,
-        kfScrollY:           kf.scrollY,
-        documentY:           el.documentY,
+        kfScrollY:           actualScrollY,
+        documentY:           docY,
         totalDocumentHeight: documentHeight,
-        viewportRect: {
-          x:      el.left,
-          y:      el.documentY - kf.scrollY,
-          width:  el.width,
-          height: el.height
-        }
+        viewportRect,
+        misaligned:          misaligned || undefined,
+        misalignReason:      misaligned ? m.misalignReason : undefined
       });
     }
   }
@@ -248,7 +343,10 @@ function attachPseudoDataToManifest(manifest, pseudoResults) {
 function buildElementRectRecords(sessionId, role, manifest) {
   const records = [];
   for (const [elementKey, entry] of manifest.entries()) {
-    const { keyframeId, viewportRect, actualDPR, documentY, totalDocumentHeight, pseudoBefore, pseudoAfter } = entry;
+    const {
+      keyframeId, viewportRect, actualDPR, documentY, totalDocumentHeight,
+      pseudoBefore, pseudoAfter, misaligned, misalignReason
+    } = entry;
     records.push({
       id:                  `${sessionId}_${role}_rect_${elementKey}`,
       sessionId,
@@ -259,8 +357,10 @@ function buildElementRectRecords(sessionId, role, manifest) {
       actualDPR,
       documentY,
       totalDocumentHeight,
-      pseudoBefore:        pseudoBefore ?? null,
-      pseudoAfter:         pseudoAfter  ?? null
+      pseudoBefore:        pseudoBefore   ?? null,
+      pseudoAfter:         pseudoAfter    ?? null,
+      misaligned:          misaligned     ?? false,
+      misalignReason:      misalignReason ?? null
     });
   }
   return records;
@@ -300,24 +400,74 @@ function buildSelectorPairs(elements, role) {
   return elements.map(el => extractSelectorPair(el, role)).filter(Boolean);
 }
 
-async function captureKeyframe(tabId, keyframe, sessionId, index, total, roleStart, actualDPR, documentHeight) {
+/**
+ * Scrolls to a keyframe position, re-measures element rects at that exact
+ * scroll position, takes the screenshot, and returns the observed data.
+ *
+ * Key contract: the manifest is built from the RETURN VALUE of this function,
+ * not from pre-computed coordinates. This guarantees the stored viewportRect
+ * matches the pixel coordinates in the captured screenshot.
+ *
+ * @returns {{ keyframeId: string, actualScrollY: number, rects: Array }}
+ */
+async function captureKeyframe(tabId, keyframe, kfSelectorPairs, sessionId, index, total, roleStart, actualDPR, documentHeight) {
   const { id, scrollY, viewportWidth, viewportHeight, tabRole } = keyframe;
   const kfTag = `[kf ${index + 1}/${total} scrollY=${scrollY}]`;
 
+  // ── 1. Bring tab to front FIRST ──────────────────────────────────────────
+  //
+  //  Critical ordering fix: bringToFront must happen BEFORE scrolling.
+  //  When a background tab gains focus for the first time, Chrome can fire
+  //  visibility/focus events that reset window.scrollY to 0. If we scroll
+  //  first and then bring the tab to front, those focus events undo our scroll
+  //  and the screenshot captures the wrong position.
+  //
+  //  This only bites on the FIRST keyframe for any tab that isn't already
+  //  in the foreground (i.e., always hits the compare tab's kf_0, explaining
+  //  the "always fails on the first compare screenshot" symptom).
+  //
+  await sendCDP(tabId, 'Page.bringToFront');
+  logger.info(`VDIFF ${kfTag} bringToFront DONE`, { tabId, role: tabRole });
+
+  // ── 2. Scroll ────────────────────────────────────────────────────────────
   const t0 = Date.now();
   logger.info(`VDIFF ${kfTag} scroll START`, { tabId, role: tabRole });
   await execInPage(tabId, inPageScrollAndSettle, [scrollY, SCROLL_SETTLE_TIMEOUT_MS]);
   logger.info(`VDIFF ${kfTag} scroll+paint DONE`, { elapsed: ms(t0) });
 
+  // ── 3. Verify scroll landed correctly (retry if needed) ──────────────────
+  let actualScrollY = scrollY;
   for (let attempt = 0; attempt < SCROLL_VERIFY_RETRY_MAX; attempt++) {
-    const actualY = await execInPage(tabId, () => window.scrollY);
-    if (Math.abs(actualY - scrollY) <= SCROLL_VERIFY_TOLERANCE_PX) break;
-    logger.warn(`VDIFF ${kfTag} scroll mismatch`, { expected: scrollY, actual: actualY, attempt });
+    const readY = await execInPage(tabId, () => Math.round(window.scrollY));
+    actualScrollY = readY;
+    if (Math.abs(readY - scrollY) <= SCROLL_VERIFY_TOLERANCE_PX) break;
+    logger.warn(`VDIFF ${kfTag} scroll mismatch`, { expected: scrollY, actual: readY, attempt });
     await execInPage(tabId, inPageScrollAndSettle, [scrollY, SCROLL_VERIFY_RETRY_MS]);
   }
 
+  // ── 4. Re-measure element rects at the ACTUAL scroll position ────────────
+  //
+  //  getBoundingClientRect() is called here, with the page in its final
+  //  rendered state at this scroll, giving us the exact pixel coordinates
+  //  that will match the screenshot we're about to take.
+  //
+  const tRemeasure = Date.now();
+  const remeasureRaw = await execInPage(tabId, inPageRemeasureRects, [kfSelectorPairs]);
+  const confirmedScrollY = remeasureRaw?.actualScrollY ?? actualScrollY;
+  const remeasuredRects  = remeasureRaw?.rects ?? [];
+
+  const misalignedCount = remeasuredRects.filter(r => !r.inViewport || !r.found).length;
+  logger.info(`VDIFF ${kfTag} remeasure DONE`, {
+    elapsed:        ms(tRemeasure),
+    confirmedScrollY,
+    planned:        scrollY,
+    drift:          Math.abs(confirmedScrollY - scrollY),
+    measured:       remeasuredRects.length,
+    misaligned:     misalignedCount
+  });
+
+  // ── 5. Screenshot ────────────────────────────────────────────────────────
   const t1 = Date.now();
-  await sendCDP(tabId, 'Page.bringToFront');
   logger.info(`VDIFF ${kfTag} CDP captureScreenshot START`);
   const result = await sendCDP(tabId, 'Page.captureScreenshot', {
     format:           'webp',
@@ -330,6 +480,7 @@ async function captureKeyframe(tabId, keyframe, sessionId, index, total, roleSta
     b64Bytes: result?.data?.length ?? 0
   });
 
+  // ── 6. Persist blob + keyframe metadata ──────────────────────────────────
   const t2 = Date.now();
   const blob = await base64ToBlob(result.data, WEBP_MIME);
   logger.info(`VDIFF ${kfTag} base64→blob DONE`, { elapsed: ms(t2), blobBytes: blob.size });
@@ -344,7 +495,7 @@ async function captureKeyframe(tabId, keyframe, sessionId, index, total, roleSta
     id,
     sessionId,
     tabRole,
-    scrollY,
+    scrollY:            confirmedScrollY,
     viewportWidth,
     viewportHeight,
     documentHeight,
@@ -354,20 +505,49 @@ async function captureKeyframe(tabId, keyframe, sessionId, index, total, roleSta
   });
   logger.info(`VDIFF ${kfTag} IDB saveVisualKeyframe DONE`, { elapsed: ms(t4) });
   logger.info(`VDIFF ${kfTag} COMPLETE`, { totalElapsed: ms(roleStart) });
+
+  // ── 7. Return observed data for manifest building ─────────────────────────
+  return {
+    keyframeId:    id,
+    actualScrollY: confirmedScrollY,
+    rects:         remeasuredRects
+  };
 }
 
-async function captureAllKeyframes(tabId, keyframes, sessionId, role, actualDPR, documentHeight) {
-  const total     = keyframes.length;
-  const roleStart = Date.now();
+/**
+ * Captures all keyframes for one tab role.
+ * Passes only the selectors belonging to each keyframe's elements so that
+ * inPageRemeasureRects isn't querying the entire selector list on every scroll.
+ *
+ * @returns {Array<{ keyframeId, actualScrollY, rects }>}  one entry per keyframe
+ */
+async function captureAllKeyframes(tabId, keyframes, selectorById, sessionId, role, actualDPR, documentHeight) {
+  const total          = keyframes.length;
+  const roleStart      = Date.now();
+  const remeasureResults = [];
   logger.info(`VDIFF [${role}] captureAllKeyframes START`, { tabId, keyframeCount: total });
 
   for (let i = 0; i < total; i++) {
-    await captureKeyframe(tabId, keyframes[i], sessionId, i, total, roleStart, actualDPR, documentHeight);
+    const kf = keyframes[i];
+
+    // Build the selector pairs that belong to THIS keyframe only.
+    // We re-measure only the elements expected to be visible at this scroll
+    // position — avoids noise from elements on other parts of the page.
+    const kfSelectorPairs = kf.elementIds
+      .map(id => selectorById.get(id))
+      .filter(Boolean);
+
+    const result = await captureKeyframe(
+      tabId, kf, kfSelectorPairs, sessionId, i, total, roleStart, actualDPR, documentHeight
+    );
+    remeasureResults.push(result);
   }
 
   logger.info(`VDIFF [${role}] captureAllKeyframes DONE`, {
     tabId, keyframeCount: total, totalElapsed: ms(roleStart)
   });
+
+  return remeasureResults;
 }
 
 async function safeRestorePage(tabId) {
@@ -470,9 +650,6 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
   const { height: vpHeight, width: vpWidth, documentHeight } = viewport;
   const rawFrames = groupIntoKeyframes(validRects, vpHeight, vpWidth, documentHeight);
   const keyframes = prefixKeyframes(rawFrames, sessionId, role);
-  const manifest  = buildViewportRects(keyframes, validRects, actualDPR, documentHeight);
-
-  attachPseudoDataToManifest(manifest, pseudoResults ?? []);
 
   logger.info(`VDIFF [${role}] keyframes grouped`, {
     validRects:    validRects.length,
@@ -480,7 +657,25 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
     scrollYValues: keyframes.map(k => k.scrollY)
   });
 
-  await captureAllKeyframes(tabId, keyframes, sessionId, role, actualDPR, documentHeight);
+  // Build lookup maps needed by captureAllKeyframes and buildManifestFromRemeasured.
+  // selectorById   — used to build per-keyframe selector subsets for remeasure
+  // documentYById  — used as fallback documentY in the manifest (for debugging /
+  //                  scroll-indicator rendering; not used for highlight coords)
+  const selectorById  = new Map(selectorPairs.map(p => [p.id, p]));
+  const documentYById = new Map(validRects.map(r => [r.id, r.documentY]));
+
+  // Capture each keyframe: scroll → remeasure → screenshot → save
+  // Returns per-keyframe { keyframeId, actualScrollY, rects[] } with observed coords.
+  const remeasureResults = await captureAllKeyframes(
+    tabId, keyframes, selectorById, sessionId, role, actualDPR, documentHeight
+  );
+
+  // Build manifest from the ground-truth coords measured at capture time.
+  const manifest = buildManifestFromRemeasured(
+    keyframes, remeasureResults, documentYById, actualDPR, documentHeight
+  );
+
+  attachPseudoDataToManifest(manifest, pseudoResults ?? []);
 
   const t7          = Date.now();
   const rectRecords = buildElementRectRecords(sessionId, role, manifest);

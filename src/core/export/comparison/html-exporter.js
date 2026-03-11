@@ -46,6 +46,8 @@ function resolveVisualManifest(visualDiffs) {
       baselineKfScrollY:       baseline?.kfScrollY           ?? null,
       baselinePseudoBefore:    baseline?.pseudoBefore        ?? null,
       baselinePseudoAfter:     baseline?.pseudoAfter         ?? null,
+      baselineMisaligned:      baseline?.misaligned          ?? false,
+      baselineMisalignReason:  baseline?.misalignReason      ?? null,
       compareKeyframeId:       compare?.keyframeId          ?? null,
       compareRect:             compare?.viewportRect         ?? null,
       compareActualDPR:        compare?.dpr  ?? 2,
@@ -54,6 +56,8 @@ function resolveVisualManifest(visualDiffs) {
       compareKfScrollY:        compare?.kfScrollY            ?? null,
       comparePseudoBefore:     compare?.pseudoBefore         ?? null,
       comparePseudoAfter:      compare?.pseudoAfter          ?? null,
+      compareMisaligned:       compare?.misaligned           ?? false,
+      compareMisalignReason:   compare?.misalignReason       ?? null,
       diffs:                   diffs ?? []
     };
   }
@@ -115,8 +119,8 @@ function buildDiagnosticBanner(vds) {
     : 'Screenshots not available \u2014 property diffs are still complete.';
   return `<div style="position:sticky;top:0;z-index:9999;background:${bg};border-bottom:3px solid ${border};padding:10px 16px;display:flex;align-items:flex-start;gap:10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;">
   <span style="font-weight:800;color:#fff;white-space:nowrap;">${iconLabel}</span>
-  <span style="color:#fecaca;flex:1;">${esc(vds.reason || 'No reason provided.')}</span>
-  <span style="color:#9ca3af;font-size:11px;white-space:nowrap;">${hint}</span>
+  <span style="flex:1;" class="u-text-secondary">${esc(vds.reason || 'No reason provided.')}</span>
+  <span class="u-text-tertiary" style="font-size:11px;white-space:nowrap;">${hint}</span>
 </div>`;
 }
 
@@ -129,7 +133,7 @@ function buildPreFlightBanner(w) {
   const fn = estimatedFalseNegatives != null ? ` ~${estimatedFalseNegatives} false negatives estimated.` : '';
   return `<div style="position:sticky;top:0;z-index:9998;background:#1e3a5f;border-bottom:3px solid #3b82f6;padding:10px 16px;display:flex;align-items:flex-start;gap:10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;">
   <span style="font-weight:800;color:#93c5fd;white-space:nowrap;">\u26a0 Page State Mismatch</span>
-  <span style="color:#bfdbfe;flex:1;">${parts.join(' \u00b7 ')}${fn}</span>
+  <span style="flex:1;" class="u-text-secondary">${parts.join(' \u00b7 ')}${fn}</span>
 </div>`;
 }
 
@@ -282,296 +286,525 @@ function buildSidebar(s, raw) {
 function buildCss() {
   return `
 :root{
-  --bg-base:#09090b;
-  --bg-surface:#111118;
-  --bg-elevated:#18181f;
-  --bg-hover:#1e1e2a;
-  --bg-active:#26263a;
-  --border-subtle:#27272a;
-  --border-default:#3f3f46;
-  --border-strong:#52525b;
-  --text-primary:#f4f4f5;
-  --text-secondary:#a1a1aa;
-  --text-tertiary:#71717a;
-  --text-disabled:#52525b;
-  --accent:#8b5cf6;
+  /* ─── SURFACES (GitHub Primer staircase, verified canvas tokens) ─────────
+     Each step is ~5-6 LCH lightness units above the previous.
+     Base: GitHub canvas.default #0d1117 — navy-black, not pure black.
+     No pure #000 — avoids halation on astigmatic displays (Finding 5).      */
+  --bg-base:#0d1117;
+  --bg-surface:#161b22;
+  --bg-elevated:#1c2128;
+  --bg-raised:#22272e;
+  --bg-hover:rgba(255,255,255,.05);
+  --bg-active:rgba(255,255,255,.08);
+  --bg-selected:rgba(109,40,217,.12);
+
+  /* ─── BORDERS (Vercel semi-transparent principle) ────────────────────────
+     All rgba(255,255,255,X) — sharper than equivalent hex, adapts to bg.   */
+  --border-subtle:rgba(255,255,255,.07);
+  --border-default:rgba(255,255,255,.12);
+  --border-strong:rgba(255,255,255,.22);
+  --border-focus:#7c3aed;
+
+  /* ─── FOREGROUND — 5 solid levels (GitHub Primer fg.* scale) ────────────
+     No opacity hacks — Primer accessibility overhaul eliminated all of them.
+     Every value is a solid color with a known contrast ratio on bg-base.
+     text-primary  #e6edf3 ≈ 15.1:1 on bg-base  — fg.default
+     text-secondary #8d96a0 ≈  6.2:1 on bg-base  — fg.muted
+     text-muted    #6e7681 ≈  4.4:1 on bg-base  — fg.subtle
+     text-faint    #3d444d ≈  2.9:1 on bg-base  — arrows, guides
+     text-disabled #484f58 ≈  2.6:1 on bg-surface — fg.disabled (inactive)  */
+  --text-primary:#e6edf3;
+  --text-secondary:#8d96a0;
+  --text-tertiary:#6e7681;
+  --text-muted:#6e7681;
+  --text-faint:#3d444d;
+  --text-disabled:#484f58;
+
+  /* ─── ACCENT — purple brand ──────────────────────────────────────────── */
+  --accent:#7c3aed;
   --accent-light:#a78bfa;
-  --accent-muted:rgba(139,92,246,.12);
-  --red-text:#fca5a5;
-  --red-bg:rgba(239,68,68,.12);
-  --green-text:#6ee7b7;
-  --green-bg:rgba(52,211,153,.12);
-  --amber-text:#fcd34d;
-  --amber-bg:rgba(245,158,11,.1);
+  --accent-muted:rgba(124,58,237,.12);
+  --accent-faint:rgba(109,40,217,.14);
+  --accent-border:rgba(124,58,237,.35);
+
+  /* ─── SEMANTIC diff colors ───────────────────────────────────────────── */
+  --red-text:#f47474;
+  --red-bg:rgba(239,68,68,.09);
+  --red-border:rgba(239,68,68,.22);
+  --green-text:#3fb950;
+  --green-bg:rgba(63,185,80,.08);
+  --green-border:rgba(63,185,80,.2);
+  --amber-text:#d29922;
+  --amber-bg:rgba(210,153,34,.09);
+
+  /* ─── TREE SPECIFIC ─────────────────────────────────────────────────── */
+  --tree-indent-guide:rgba(255,255,255,.05);
+  --tree-row-selected-bg:rgba(109,40,217,.12);
+  --tree-row-selected-border:#7c3aed;
+  --tree-row-hover-bg:rgba(255,255,255,.04);
+  --tree-structural-fg:#6b7d8a;
+  --tree-diff-fg:#c7d2fe;
+
+  /* ─── SEVERITY (Stripe badge formula: dark bg + soft fg + midpoint border)
+     Every fg/bg pair validated ≥4.5:1 per Stripe's WCAG auto-check system. */
+  --sev-critical-bg:#300d0d;
+  --sev-critical-fg:#f47474;
+  --sev-critical-border:rgba(239,68,68,.28);
+  --sev-high-bg:#2d1500;
+  --sev-high-fg:#fb923c;
+  --sev-high-border:rgba(249,115,22,.28);
+  --sev-medium-bg:#221600;
+  --sev-medium-fg:#e3b341;
+  --sev-medium-border:rgba(227,179,65,.25);
+  --sev-low-bg:#131d2e;
+  --sev-low-fg:#79c0ff;
+  --sev-low-border:rgba(121,192,255,.22);
 }
+
+/* ── Reset ───────────────────────────────────────────────────────────────── */
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg-base);color:var(--text-primary);font-size:13px;height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased}
+
+/* ── Body — Inter-optimised stack (Finding 5 + Vercel typography) ─────────
+   letter-spacing:-0.006em is Inter's recommended density setting.
+   font-weight:400 body, per dark-mode research: bright text reads bolder.   */
+body{
+  font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  background:var(--bg-base);color:var(--text-primary);
+  font-size:13px;line-height:1.5;letter-spacing:-0.006em;font-weight:400;
+  height:100vh;overflow:hidden;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+}
 .app{display:flex;flex-direction:column;height:100vh}
-.topbar{display:flex;align-items:center;gap:12px;padding:8px 16px;background:var(--bg-surface);border-bottom:1px solid var(--border-subtle);flex-shrink:0;min-height:45px}
-.topbar-title{font-weight:700;font-size:15px;color:#fff}
-.topbar-urls{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0;overflow:hidden}
-.topbar-url{font-size:11px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px;line-height:1.4}
-.topbar-url:hover{color:var(--text-primary)}
+
+/* ── D1 Topbar ───────────────────────────────────────────────────────────── */
+.topbar{
+  display:flex;align-items:center;gap:12px;padding:0 16px;
+  background:var(--bg-surface);
+  border-bottom:1px solid var(--border-subtle);
+  box-shadow:0 1px 0 var(--border-subtle);
+  flex-shrink:0;min-height:46px;
+}
+/* font-weight:800 = closest named weight to Vercel's variable-font 750 */
+.topbar-title{font-weight:800;font-size:14px;color:var(--text-primary);letter-spacing:-0.02em;white-space:nowrap}
+.topbar-urls{display:flex;flex-direction:column;gap:1px;flex:1;min-width:0;overflow:hidden}
+.topbar-url{
+  font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;line-height:1.5;display:flex;align-items:center;gap:5px;
+  font-variant-numeric:tabular-nums;
+}
+.topbar-url:hover{color:var(--text-secondary)}
 .baseline-url{color:var(--text-secondary)}
 .compare-url{color:var(--text-secondary)}
-.url-label{font-size:9px;font-weight:700;letter-spacing:.05em;padding:1px 4px;border-radius:3px;flex-shrink:0;text-transform:uppercase}
+.url-label{font-size:9px;font-weight:700;letter-spacing:.08em;padding:1px 4px;border-radius:3px;flex-shrink:0;text-transform:uppercase}
 .baseline-url .url-label{background:#0c1a2e;color:#60a5fa;border:1px solid #1d3a5f}
-.compare-url .url-label{background:#0c1f12;color:#4ade80;border:1px solid #14532d}
-#search{background:var(--bg-elevated);border:1px solid var(--border-default);color:var(--text-primary);border-radius:6px;padding:5px 10px;font-size:12px;outline:none;width:200px}
-#search::placeholder{color:var(--text-disabled)}
-#search:focus{border-color:var(--accent);background:var(--bg-elevated)}
-.layout{display:grid;grid-template-columns:36px var(--col-left,280px) 4px 1fr 4px var(--col-right,0px);flex:1;overflow:hidden}
-.sidebar-wrapper{position:relative;display:flex;flex-direction:column;min-width:0;overflow:hidden}
-.resize-handle{background:#2d3148;cursor:col-resize;transition:background .15s;z-index:5;user-select:none}
+.compare-url .url-label{background:#0c1f12;color:#3fb950;border:1px solid #145522}
+.topbar-direction{
+  font-size:11px;color:var(--accent-light);background:var(--accent-faint);
+  border:1px solid var(--accent-border);border-radius:20px;padding:2px 10px;
+  white-space:nowrap;flex-shrink:0;font-weight:600;letter-spacing:.01em;
+  font-variant-numeric:tabular-nums;
+}
+/* Search — min/max-width for responsive range (Vercel D1 spec) */
+#search{
+  background:var(--bg-elevated);border:1px solid var(--border-default);
+  color:var(--text-primary);border-radius:6px;
+  padding:5px 10px 5px 30px;font-size:12px;outline:none;
+  min-width:200px;max-width:280px;
+  transition:border-color .08s,background .08s;
+}
+#search:focus{border-color:var(--accent);background:var(--bg-raised)}
+#search::placeholder{color:var(--text-faint)}
+
+/* ── Layout shell ────────────────────────────────────────────────────────── */
+.layout{display:grid;grid-template-columns:36px var(--col-left,280px) 4px 1fr 4px var(--col-right,0px);grid-template-rows:1fr;flex:1;min-height:0;overflow:hidden}
+.sidebar-wrapper{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+.resize-handle{background:var(--border-subtle);cursor:col-resize;transition:background .08s;z-index:5;user-select:none}
 .resize-handle:hover,.resize-handle.dragging{background:var(--border-strong)}
 .sidebar{overflow-y:auto;padding:14px 12px;background:var(--bg-surface);border-right:1px solid var(--border-subtle);position:relative}
-
 .layout.sidebar-collapsed{grid-template-columns:36px 0 4px 1fr 4px var(--col-right,0px)}
 .layout.sidebar-collapsed .sidebar-wrapper{overflow:hidden;min-width:0;width:0}
 .layout.sidebar-collapsed #resize-left{pointer-events:none;opacity:0}
 .layout.detail-empty #resize-right{pointer-events:none;opacity:0}
+
+/* Activity bar */
 .activity-bar{display:flex;flex-direction:column;align-items:center;padding:8px 0;background:var(--bg-base);border-right:1px solid var(--border-subtle);gap:6px}
-.activity-btn{background:none;border:none;color:var(--text-tertiary);cursor:pointer;padding:8px 6px;border-radius:6px;line-height:1;transition:color .15s,background .15s;width:36px;height:36px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.activity-btn{background:none;border:none;color:var(--text-tertiary);cursor:pointer;padding:8px 6px;border-radius:6px;line-height:1;transition:color .08s,background .08s;width:36px;height:36px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .activity-btn svg{display:block;flex-shrink:0}
 .activity-btn:hover{color:var(--text-secondary);background:var(--bg-hover)}
 .activity-btn.active{color:var(--accent-light);background:var(--accent-muted)}
+
+/* ── D2 Sidebar — Stat Section ───────────────────────────────────────────── */
 .sidebar-section{margin-bottom:20px}
-.stat-headline{font-size:32px;font-weight:800;color:#fff}
-.stat-label{font-size:11px;color:var(--text-secondary);margin-bottom:6px;font-weight:500}
-.progress-bar{height:6px;background:#2d3148;border-radius:3px;overflow:hidden;margin-top:4px}
-.progress-fill{height:100%;background:linear-gradient(90deg,#7c3aed,#06b6d4)}
-.stat-row{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:12px;color:var(--text-secondary)}
-.badge{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:18px;border-radius:4px;font-size:11px;font-weight:700;padding:0 4px}
-.badge-critical{background:#7f1d1d;color:#fca5a5}
-.badge-high{background:#78350f;color:#fcd34d}
-.badge-medium{background:#3b1f00;color:#fbbf24}
-.badge-low{background:#1e293b;color:#94a3b8}
-.topbar-direction{font-size:11px;color:var(--accent-light);background:var(--accent-muted);border:1px solid rgba(139,92,246,.35);border-radius:20px;padding:3px 10px;white-space:nowrap;flex-shrink:0;font-weight:600;letter-spacing:.01em}
-.sidebar-section-label{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--text-tertiary);margin-bottom:8px;font-weight:600}
+/* Hero match-rate number — Linear pattern: massive, tabular, letter-tight */
+.stat-headline{
+  font-size:36px;font-weight:800;color:var(--text-primary);
+  letter-spacing:-1.5px;line-height:1;font-variant-numeric:tabular-nums;
+}
+.stat-label{font-size:11px;color:var(--text-muted);margin-bottom:5px;font-weight:500;letter-spacing:.02em}
+/* Thin 3px progress bar — Linear pattern */
+.progress-bar{height:3px;background:var(--bg-raised);border-radius:2px;overflow:hidden;margin-top:8px}
+/* Gradient fill — Linear's teal-to-purple gradient bar */
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),#06b6d4);border-radius:2px}
+.stat-row{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;color:var(--text-secondary);font-variant-numeric:tabular-nums}
+
+/* ── D3 Severity Badges ──────────────────────────────────────────────────── */
+.badge{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:20px;border-radius:5px;font-size:11px;font-weight:700;padding:0 5px;border:1px solid transparent;font-variant-numeric:tabular-nums}
+.badge-critical{background:var(--sev-critical-bg);color:var(--sev-critical-fg);border-color:var(--sev-critical-border)}
+.badge-high{background:var(--sev-high-bg);color:var(--sev-high-fg);border-color:var(--sev-high-border)}
+.badge-medium{background:var(--sev-medium-bg);color:var(--sev-medium-fg);border-color:var(--sev-medium-border)}
+.badge-low{background:var(--sev-low-bg);color:var(--sev-low-fg);border-color:var(--sev-low-border)}
+
+.sidebar-section-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-faint);margin-bottom:8px;font-weight:700}
 .stat-row--subdued{opacity:.7;font-size:11px}
-.icon.mod{color:#a78bfa}
+.icon.mod{color:var(--accent-light)}
 .filter-buttons{display:flex;flex-wrap:wrap;gap:4px}
-.filter-btn{background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:20px;color:var(--text-secondary);font-size:11px;padding:3px 10px;cursor:pointer;transition:background .12s,color .12s,border-color .12s}
-.filter-btn:hover{background:var(--bg-hover);border-color:var(--border-strong);color:var(--text-primary)}
-.filter-btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
-.icon{width:16px;display:inline-block;text-align:center}.icon.add{color:#10b981}.icon.rem{color:#ef4444}.icon.amb{color:#f59e0b}
-.center-panel{display:flex;flex-direction:column;overflow:hidden;min-width:0}
-.tree-toolbar{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg-surface);border-bottom:1px solid var(--border-subtle);flex-shrink:0}
-.toolbar-btn{background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:4px;color:var(--text-secondary);font-size:11px;padding:3px 9px;cursor:pointer;transition:background .12s,color .12s;user-select:none}
-.toolbar-btn:hover{background:var(--bg-hover);color:var(--text-primary)}
-.tree-count{font-size:11px;color:var(--text-tertiary);margin-left:auto}
+
+/* ── D4 Filter Buttons — Linear / Vercel style ───────────────────────────── */
+.filter-btn{
+  background:transparent;border:1px solid var(--border-default);border-radius:5px;
+  color:var(--text-muted);font-size:11px;font-weight:500;padding:3px 9px;cursor:pointer;
+  transition:background .08s,border-color .08s,color .08s;
+}
+.filter-btn:hover{background:var(--bg-hover);border-color:var(--border-strong);color:var(--text-secondary)}
+.filter-btn.active{background:var(--accent-faint);border-color:var(--accent-border);color:var(--accent-light);font-weight:600}
+.icon{width:16px;display:inline-block;text-align:center}
+.icon.add{color:#3fb950}.icon.rem{color:var(--sev-critical-fg)}.icon.amb{color:var(--amber-text)}
+
+/* ── Center panel + D6 Tree Toolbar ─────────────────────────────────────── */
+.center-panel{display:flex;flex-direction:column;overflow:hidden;min-width:0;min-height:0}
+/* 4px-grid compliant: height 36px, padding 0 12px */
+.tree-toolbar{display:flex;align-items:center;gap:8px;padding:0 12px;height:36px;background:var(--bg-surface);border-bottom:1px solid var(--border-subtle);flex-shrink:0}
+/* Vercel small action button style: transparent bg, border, fast transition */
+.toolbar-btn{
+  background:transparent;border:1px solid var(--border-default);border-radius:5px;
+  color:var(--text-secondary);font-size:11px;height:26px;padding:0 10px;cursor:pointer;
+  transition:background .08s,color .08s,border-color .08s;user-select:none;
+}
+.toolbar-btn:hover{background:var(--bg-hover);border-color:var(--border-strong);color:var(--text-primary)}
+.tree-count{font-size:11px;color:var(--text-faint);margin-left:auto;font-variant-numeric:tabular-nums}
 .tree-panel{overflow-y:auto;flex:1;background:var(--bg-base)}
 .list-loading{display:flex;align-items:center;gap:10px;padding:20px;color:var(--text-tertiary);font-size:12px}
 .list-spinner{width:16px;height:16px;border:2px solid var(--border-subtle);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
 @keyframes spin{to{transform:rotate(360deg)}}
-.panel-detail{background:var(--bg-surface);border-left:1px solid var(--border-subtle);display:flex;flex-direction:column;overflow:hidden;min-width:0;position:relative}
+.panel-detail{background:var(--bg-surface);border-left:1px solid var(--border-subtle);overflow-y:auto;overflow-x:hidden;min-width:0;min-height:0;position:relative}
 
-.detail-empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:10px;padding:40px 20px;text-align:center}
+/* Empty state */
+.detail-empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100%;gap:10px;padding:40px 20px;text-align:center}
 .detail-empty-icon{font-size:32px;opacity:.3}
 .detail-empty-text{font-size:14px;color:var(--text-tertiary);font-weight:600}
 .detail-empty-sub{font-size:11px;color:var(--text-disabled);line-height:1.6}
 
-
-#summary-panel{display:none;flex:1;overflow-y:auto;padding:12px;background:#1a1d27;min-height:0}
+/* Summary panel */
+#summary-panel{display:none;flex:1;overflow-y:auto;padding:12px;background:var(--bg-surface);min-height:0}
 .sidebar-wrapper.summary-active #diff-panel{display:none}
 .sidebar-wrapper.summary-active #summary-panel{display:flex;flex-direction:column;flex:1;min-height:0}
 
+/* ── D10 Summary Panel — Impact Score + Root Cause Cards ─────────────────── */
 .exec-summary{display:flex;flex-direction:column;gap:14px}
-.exec-zone{background:#13161f;border:1px solid #1e2133;border-radius:10px;padding:16px}
-.exec-zone-title{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--text-tertiary);font-weight:700;margin-bottom:12px}
+/* border-radius:8px per D10 spec (was 10px) */
+.exec-zone{background:var(--bg-base);border:1px solid var(--border-subtle);border-radius:8px;padding:14px}
+/* ALL-CAPS header — letter-spacing:0.08em (Stripe confirmed) */
+.exec-zone-title{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);font-weight:700;margin-bottom:12px}
 .impact-score-ring{display:flex;align-items:center;gap:16px}
-.impact-score-number{font-size:52px;font-weight:900;line-height:1;letter-spacing:-2px}
-.impact-score-number.score-great{color:#4ade80}
-.impact-score-number.score-good{color:#86efac}
-.impact-score-number.score-warn{color:#fbbf24}
-.impact-score-number.score-bad{color:#f87171}
+/* Large hero number — Linear KPI widget pattern, tabular for stability */
+.impact-score-number{font-size:52px;font-weight:900;line-height:1;letter-spacing:-2px;font-variant-numeric:tabular-nums}
+.impact-score-number.score-great{color:#3fb950}
+.impact-score-number.score-good{color:#56d364}
+.impact-score-number.score-warn{color:var(--amber-text)}
+.impact-score-number.score-bad{color:var(--sev-critical-fg)}
 .impact-score-meta{display:flex;flex-direction:column;gap:4px}
-.impact-score-label{font-size:14px;font-weight:600;color:#e2e8f0}
+.impact-score-label{font-size:14px;font-weight:600;color:var(--text-primary)}
 .impact-score-sublabel{font-size:11px;color:var(--text-tertiary)}
 .impact-chips{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
-.impact-chip{background:#1e2133;border:1px solid #2d3148;border-radius:20px;font-size:11px;color:#94a3b8;padding:3px 10px;cursor:pointer;transition:background .12s,border-color .12s}
+.impact-chip{background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:20px;font-size:11px;color:var(--text-secondary);padding:3px 10px;cursor:pointer;transition:background .08s,border-color .08s,color .08s}
 .impact-chip:hover{background:var(--bg-hover);border-color:var(--border-strong);color:var(--text-primary)}
-.impact-chip.chip-active{background:#312e81;border-color:#6366f1;color:#a5b4fc}
-.impact-progress{height:4px;background:#1e2133;border-radius:2px;overflow:hidden;margin-top:12px}
+.impact-chip.chip-active{background:var(--accent-faint);border-color:var(--accent-border);color:var(--accent-light)}
+.impact-progress{height:4px;background:var(--bg-elevated);border-radius:2px;overflow:hidden;margin-top:12px}
 .impact-progress-fill{height:100%;border-radius:2px;transition:width .6s ease}
 .root-cause-list{display:flex;flex-direction:column;gap:6px}
-.root-cause-card{display:flex;align-items:flex-start;gap:10px;padding:9px 10px;background:#1a1d27;border:1px solid #1e2133;border-radius:7px;cursor:pointer;transition:border-color .15s,background .15s;position:relative}
-.root-cause-card:hover{background:var(--bg-hover);border-color:var(--border-strong)}
+/* Root cause cards — Linear issue row: compact, fast hover (80ms) */
+.root-cause-card{
+  display:flex;align-items:flex-start;gap:10px;padding:8px 10px;
+  background:var(--bg-base);border:1px solid var(--border-subtle);border-radius:6px;
+  cursor:pointer;transition:border-color .08s,background .08s;position:relative;
+}
+.root-cause-card:hover{background:var(--bg-hover);border-color:var(--border-default)}
 .root-cause-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-top:4px}
-.root-cause-dot.sev-critical{background:#ef4444;box-shadow:0 0 6px #ef444466}
-.root-cause-dot.sev-high{background:#f97316;box-shadow:0 0 6px #f9731666}
-.root-cause-dot.sev-medium{background:#eab308;box-shadow:0 0 6px #eab30866}
-.root-cause-dot.sev-low{background:#6b7280}
+.root-cause-dot.sev-critical{background:var(--sev-critical-fg)}
+.root-cause-dot.sev-high{background:var(--sev-high-fg)}
+.root-cause-dot.sev-medium{background:var(--sev-medium-fg)}
+.root-cause-dot.sev-low{background:var(--sev-low-fg)}
 .root-cause-body{flex:1;min-width:0}
-.root-cause-key{font-size:12px;font-family:monospace;color:#c4b5fd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
-.root-cause-sub{font-size:11px;color:var(--text-tertiary);margin-top:3px}
-.root-cause-arrow{font-size:14px;color:var(--text-disabled);flex-shrink:0;align-self:center;transition:color .12s}
-.root-cause-card:hover .root-cause-arrow{color:#c4b5fd}
+/* Monospace key with full Geist Mono stack (Vercel) */
+.root-cause-key{font-size:12px;font-family:ui-monospace,'Geist Mono','Cascadia Code','Fira Code','JetBrains Mono',monospace;color:var(--accent-light);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.root-cause-sub{font-size:11px;color:var(--text-muted);line-height:1.4;margin-top:3px}
+.root-cause-arrow{font-size:14px;color:var(--text-disabled);flex-shrink:0;align-self:center;transition:color .08s}
+.root-cause-card:hover .root-cause-arrow{color:var(--accent-light)}
 .root-cause-empty{font-size:12px;color:var(--text-tertiary);text-align:center;padding:20px 0}
+
+/* Distribution bar */
 .dist-bar-outer{height:20px;border-radius:5px;overflow:hidden;display:flex;margin-bottom:10px}
 .dist-segment{height:100%;transition:flex .4s ease;min-width:0;position:relative}
 .dist-segment[data-cat=layout]{background:#3b82f6}
-.dist-segment[data-cat=style]{background:#f59e0b}
+.dist-segment[data-cat=style]{background:var(--amber-text)}
 .dist-segment[data-cat=content]{background:#0d9488}
-.dist-segment[data-cat=dom]{background:#8b5cf6}
+.dist-segment[data-cat=dom]{background:var(--accent)}
 .dist-legend{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-.dist-legend-item{display:flex;align-items:center;gap:6px;font-size:11px;color:#94a3b8;cursor:pointer}
-.dist-legend-item:hover{color:#e2e8f0}
+.dist-legend-item{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-secondary);cursor:pointer}
+.dist-legend-item:hover{color:var(--text-primary)}
 .dist-legend-dot{width:9px;height:9px;border-radius:2px;flex-shrink:0}
-.dist-count{color:var(--text-tertiary);font-size:10px;margin-left:auto}
+.dist-count{color:var(--text-tertiary);font-size:10px;margin-left:auto;font-variant-numeric:tabular-nums}
 
-.detail-header{padding:14px 16px;border-bottom:1px solid #1e2133;flex-shrink:0}
+/* ── D7 Detail Panel Header ──────────────────────────────────────────────── */
+.detail-header{padding:12px 16px;border-bottom:1px solid var(--border-subtle);flex-shrink:0;background:var(--bg-surface)}
+.detail-scroll{display:block}
 .detail-body{padding:14px 16px}
-.detail-narrative-badge{display:inline-flex;align-items:center;font-size:9px;font-weight:800;letter-spacing:.1em;padding:3px 8px;border-radius:4px;margin-bottom:10px;text-transform:uppercase}
-.nb-insertion{background:#14532d;color:#4ade80;border:1px solid #166534}
-.nb-removal{background:#450a0a;color:#f87171;border:1px solid #991b1b}
-.nb-layout{background:#1e3a5f;color:#60a5fa;border:1px solid #1d4ed8}
-.nb-position{background:#2d1a3e;color:#c084fc;border:1px solid #7e22ce}
-.nb-style{background:#78350f;color:#fcd34d;border:1px solid #92400e}
-.nb-structural{background:#1e293b;color:#94a3b8;border:1px solid #334155}
-.nb-content{background:#134e4a;color:#5eead4;border:1px solid #0f766e}
-.nb-pseudo{background:#1e1b4b;color:#a5b4fc;border:1px solid #312e81}
-.detail-tag{font-size:15px;font-weight:700;color:#fff;font-family:monospace;word-break:break-all;line-height:1.4}
-.detail-breadcrumb{font-size:11px;color:var(--text-tertiary);margin-top:4px;word-break:break-all}
+/* Narrative badge — font-size 10px (9px uppercase is illegible per WCAG) */
+.detail-narrative-badge{display:inline-flex;align-items:center;font-size:10px;font-weight:700;letter-spacing:.08em;padding:2px 7px;border-radius:4px;margin-bottom:10px;text-transform:uppercase}
+.nb-insertion{background:#0f2a1a;color:#3fb950;border:1px solid #145522}
+.nb-removal{background:#300d0d;color:#f47474;border:1px solid #5e1c1c}
+.nb-layout{background:#0c1e3a;color:#60a5fa;border:1px solid #1d3a5f}
+.nb-position{background:#1e0f2e;color:#c084fc;border:1px solid #5b2a8c}
+.nb-style{background:#2a1200;color:#fb923c;border:1px solid #7c2d12}
+.nb-structural{background:#161b22;color:var(--text-muted);border:1px solid var(--border-default)}
+.nb-content{background:#0c2825;color:#34d399;border:1px solid #065f46}
+.nb-pseudo{background:#141030;color:#a5b4fc;border:1px solid #2e2470}
+/* detail-tag uses var(--text-primary) not hardcoded #fff — avoids halation */
+.detail-tag{font-size:14px;font-weight:700;color:var(--text-primary);font-family:ui-monospace,'Geist Mono','Cascadia Code','Fira Code',monospace;word-break:break-all;line-height:1.4;margin-top:6px}
+.detail-breadcrumb{font-size:11px;color:var(--text-muted);margin-top:4px;word-break:break-all;line-height:1.5}
 .detail-selectors{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
-.detail-note{font-size:11px;color:#6b7280;margin-top:6px;padding:4px 8px;background:#1e2133;border-radius:4px;border-left:2px solid #374151;font-style:italic}
-.detail-instances{font-size:11px;color:#4ade80;margin-top:6px;padding:4px 8px;background:#14532d22;border-radius:4px;border-left:2px solid #166534}
+.detail-note{font-size:11px;color:var(--text-tertiary);margin-top:6px;padding:4px 8px;background:var(--bg-elevated);border-radius:4px;border-left:2px solid var(--border-default);font-style:italic}
+.detail-instances{font-size:11px;color:var(--green-text);margin-top:6px;padding:4px 8px;background:rgba(63,185,80,.06);border-radius:4px;border-left:2px solid rgba(63,185,80,.3)}
 .detail-demotion{font-size:11px;color:#5eead4;margin-top:6px;padding:6px 8px;background:#134e4a22;border-radius:4px;border-left:2px solid #0d9488}
 .detail-demotion strong{color:#99f6e4}
-.sel-btn{background:#1e2133;border:1px solid #2d3148;border-radius:4px;color:#93c5fd;font-size:11px;padding:3px 8px;cursor:pointer;font-family:monospace;transition:background .12s}
-.sel-btn:hover{background:#2d3148}
+/* sel-btn — Vercel style: bg-elevated, border, monospace, token colors */
+.sel-btn{background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:4px;color:var(--text-secondary);font-size:11px;padding:3px 8px;cursor:pointer;font-family:ui-monospace,'Geist Mono','Cascadia Code',monospace;transition:background .08s,border-color .08s}
+.sel-btn:hover{background:var(--bg-raised);border-color:var(--border-strong)}
 .detail-category{margin-bottom:14px}
-.cat-title{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--text-tertiary);margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid var(--border-subtle);font-weight:600}
-.diff-row{display:grid;grid-template-columns:130px 1fr 16px 1fr;gap:6px;align-items:center;padding:5px 0;font-size:12px}
-.diff-prop{color:var(--text-secondary);font-family:ui-monospace,'Cascadia Code',monospace;font-size:11.5px;font-weight:500}
-.diff-base{color:var(--red-text);font-family:ui-monospace,'Cascadia Code',monospace;word-break:break-all;font-size:11.5px;background:var(--red-bg);padding:1px 4px;border-radius:3px}
-.diff-compare{color:var(--green-text);font-family:ui-monospace,'Cascadia Code',monospace;word-break:break-all;font-size:11.5px;background:var(--green-bg);padding:1px 4px;border-radius:3px}
+
+/* ── D9 Category Headers ─────────────────────────────────────────────────── */
+/* font-size:10px, letter-spacing:0.08em — Stripe section header pattern */
+.cat-title{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:6px;padding-bottom:5px;border-bottom:1px solid var(--border-subtle);font-weight:700}
+
+/* ── D8 Diff Table — GitHub Primer pattern ───────────────────────────────── */
+/* 110px property column — maximises value columns (D8 spec) */
+.diff-row{display:grid;grid-template-columns:110px 1fr 14px 1fr;gap:4px;align-items:baseline;padding:5px 0;font-size:12px;border-bottom:1px solid var(--border-subtle)}
+.diff-row:last-child{border-bottom:none}
+/* tabular-nums on property col — CSS values contain numbers */
+.diff-prop{
+  color:var(--text-muted);font-family:ui-monospace,'Geist Mono','Cascadia Code','Fira Code','JetBrains Mono',monospace;
+  font-size:11px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}
+/* Red pill — bg + border + text trio (Stripe/Primer pattern) */
+.diff-base{
+  color:var(--red-text);font-family:ui-monospace,'Geist Mono','Cascadia Code','Fira Code','JetBrains Mono',monospace;
+  word-break:break-all;font-size:11px;background:var(--red-bg);border:1px solid var(--red-border);
+  padding:1px 5px;border-radius:3px;font-variant-numeric:tabular-nums;
+}
+/* Green pill */
+.diff-compare{
+  color:var(--green-text);font-family:ui-monospace,'Geist Mono','Cascadia Code','Fira Code','JetBrains Mono',monospace;
+  word-break:break-all;font-size:11px;background:var(--green-bg);border:1px solid var(--green-border);
+  padding:1px 5px;border-radius:3px;font-variant-numeric:tabular-nums;
+}
 .diff-compare.demoted{color:#5eead4}
-.diff-arrow{color:var(--text-disabled);text-align:center;font-size:12px}
+/* Arrow visually recedes — font-size:10px */
+.diff-arrow{color:var(--text-faint);text-align:center;font-size:10px}
+
+/* Misc detail elements */
 .sev-pip{display:inline-block;width:6px;height:6px;border-radius:50%;margin-left:4px;vertical-align:middle}
-.sev-pip.critical{background:#ef4444}.sev-pip.high{background:#f97316}.sev-pip.medium{background:#eab308}.sev-pip.low{background:#6b7280}
+.sev-pip.critical{background:var(--sev-critical-fg)}.sev-pip.high{background:var(--sev-high-fg)}.sev-pip.medium{background:var(--sev-medium-fg)}.sev-pip.low{background:var(--sev-low-fg)}
 .swatch{display:inline-block;width:11px;height:11px;border-radius:2px;border:1px solid rgba(255,255,255,.2);vertical-align:middle;margin-right:3px}
+
+/* ── D12 Breadcrumb Nav — Linear monospace pill pattern ─────────────────── */
 .detail-breadcrumb-nav{display:flex;flex-wrap:wrap;align-items:center;gap:2px;margin-top:10px}
-.crumb-item{font-size:11px;font-family:ui-monospace,monospace;color:var(--text-tertiary);padding:2px 5px;border-radius:3px;white-space:nowrap}
-.crumb-diff{color:#c084fc;cursor:pointer;border:1px solid #2d1a3e;background:#1a152b}
-.crumb-diff:hover{background:#2d1a3e;color:#e9d5ff;border-color:#7e22ce}
-.crumb-self{color:#e2e8f0;font-weight:600;background:#1e2133;border:1px solid #2d3148}
+.crumb-item{font-size:11px;font-family:ui-monospace,'Geist Mono','Cascadia Code',monospace;color:var(--text-muted);padding:1px 5px;border-radius:3px;white-space:nowrap}
+.crumb-diff{color:var(--accent-light);cursor:pointer;border:1px solid var(--accent-border);background:var(--accent-faint)}
+.crumb-diff:hover{background:rgba(124,58,237,.2);color:#d8b4fe;border-color:var(--accent)}
+.crumb-self{color:var(--text-primary);font-weight:600;background:var(--bg-elevated);border:1px solid var(--border-default)}
 .crumb-ellipsis{color:var(--text-disabled)}
-.crumb-sep{color:var(--border-strong);font-size:10px;padding:0 2px;user-select:none}
-.structural-desc{font-size:12px;color:#94a3b8;line-height:1.7;padding:12px;background:#1a1f2e;border-radius:6px;margin:14px 0;border-left:3px solid #334155}
+.crumb-sep{color:var(--text-faint);font-size:10px;padding:0 3px;user-select:none}
+
+/* Prose descriptions — line-height:1.7 (Finding 5) */
+.structural-desc{font-size:12px;color:var(--text-secondary);line-height:1.7;padding:12px;background:var(--bg-hover);border-radius:6px;margin:14px 0;border-left:3px solid var(--border-default)}
 .structural-expand-btn{width:100%;justify-content:center;margin-top:4px;padding:6px}
-.mutation-desc{font-size:12px;color:#94a3b8;line-height:1.7;padding:12px;background:#1a1f2e;border-radius:6px;margin:14px 0}
-.mutation-desc strong{color:#e2e8f0}
-.ambiguous-notice{background:#3d2800;border:1px solid #f59e0b;border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:12px;color:#fcd34d;line-height:1.5}
+.mutation-desc{font-size:12px;color:var(--text-secondary);line-height:1.7;padding:12px;background:var(--bg-hover);border-radius:6px;margin:14px 0}
+.mutation-desc strong{color:var(--text-primary)}
+.ambiguous-notice{background:#2d1900;border:1px solid var(--amber-text);border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:12px;color:var(--amber-text);line-height:1.5}
 .ambiguous-notice strong{display:block;margin-bottom:6px;font-size:13px}
 .candidate-table{width:100%;border-collapse:collapse;margin-top:10px;font-size:12px}
-.candidate-table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-tertiary);padding:4px 8px;border-bottom:1px solid var(--border-subtle)}
-.candidate-table td{color:#a0aec0;padding:5px 8px;border-bottom:1px solid #1a1d27;font-family:monospace}
-.cascade-expander{margin-top:14px;border:1px solid #2d3148;border-radius:6px;overflow:hidden}
-.cascade-header{display:flex;align-items:center;gap:8px;padding:9px 12px;background:#1e2133;cursor:pointer;font-size:12px;color:#c084fc;font-weight:600;user-select:none}
-.cascade-header:hover{background:#252840}
-.cascade-chevron{font-size:9px;transition:transform .15s}
-.cascade-body{padding:8px 10px}
-.cascade-child-row{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid #1a1d27;font-size:11px}
+.candidate-table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);padding:4px 8px;border-bottom:1px solid var(--border-subtle)}
+.candidate-table td{color:var(--text-secondary);padding:5px 8px;border-bottom:1px solid var(--border-subtle);font-family:ui-monospace,'Geist Mono',monospace;font-variant-numeric:tabular-nums}
+
+/* ── D11 Cascade Expander — GitHub collapsible pattern ───────────────────── */
+.cascade-expander{margin-top:12px;border:1px solid var(--border-subtle);border-radius:6px;overflow:hidden}
+.cascade-header{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-elevated);cursor:pointer;font-size:12px;color:var(--accent-light);font-weight:600;user-select:none;transition:background .08s}
+.cascade-header:hover{background:var(--bg-raised)}
+/* Chevron rotation on open — 150ms ease (D11 spec) */
+.cascade-chevron{font-size:9px;transition:transform .15s ease}
+.cascade-body{padding:6px 10px;border-top:1px solid var(--border-subtle)}
+.cascade-child-row{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border-subtle);font-size:11px}
 .cascade-child-row:last-child{border-bottom:none}
-.cascade-child-key{color:#a0aec0;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cascade-child-type{color:#6366f1;font-size:10px;font-weight:700;background:#1e1b4b;border-radius:3px;padding:1px 5px;letter-spacing:.04em;white-space:nowrap}
-.cascade-child-props{color:var(--text-tertiary);font-family:ui-monospace,monospace;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px}
+.cascade-child-key{color:var(--text-secondary);font-family:ui-monospace,'Geist Mono',monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cascade-child-type{color:#818cf8;font-size:10px;font-weight:700;background:#1e1b4b;border-radius:3px;padding:1px 5px;letter-spacing:.04em;white-space:nowrap}
+.cascade-child-props{color:var(--text-tertiary);font-family:ui-monospace,'Geist Mono',monospace;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px}
 
-.minimap-rail-wrap{width:10px;flex-shrink:0;background:#13161f;border:1px solid #1e2133;border-radius:3px;position:relative;overflow:hidden}
-.minimap-dot{position:absolute;left:50%;transform:translate(-50%,-50%);width:6px;height:6px;border-radius:50%;background:#ef4444;box-shadow:0 0 4px #ef444488;transition:top .2s}
-.minimap-container{display:flex;gap:8px;padding:10px 16px 8px;border-bottom:1px solid #1e2133;flex-shrink:0;align-items:stretch;min-height:52px}
+/* ── Minimap — tabular-nums on all position values ───────────────────────── */
+.minimap-rail-wrap{width:10px;flex-shrink:0;background:var(--bg-base);border:1px solid var(--border-subtle);border-radius:3px;position:relative;overflow:hidden}
+.minimap-dot{position:absolute;left:50%;transform:translate(-50%,-50%);width:6px;height:6px;border-radius:50%;background:var(--sev-critical-fg);box-shadow:0 0 4px rgba(239,68,68,.5);transition:top .2s}
+.minimap-container{display:flex;gap:8px;padding:10px 16px 8px;border-bottom:1px solid var(--border-subtle);flex-shrink:0;align-items:stretch;min-height:52px}
 .minimap-meta{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:3px}
-.minimap-pos{font-size:11px;color:var(--text-tertiary)}
-.minimap-pos strong{color:#94a3b8}
+/* tabular-nums for px position values (Vercel spec D8) */
+.minimap-pos{font-size:11px;color:var(--text-tertiary);font-variant-numeric:tabular-nums}
+.minimap-pos strong{color:var(--text-secondary);font-variant-numeric:tabular-nums}
 
-.vdiff-inline{margin:0 16px 14px;border:1px solid #2d3148;border-radius:8px;overflow:hidden;flex-shrink:0}
-.vdiff-inline-header{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:#1e2133;border-bottom:1px solid #2d3148}
-.vdiff-inline-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#c084fc;font-weight:700}
-.vdiff-open-btn{background:#312e81;border:1px solid #6366f1;border-radius:4px;color:#a5b4fc;font-size:11px;padding:3px 8px;cursor:pointer;transition:background .15s}
-.vdiff-open-btn:hover{background:#3730a3}
-.vdiff-thumb-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#2d3148}
-.vdiff-thumb-col{background:#0a0c14;display:flex;flex-direction:column}
-.vdiff-pane-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:5px 8px;font-weight:600;flex-shrink:0}
+/* ── D13 Visual Diff Section ─────────────────────────────────────────────── */
+.vdiff-inline{margin:0 16px 14px;border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden;flex-shrink:0}
+.vdiff-inline-header{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:var(--bg-elevated);border-bottom:1px solid var(--border-subtle)}
+.vdiff-inline-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--accent-light);font-weight:700}
+/* vdiff-open-btn migrated to accent-faint system — consistent with filter-btn */
+.vdiff-open-btn{background:var(--accent-faint);border:1px solid var(--accent-border);border-radius:5px;color:var(--accent-light);font-size:11px;font-weight:600;padding:4px 10px;cursor:pointer;transition:background .08s,border-color .08s}
+.vdiff-open-btn:hover{background:rgba(124,58,237,.22);border-color:var(--accent)}
+.vdiff-thumb-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border-subtle)}
+/* Deep near-black bg for screenshot panels — maximum contrast (Vercel pattern) */
+.vdiff-thumb-col{background:#080a10;display:flex;flex-direction:column}
+.vdiff-pane-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:6px 10px;font-weight:700;flex-shrink:0}
 .vdiff-pane-label.label-baseline{color:#60a5fa}
-.vdiff-pane-label.label-compare{color:#4ade80}
-.vdiff-thumb-wrap{position:relative;overflow:hidden;width:100%;background:#0a0c14;min-height:120px}
+.vdiff-pane-label.label-compare{color:#3fb950}
+.vdiff-thumb-wrap{position:relative;overflow:hidden;width:100%;background:#080a10;min-height:60px}
 .vdiff-thumb-wrap.loading::before{content:'';display:block;position:absolute;inset:0;background:linear-gradient(90deg,#1a1d27 25%,#252836 50%,#1a1d27 75%);background-size:200% 100%;animation:thumb-shimmer 1.2s infinite linear;border-radius:4px}
+.vdiff-thumb-wrap[data-misaligned]::after{content:'';position:absolute;inset:0;border:2px solid #f59e0b;pointer-events:none;z-index:3}
+.vdiff-misalign-badge{position:absolute;bottom:4px;left:4px;right:4px;background:rgba(245,158,11,0.92);color:#1a1200;font-size:10px;font-weight:600;padding:3px 6px;border-radius:3px;text-align:center;z-index:4;pointer-events:none}
 @keyframes thumb-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 .vdiff-thumb{display:block;transform-origin:top left}
 .vdiff-thumb-svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible;z-index:2}
 .vdiff-missing{display:flex;align-items:center;justify-content:center;height:80px;color:var(--text-disabled);font-size:11px}
 
+/* Modal */
 .vdiff-modal{position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.88);display:flex;flex-direction:column;backdrop-filter:blur(4px)}
 .vdiff-modal[hidden]{display:none}
-.vdiff-modal__header{display:flex;align-items:center;gap:12px;padding:10px 16px;background:#1a1d27;border-bottom:1px solid #2d3148;flex-shrink:0}
-.vdiff-modal__title{font-size:13px;color:#93c5fd;font-family:monospace;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vdiff-modal__header{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--bg-surface);border-bottom:1px solid var(--border-subtle);flex-shrink:0}
+.vdiff-modal__title{font-size:13px;color:var(--accent-light);font-family:ui-monospace,'Geist Mono',monospace;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vdiff-modal__controls{display:flex;gap:4px;align-items:center;flex-shrink:0}
-.vdiff-modal__controls button{background:#1e2133;border:1px solid #2d3148;border-radius:6px;color:#6b7280;font-size:11px;padding:5px 10px;cursor:pointer;transition:background .12s,color .12s,border-color .12s;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
-.vdiff-modal__controls button:hover{background:#2d3148;color:#e2e8f0;border-color:#3d4165}
-.vdiff-modal__controls button.active{background:#1e1040;border-color:#6d28d9;color:#a78bfa}
-.vdiff-modal__controls [data-action=ghost].active{background:#1a1060;border-color:#6366f1;color:#a5b4fc}
-.vdiff-modal__controls [data-action=close]{background:#1a0808;border-color:#7f1d1d;color:#f87171}
-.vdiff-modal__controls [data-action=close]:hover{background:#450a0a;border-color:#991b1b;color:#fca5a5}
+.vdiff-modal__controls button{background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:6px;color:var(--text-tertiary);font-size:11px;padding:5px 10px;cursor:pointer;transition:background .08s,color .08s,border-color .08s;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.vdiff-modal__controls button:hover{background:var(--bg-raised);color:var(--text-primary);border-color:var(--border-strong)}
+.vdiff-modal__controls button.active{background:var(--accent-faint);border-color:var(--accent-border);color:var(--accent-light)}
+.vdiff-modal__controls [data-action=ghost].active{background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.4);color:#a5b4fc}
+.vdiff-modal__controls [data-action=close]{background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.3);color:var(--sev-critical-fg)}
+.vdiff-modal__controls [data-action=close]:hover{background:rgba(239,68,68,.18);border-color:rgba(239,68,68,.5)}
 .ctrl-label{font-size:11px;font-weight:500;letter-spacing:.01em}
-.vdiff-modal__panes{display:flex;flex:1;overflow:hidden;gap:1px;background:#2d3148}
-.vdiff-pane{display:flex;flex-direction:column;background:#0f1117;flex:1;min-width:0}
+.vdiff-modal__panes{display:flex;flex:1;overflow:hidden;gap:1px;background:var(--border-subtle)}
+.vdiff-pane{display:flex;flex-direction:column;background:var(--bg-base);flex:1;min-width:0}
 .pane-fullwidth{flex:1 1 100%}
 .pane-hidden{display:none!important}
-.pane-expand{background:none;border:none;color:inherit;cursor:pointer;padding:0 6px;opacity:.5;float:right;display:inline-flex;align-items:center;transition:opacity .15s}
+.pane-expand{background:none;border:none;color:inherit;cursor:pointer;padding:0 6px;opacity:.5;float:right;display:inline-flex;align-items:center;transition:opacity .08s}
 .pane-expand:hover{opacity:1}
 .vdiff-pane--baseline .vdiff-pane__label{color:#60a5fa;background:#060e1a}
-.vdiff-pane--compare .vdiff-pane__label{color:#4ade80;background:#061209}
-.vdiff-pane__label{font-size:10px;text-transform:uppercase;letter-spacing:.1em;padding:5px 12px;flex-shrink:0;font-weight:700}
-.vdiff-pane__scroll-container{overflow:auto;flex:1;position:relative;scrollbar-width:thin;scrollbar-color:#2d3148 transparent}
+.vdiff-pane--compare .vdiff-pane__label{color:#3fb950;background:#051209}
+.vdiff-pane__label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:6px 12px;flex-shrink:0;font-weight:700}
+.vdiff-pane__scroll-container{overflow:auto;flex:1;position:relative;scrollbar-width:thin;scrollbar-color:var(--border-default) transparent}
 .vdiff-pane__content{position:relative;display:inline-block;min-width:100%;transform-origin:top left}
 .vdiff-screenshot{width:100%;height:auto;display:block;image-rendering:crisp-edges}
 .vdiff-svg-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible;z-index:4}
 .vdiff-svg-overlay .hl-rect{pointer-events:all;cursor:crosshair}
 .vdiff-ghost{position:absolute;inset:0;z-index:5;pointer-events:none}
 .vdiff-ghost-img{width:100%;height:auto;opacity:.5}
-.vdiff-tooltip{position:fixed;z-index:10010;background:#13111c;border:1px solid #6d28d9;border-radius:6px;padding:8px 10px;font-size:11px;max-width:340px;pointer-events:none;box-shadow:0 4px 20px rgba(0,0,0,.6)}
-.vdiff-tooltip[hidden]{display:none}
-.tt-row{display:grid;grid-template-columns:120px 1fr 14px 1fr;gap:4px;align-items:baseline;padding:2px 0;border-bottom:1px solid #1e1b2e}
-.tt-row:last-child{border-bottom:none}
-.tt-prop{color:#94a3b8;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tt-base{color:#fca5a5;font-family:monospace;word-break:break-all}
-.tt-arr{color:var(--text-disabled);text-align:center}
-.tt-cmp{color:#86efac;font-family:monospace;word-break:break-all}
 
+/* ── D14 Tooltip — 2-layer shadow (Vercel layered shadow rule) ───────────── */
+.vdiff-tooltip{
+  position:fixed;z-index:10010;background:var(--bg-elevated);
+  border:1px solid var(--accent-border);border-radius:8px;
+  padding:10px 12px;font-size:12px;max-width:340px;pointer-events:none;
+  box-shadow:0 1px 4px rgba(0,0,0,.3),0 4px 20px rgba(0,0,0,.5);
+}
+.vdiff-tooltip[hidden]{display:none}
+.tt-row{display:grid;grid-template-columns:110px 1fr 14px 1fr;gap:4px;align-items:baseline;padding:2px 0;border-bottom:1px solid var(--border-subtle)}
+.tt-row:last-child{border-bottom:none}
+.tt-prop{color:var(--text-secondary);font-family:ui-monospace,'Geist Mono','Cascadia Code',monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+.tt-base{color:var(--red-text);font-family:ui-monospace,'Geist Mono','Cascadia Code',monospace;word-break:break-all;font-variant-numeric:tabular-nums}
+.tt-arr{color:var(--text-faint);text-align:center;font-size:10px}
+.tt-cmp{color:var(--green-text);font-family:ui-monospace,'Geist Mono','Cascadia Code',monospace;word-break:break-all;font-variant-numeric:tabular-nums}
+
+/* ── D5 Tree Panel ───────────────────────────────────────────────────────── */
 .tree-root{padding:4px 0}
-.tree-node{display:flex;align-items:center;padding:0;border-bottom:1px solid #0f111755;cursor:default;user-select:none;min-height:30px;transition:background .1s;position:relative}
+.tree-node{display:flex;align-items:center;min-height:28px;padding:0 8px 0 0;border-bottom:1px solid var(--border-subtle);cursor:default;user-select:none;transition:background .08s;position:relative}
 .tree-node.tree-has-diff{cursor:pointer}
-.tree-node.tree-has-diff:hover{background:#1a1f2e}
-.tree-node.tree-structural{cursor:pointer;opacity:.45}
-.tree-node.tree-structural:hover{opacity:.75}
-.tree-node.tree-selected{background:#1e2a3a}
-.tree-node.tree-selected::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:#7c3aed;border-radius:0 2px 2px 0}
-.tree-indent{display:flex;align-items:stretch;flex-shrink:0}
-.tree-indent-segment{width:18px;border-left:1px solid #1e2133}
-.tree-chevron-wrap{width:22px;flex-shrink:0;display:flex;align-items:center;justify-content:center}
-.tree-chevron{font-size:9px;color:var(--text-tertiary);cursor:pointer;width:18px;height:18px;display:flex;align-items:center;justify-content:center;border-radius:3px;transition:background .1s,color .1s,transform .15s;flex-shrink:0}
-.tree-chevron:hover{background:#2d3148;color:#e2e8f0}
+.tree-node.tree-has-diff:hover{background:var(--tree-row-hover-bg)}
+.tree-node.tree-structural{cursor:pointer}
+.tree-node.tree-structural:hover{background:var(--tree-row-hover-bg)}
+/* Structural: dedicated solid color, NO opacity — Primer accessibility pattern */
+.tree-node.tree-structural .tree-label{color:var(--tree-structural-fg)}
+.tree-node.tree-structural .tree-chevron{color:var(--tree-structural-fg)}
+/* Selected: bg tint + 2px left accent border — Stripe/Linear pattern */
+.tree-node.tree-selected{background:var(--tree-row-selected-bg)}
+.tree-node.tree-selected::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--tree-row-selected-border);border-radius:0 1px 1px 0}
+/* Indent guides — VS Code pattern: 1px line centered at 50% of segment width */
+.tree-indent{width:16px;flex-shrink:0;position:relative;align-self:stretch;display:flex;align-items:center}
+.tree-indent::before{content:'';position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--tree-indent-guide)}
+.tree-indent-segment{width:16px;flex-shrink:0;position:relative;align-self:stretch;display:flex;align-items:center}
+.tree-indent-segment::before{content:'';position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--tree-indent-guide)}
+.tree-chevron-wrap{width:20px;flex-shrink:0;display:flex;align-items:center;justify-content:center}
+/* Chevron: 8px icon, 150ms rotation, 20×20 hit target */
+.tree-chevron{font-size:8px;color:var(--text-muted);cursor:pointer;width:16px;height:16px;display:flex;align-items:center;justify-content:center;border-radius:3px;transition:background .08s,color .08s,transform .15s;flex-shrink:0}
+.tree-chevron:hover{background:var(--bg-active);color:var(--text-secondary)}
 .tree-chevron.open{transform:rotate(90deg)}
-.tree-chevron-spacer{width:18px;flex-shrink:0}
-.tree-label{font-size:12px;color:var(--text-secondary);font-family:ui-monospace,'Cascadia Code','Fira Code',monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;padding:0 6px}
-.tree-has-diff .tree-label{color:#c4b5fd}
-.tree-structural .tree-label{color:var(--text-disabled)}
-.tree-badge{font-size:9px;font-weight:800;letter-spacing:.06em;border-radius:3px;padding:2px 5px;flex-shrink:0;text-transform:uppercase;white-space:nowrap;margin-right:4px}
-.tree-badge.nb-insertion{background:#14532d;color:#4ade80;border:1px solid #166534}
-.tree-badge.nb-removal{background:#450a0a;color:#f87171;border:1px solid #991b1b}
-.tree-badge.nb-layout{background:#1e3a5f;color:#60a5fa;border:1px solid #1d4ed8}
-.tree-badge.nb-position{background:#2d1a3e;color:#c084fc;border:1px solid #7e22ce}
-.tree-badge.nb-style{background:#783500;color:#fcd34d;border:1px solid #92400e}
-.tree-badge.nb-content{background:#134e4a;color:#5eead4;border:1px solid #0f766e}
-.tree-badge.nb-pseudo{background:#1e1b4b;color:#a5b4fc;border:1px solid #312e81}
-.tree-diff-count{background:#312e81;color:#a5b4fc;border-radius:3px;padding:1px 5px;font-size:10px;flex-shrink:0;margin-right:4px}
-.tree-instances{font-size:10px;color:#4ade80;flex-shrink:0;background:#14532d33;border-radius:3px;padding:1px 5px;margin-right:4px}
-.tree-apex-badge{font-size:9px;color:#f59e0b;flex-shrink:0;background:#3d280033;border:1px solid #92400e44;border-radius:3px;padding:1px 4px;margin-right:4px;letter-spacing:.04em}
-.tree-visual-dot{width:6px;height:6px;border-radius:50%;background:#c084fc;flex-shrink:0;margin-right:6px;box-shadow:0 0 4px #c084fc66}
+.tree-chevron-spacer{width:16px;flex-shrink:0}
+/* Tree label: fixed 28px line-height for icon alignment (Linear density principle) */
+.tree-label{font-size:12px;color:var(--text-secondary);font-family:ui-monospace,'Geist Mono','Cascadia Code','Fira Code',monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;padding:0 6px;line-height:28px}
+/* Diff nodes: weight change + color (Linear: hierarchy via weight, not color alone) */
+.tree-has-diff .tree-label{color:var(--tree-diff-fg);font-weight:600;text-shadow:0 0 12px rgba(199,210,254,.3)}
+.tree-structural .tree-label{color:var(--tree-structural-fg);font-weight:400}
+/* Badges: font-size 10px, weight 600 — uppercase removed (9px uppercase fails readability) */
+.tree-badge{font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;flex-shrink:0;white-space:nowrap;letter-spacing:.01em;border:1px solid transparent;margin-right:4px}
+.tree-badge.nb-insertion{background:#0f2a1a;color:#3fb950;border-color:#145522}
+.tree-badge.nb-removal{background:#300d0d;color:#f47474;border-color:#5e1c1c}
+.tree-badge.nb-layout{background:#0c1e3a;color:#60a5fa;border-color:#1d3a5f}
+.tree-badge.nb-position{background:#1e0f2e;color:#c084fc;border-color:#5b2a8c}
+.tree-badge.nb-style{background:#2a1200;color:#fb923c;border-color:#7c2d12}
+.tree-badge.nb-content{background:#0c2825;color:#34d399;border-color:#065f46}
+.tree-badge.nb-pseudo{background:#141030;color:#a5b4fc;border-color:#2e2470}
+.tree-badge.nb-structural{background:var(--bg-elevated);color:var(--text-muted);border-color:var(--border-default)}
+/* Diff count pill: accent-faint system, tabular-nums */
+.tree-diff-count{background:var(--accent-faint);color:var(--accent-light);border:1px solid var(--accent-border);border-radius:4px;padding:0 5px;font-size:10px;font-weight:600;flex-shrink:0;margin-right:4px;font-variant-numeric:tabular-nums}
+.tree-instances{font-size:10px;color:var(--green-text);flex-shrink:0;background:var(--green-bg);border-radius:3px;padding:1px 5px;margin-right:4px;font-weight:600;font-variant-numeric:tabular-nums}
+.tree-apex-badge{font-size:9px;color:var(--amber-text);flex-shrink:0;background:var(--amber-bg);border:1px solid rgba(210,153,34,.3);border-radius:3px;padding:1px 4px;margin-right:4px;letter-spacing:.04em}
+/* Visual dot: opacity acceptable here — purely decorative non-text indicator */
+.tree-visual-dot{width:5px;height:5px;border-radius:50%;background:var(--accent-light);flex-shrink:0;margin-right:6px;opacity:.6}
 .tree-children.collapsed{display:none}
 .tree-empty{color:var(--text-tertiary);text-align:center;padding:40px 0;font-size:13px}
-`;
+
+/* ── Utility classes ─────────────────────────────────────────────────────── */
+.u-text-tertiary{color:var(--text-tertiary)}
+.u-text-secondary{color:var(--text-secondary)}
+.u-label-upper{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted)}
+.u-pos-label{font-size:10px;color:var(--text-muted);user-select:none;padding:2px 0;flex-shrink:0;letter-spacing:.06em;text-transform:uppercase;font-variant-numeric:tabular-nums}
+.u-dom-delta{font-size:11px;color:var(--text-tertiary);margin-top:10px}
+.u-no-diffs{color:var(--text-tertiary);text-align:center;padding:20px}
+.u-pct-sup{font-size:28px;color:var(--text-tertiary);font-variant-numeric:tabular-nums}
+
+/* ── D16 Focus States — WCAG 2.1 SC 2.4.11 (required by Vercel guidelines) ── */
+.tree-node:focus-visible,
+.filter-btn:focus-visible,
+.toolbar-btn:focus-visible,
+.sel-btn:focus-visible,
+.impact-chip:focus-visible,
+.root-cause-card:focus-visible,
+.activity-btn:focus-visible,
+.vdiff-open-btn:focus-visible{
+  outline:2px solid var(--border-focus);
+  outline-offset:1px;
+}
+
+/* ── D15 Scrollbars — 4px, transparent track, token thumb ───────────────── */
+.sidebar::-webkit-scrollbar,.tree-panel::-webkit-scrollbar,.panel-detail::-webkit-scrollbar,#summary-panel::-webkit-scrollbar{width:4px}
+.sidebar::-webkit-scrollbar-track,.tree-panel::-webkit-scrollbar-track,.panel-detail::-webkit-scrollbar-track,#summary-panel::-webkit-scrollbar-track{background:transparent}
+.sidebar::-webkit-scrollbar-thumb,.tree-panel::-webkit-scrollbar-thumb,.panel-detail::-webkit-scrollbar-thumb,#summary-panel::-webkit-scrollbar-thumb{background:var(--border-default);border-radius:4px}
+.sidebar::-webkit-scrollbar-thumb:hover,.tree-panel::-webkit-scrollbar-thumb:hover,.panel-detail::-webkit-scrollbar-thumb:hover,#summary-panel::-webkit-scrollbar-thumb:hover{background:var(--border-strong)}
+.sidebar{scrollbar-width:thin;scrollbar-color:var(--border-default) transparent}
+.tree-panel{scrollbar-width:thin;scrollbar-color:var(--border-default) transparent}
+.panel-detail{scrollbar-width:thin;scrollbar-color:var(--border-default) transparent}
+#summary-panel{scrollbar-width:thin;scrollbar-color:var(--border-default) transparent}`;
 }
 
 function buildJs(grouped, manifest, blobData, raw) {
@@ -696,7 +929,7 @@ function initSummaryOverlay(){
   var dPct=Math.max(0,100-lPct-sPct-cPct);
   var progressColor=score>=90?'#4ade80':score>=70?'#86efac':score>=50?'#fbbf24':'#f87171';
   var zoneA='<div class="exec-zone"><div class="exec-zone-title">Impact Score</div>'+
-    '<div class="impact-score-ring"><div class="impact-score-number '+cls+'">'+score+'<span style="font-size:28px;color:#4a5568">%</span></div>'+
+    '<div class="impact-score-ring"><div class="impact-score-number '+cls+'">'+score+'<span class="u-pct-sup">%</span></div>'+
     '<div class="impact-score-meta"><div class="impact-score-label">Design Consistency</div>'+
     '<div class="impact-score-sublabel">'+(s.rootCauseCount??0)+' root cause'+(s.rootCauseCount!==1?'s':'')+' \u00b7 penalty '+Math.round(s.rawPenalty??0)+'</div></div></div>'+
     '<div class="impact-progress"><div class="impact-progress-fill" style="width:'+score+'%;background:'+progressColor+'"></div></div>'+
@@ -732,7 +965,7 @@ function initSummaryOverlay(){
   }).join('');
   var zoneC='<div class="exec-zone"><div class="exec-zone-title">Change Distribution</div>'+
     '<div class="dist-bar-outer">'+barSegs+'</div><div class="dist-legend">'+legend+'</div>'+
-    '<div style="font-size:11px;color:#4a5568;margin-top:10px;">DOM delta: <strong style="color:#94a3b8">+'+esc(String(s.added||0))+' only in '+esc(COMPARISON_META.compareHost||'compare')+'</strong> \u00b7 <strong style="color:#94a3b8">\u2212'+esc(String(s.removed||0))+' only in '+esc(COMPARISON_META.baselineHost||'baseline')+'</strong></div>'+
+    '<div class="u-dom-delta">DOM delta: <strong class="u-text-secondary">+'+esc(String(s.added||0))+' only in '+esc(COMPARISON_META.compareHost||'compare')+'</strong> \u00b7 <strong class="u-text-secondary">\u2212'+esc(String(s.removed||0))+' only in '+esc(COMPARISON_META.baselineHost||'baseline')+'</strong></div>'+
     '</div>';
   var content=document.getElementById('summary-panel');
   if(content) content.innerHTML='<div class="exec-summary">'+zoneA+zoneB+zoneC+'</div>';
@@ -879,11 +1112,11 @@ function buildMiniMapHtml(hpid){
   var rect     = entry.baselineRect||{};
   var yDisplay = Math.round(docY);
   var botDisplay=Math.round(docY+(rect.height||0));
-  return '<div class="minimap-section-label" style="font-size:9px;color:#4a5568;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px">Document Position</div><div class="minimap-container">'+
+  return '<div class="minimap-section-label u-label-upper" style="margin-bottom:4px">Document Position</div><div class="minimap-container">'+
     '<div class="minimap-rail-wrap" title="Dot shows where this element sits on the full page height" style="height:44px">'+
       '<div class="minimap-dot" style="top:'+topPct+'%;background:'+esc(sevColor)+';box-shadow:0 0 4px '+esc(sevColor)+'88"></div>'+
     '</div>'+
-    '<div style="font-size:9px;color:#4a5568;user-select:none;padding:2px 0;flex-shrink:0;letter-spacing:.06em;text-transform:uppercase">POS</div>'+
+    '<div class="u-pos-label">POS</div>'+
     '<div class="minimap-meta">'+
       '<div class="minimap-pos">y: <strong>'+esc(String(yDisplay))+'px</strong> \u2192 <strong>'+esc(String(botDisplay))+'px</strong></div>'+
       '<div class="minimap-pos">position: <strong>'+topPct+'%</strong> from top</div>'+
@@ -892,52 +1125,54 @@ function buildMiniMapHtml(hpid){
 }
 
 function computeCropParams(img, rect, containerWidth, dpr){
-  // dpr: the actualDPR at capture time (from VISUAL_MANIFEST entry).
-  // img.naturalWidth is in raw screenshot pixels; divide by dpr to get CSS pixels.
-  dpr = dpr || 2;
+  dpr=dpr||2;
   var rx=rect.x!=null?rect.x:(rect.left||0);
   var ry=rect.y!=null?rect.y:(rect.top||0);
   var rw=rect.width||rect.w||1;
   var rh=rect.height||rect.h||1;
   var vpW=img.naturalWidth/dpr;
   var vpH=img.naturalHeight/dpr;
-  var ctxX=Math.max(20,Math.min(120,rw*0.35));
-  var ctxY=Math.max(30,Math.min(100,Math.max(rh*1.5,40)));
-  var paddedX=Math.max(0,rx-ctxX);
-  var paddedY=Math.max(0,ry-ctxY);
-  var paddedW=Math.min(vpW,rx+rw+ctxX)-paddedX;
-  var paddedH=Math.min(vpH,ry+rh+ctxY)-paddedY;
-  paddedW=Math.max(paddedW,1); paddedH=Math.max(paddedH,1);
-  var scaleX=Math.min(containerWidth/paddedW, 220/paddedH); // cap: thumbnail never exceeds 220px tall
+  var scaleX=Math.max(Math.min(containerWidth*0.60/rw, 140/Math.max(rh,1)), 0.25);
   var scaleY=scaleX;
+  var ctxPx=30/scaleX;
+  var paddedX=Math.max(0,Math.min(rx-ctxPx,vpW-rw-1));
+  var paddedY=Math.max(0,Math.min(ry-ctxPx,vpH-rh-1));
+  var paddedW=Math.min(vpW,rx+rw+ctxPx)-paddedX;
+  var paddedH=Math.min(vpH,ry+rh+ctxPx)-paddedY;
+  paddedW=Math.max(paddedW,1); paddedH=Math.max(paddedH,1);
   return {paddedX:paddedX,paddedY:paddedY,paddedW:paddedW,paddedH:paddedH,scaleX:scaleX,scaleY:scaleY,displayW:paddedW*scaleX,displayH:paddedH*scaleY,vpW:vpW,vpH:vpH,rx:rx,ry:ry,rw:rw,rh:rh};
 }
 
-function applyCrop(img, rect, dpr){
-  var container=img.parentElement; if(!container) return;
-  var p=computeCropParams(img,rect,container.clientWidth||container.offsetWidth||200,dpr||2);
+// applyThumb — single crop+highlight pass so both operations use the IDENTICAL
+// computeCropParams result.  Previously applyCrop and drawInlineHighlight each
+// called computeCropParams independently; if the container reflowed between the
+// two calls the SVG coordinate system diverged from the CSS transform, causing
+// misaligned highlight boxes.
+function applyThumb(img, svgEl, container, rect, diffs, dpr){
+  if(!img||!img.naturalWidth||!rect||!container) return;
+  var cw=container.clientWidth||container.offsetWidth||200;
+  var p=computeCropParams(img,rect,cw,dpr||2);
+
+  // ── 1. Crop the image ──────────────────────────────────────────────────────
   img.style.width=(p.vpW*p.scaleX)+'px';
   img.style.height=(p.vpH*p.scaleY)+'px';
   img.style.transform='translate('+(-p.paddedX*p.scaleX)+'px,'+(-p.paddedY*p.scaleY)+'px)';
   img.style.transformOrigin='top left';
   img.style.position='absolute';
   container.style.height=p.displayH+'px';
-}
 
-function drawInlineHighlight(svgEl, container, img, rect, diffs, dpr){
+  // ── 2. Draw the SVG highlight using the same p ─────────────────────────────
+  if(!svgEl) return;
   svgEl.innerHTML='';
-  if(!img||!img.naturalWidth||!rect) return;
-  var p=computeCropParams(img,rect,container.clientWidth||container.offsetWidth||200,dpr||2);
-  var imgRect=img.getBoundingClientRect();
-  var sx=imgRect.width>0?imgRect.width/p.vpW:p.scaleX;
-  var sy=imgRect.height>0?imgRect.height/p.vpH:p.scaleY;
-  var displayW=p.paddedW*sx;
-  var displayH=p.paddedH*sy;
+  // Use p.scaleX directly — avoids a getBoundingClientRect() call whose result
+  // can be stale if the browser has not yet committed the transform above.
+  var sx=p.scaleX, sy=p.scaleY;
+  var displayW=p.paddedW*sx, displayH=p.paddedH*sy;
   svgEl.setAttribute('width',displayW);
   svgEl.setAttribute('height',displayH);
   var hL=Math.max(0,(p.rx-p.paddedX)*sx);
   var hT=Math.max(0,(p.ry-p.paddedY)*sy);
-  var hW=p.rw*sx; var hH=p.rh*sy;
+  var hW=Math.max(0,p.rw*sx); var hH=Math.max(0,p.rh*sy);
   if(hW<2||hH<2) return;
   var sev=diffs&&diffs[0]?diffs[0].severity:'medium';
   var color=SEVERITY_COLORS[sev]||'#7c3aed';
@@ -956,6 +1191,25 @@ function drawInlineHighlight(svgEl, container, img, rect, diffs, dpr){
   hl.dataset.diffs=JSON.stringify(diffs||[]);
   hl.classList.add('hl-rect');
   svgEl.appendChild(hl);
+}
+
+// Kept for any external call sites — delegates to applyThumb.
+function applyCrop(img, rect, dpr){
+  var container=img&&img.parentElement; if(!container) return;
+  var cw=container.clientWidth||container.offsetWidth||200;
+  var p=computeCropParams(img,rect,cw,dpr||2);
+  img.style.width=(p.vpW*p.scaleX)+'px';
+  img.style.height=(p.vpH*p.scaleY)+'px';
+  img.style.transform='translate('+(-p.paddedX*p.scaleX)+'px,'+(-p.paddedY*p.scaleY)+'px)';
+  img.style.transformOrigin='top left';
+  img.style.position='absolute';
+  container.style.height=p.displayH+'px';
+}
+
+// drawInlineHighlight kept for any external call sites.
+function drawInlineHighlight(svgEl, container, img, rect, diffs, dpr){
+  if(!img||!img.naturalWidth||!rect||!svgEl||!container) return;
+  applyThumb(img,svgEl,container,rect,diffs,dpr);
 }
 
 function applyFocusMask(svgEl, W, H, dx, dy, dw, dh, color){
@@ -992,13 +1246,16 @@ function drawModalHighlights(svgEl, imgEl, rect, diffs, dpr){
   var sev=diffs&&diffs[0]?diffs[0].severity:'medium';
   var color=SEVERITY_COLORS[sev]||'#7c3aed';
   var defs=svgNS('defs');
-  var filt=svgNS('filter'); filt.setAttribute('id','mg'); filt.setAttribute('x','-10%'); filt.setAttribute('y','-10%'); filt.setAttribute('width','120%'); filt.setAttribute('height','120%');
+  // Unique filter ID per draw call — prevents baseline and compare SVGs from
+  // sharing the same id='mg' which caused one overlay to corrupt the other.
+  var filtId='mg-'+(++_maskSeq);
+  var filt=svgNS('filter'); filt.setAttribute('id',filtId); filt.setAttribute('x','-10%'); filt.setAttribute('y','-10%'); filt.setAttribute('width','120%'); filt.setAttribute('height','120%');
   var blur=svgNS('feGaussianBlur'); blur.setAttribute('stdDeviation','3'); blur.setAttribute('result','b');
   var merge=svgNS('feMerge'); var mn1=svgNS('feMergeNode'); mn1.setAttribute('in','b'); var mn2=svgNS('feMergeNode'); mn2.setAttribute('in','SourceGraphic');
   merge.appendChild(mn1); merge.appendChild(mn2); filt.appendChild(blur); filt.appendChild(merge); defs.appendChild(filt); svgEl.appendChild(defs);
   applyFocusMask(svgEl,layoutW,layoutH,dx,dy,dw,dh,color);
   var glow=svgNS('rect');
-  setAttrs(glow,{x:dx-2,y:dy-2,width:dw+4,height:dh+4,fill:'none',stroke:color,'stroke-width':3,opacity:.35,rx:2,filter:'url(#mg)'});
+  setAttrs(glow,{x:dx-2,y:dy-2,width:dw+4,height:dh+4,fill:'none',stroke:color,'stroke-width':3,opacity:.35,rx:2,filter:'url(#'+filtId+')'});
   svgEl.appendChild(glow);
   var hl=svgNS('rect');
   setAttrs(hl,{x:dx,y:dy,width:dw,height:dh,fill:color+'22',stroke:color,'stroke-width':2,'stroke-dasharray':'6,3',rx:2,'vector-effect':'non-scaling-stroke'});
@@ -1009,14 +1266,19 @@ function drawModalHighlights(svgEl, imgEl, rect, diffs, dpr){
 
 function buildVisualDiffSection(hpid){
   var entry=VISUAL_MANIFEST[hpid]; if(!entry) return '';
-  function col(kfId,label,cls,rect){
+  function col(kfId,label,cls,rect,misaligned,misalignReason){
     var rAttr=rect?' data-rect="'+esc(JSON.stringify(rect))+'"':'';
+    var misalignBadge=misaligned
+      ?'<div class="vdiff-misalign-badge" title="Capture may be inaccurate: '+(misalignReason||'element not in viewport at capture time')+'">&#9888; Potentially misaligned</div>'
+      :'';
     return '<div class="vdiff-thumb-col">'+
       '<div class="vdiff-pane-label '+cls+'">'+label+'</div>'+
       (kfId
-        ?'<div class="vdiff-thumb-wrap" data-role="'+cls.replace('label-','')+'">'+
+        ?'<div class="vdiff-thumb-wrap" data-role="'+cls.replace('label-','')+'"'+
+              (misaligned?' data-misaligned="true" data-misalign-reason="'+esc(misalignReason||'')+'"':'')+'>'+
             '<img class="vdiff-thumb" data-kf-id="'+esc(kfId)+'"'+rAttr+' alt="'+label+'" decoding="async">'+
             '<svg class="vdiff-thumb-svg" aria-hidden="true"></svg>'+
+            misalignBadge+
           '</div>'
         :'<div class="vdiff-missing">No capture</div>')+
       '</div>';
@@ -1027,47 +1289,46 @@ function buildVisualDiffSection(hpid){
       '<button class="vdiff-open-btn" data-hpid="'+esc(hpid)+'">\u29C9 Workbench</button>'+
     '</div>'+
     '<div class="vdiff-thumb-grid">'+
-      col(entry.baselineKeyframeId,'Baseline','label-baseline',entry.baselineRect)+
-      col(entry.compareKeyframeId, 'Compare', 'label-compare',  entry.compareRect)+
+      col(entry.baselineKeyframeId,'Baseline','label-baseline',entry.baselineRect,entry.baselineMisaligned,entry.baselineMisalignReason)+
+      col(entry.compareKeyframeId, 'Compare', 'label-compare',  entry.compareRect, entry.compareMisaligned, entry.compareMisalignReason)+
     '</div>'+
   '</div>';
 }
 
 function attachVdiffInlineImages(hpid){
   var entry=VISUAL_MANIFEST[hpid]; if(!entry) return;
-  // INVARIANT: entry.baselineDocumentY - entry.baselineKfScrollY should equal entry.baselineRect.y
-  // If this fails, coordinates were captured at wrong scroll position
   var section=detailEl.querySelector('.vdiff-inline'); if(!section) return;
   section.querySelectorAll('img[data-kf-id]').forEach(function(img){
     var kfId=img.dataset.kfId;
     var uri=VISUAL_DATA[kfId]; if(!uri) return;
     var rect;
     try{ rect=JSON.parse(img.dataset.rect||'null'); } catch(e){ rect=null; }
-    // Determine which side this thumbnail is for, then use the correct actualDPR.
     var wrapper=img.parentElement;
+    // data-role is on the .vdiff-thumb-wrap element ("baseline" or "compare")
     var role=(wrapper&&wrapper.dataset&&wrapper.dataset.role)||'baseline';
     var dpr=role==='compare'?(entry.compareActualDPR||2):(entry.baselineActualDPR||2);
+    // Snapshot diffs at closure time so a later teardown cannot mutate the reference.
+    var diffs=entry.diffs||[];
+    var svgEl=wrapper&&wrapper.querySelector('.vdiff-thumb-svg');
     if(wrapper) wrapper.classList.add('loading');
     img.onload=function(){
-      var svgEl=wrapper&&wrapper.querySelector('.vdiff-thumb-svg');
-      var container=wrapper;
       var doApply=function(){
-        var w=container.clientWidth||container.offsetWidth;
-        if(!w){
-          requestAnimationFrame(function(){
-            requestAnimationFrame(function(){  // double-rAF: grid reflow may take 2 paint cycles
-              if(rect) applyCrop(img,rect,dpr);
-              if(svgEl&&container&&rect) drawInlineHighlight(svgEl,container,img,rect,entry.diffs,dpr);
-              if(wrapper) wrapper.classList.remove('loading');
-            });
-          });
-        } else {
-          if(rect) applyCrop(img,rect,dpr);
-          if(svgEl&&container&&rect) drawInlineHighlight(svgEl,container,img,rect,entry.diffs,dpr);
-          if(wrapper) wrapper.classList.remove('loading');
-        }
+        // Both crop and highlight use the SAME applyThumb call, which computes
+        // params once — eliminating the coordinate divergence that occurred when
+        // applyCrop and drawInlineHighlight each called computeCropParams
+        // independently with potentially different container widths.
+        if(rect) applyThumb(img,svgEl,wrapper,rect,diffs,dpr);
+        if(wrapper) wrapper.classList.remove('loading');
       };
-      doApply();
+      var w=wrapper?wrapper.clientWidth||wrapper.offsetWidth:0;
+      if(!w){
+        // Container not yet laid out; wait two paint cycles for grid reflow.
+        requestAnimationFrame(function(){
+          requestAnimationFrame(doApply);
+        });
+      } else {
+        doApply();
+      }
     };
     img.src=uri;
     if(img.complete&&img.naturalWidth) img.onload();
@@ -1181,7 +1442,7 @@ function renderDiffDetail(item, hpid, severity){
     suppNote+instNote+contentNote+
     '</div>'+
     '<div class="detail-body">'+
-    (catBlocks||'<div style="color:#4a5568;text-align:center;padding:20px;">No property diffs recorded</div>')+
+    (catBlocks||'<div class="u-no-diffs">No property diffs recorded</div>')+
     pseudoSec+
     '</div>'+
     vdiffSec+
@@ -1224,7 +1485,7 @@ function handleNodeSelection(hpid, nodeEl){
     case 'DIFF_APEX':    renderDiffDetail(cl.item,cl.hpid,cl.sev);
                          renderApexCascadeExpander(cl.item);                break;
     case 'DIFF_DETAIL':  renderDiffDetail(cl.item,cl.hpid,cl.sev);          break;
-    default:             detailEl.innerHTML='<div style="padding:20px;color:#4a5568">No data available.</div>';
+    default:             detailEl.innerHTML='<div class="u-no-diffs">No data available.</div>';
   }
   _activeEntry=cl.item??null;
 }
@@ -1289,6 +1550,15 @@ function openDiffModal(hpid){
   modal.querySelector('[data-action="sync"]').classList.add('active');
   modal.querySelector('[data-action="sync"] .sync-icon-on').style.display='';
   modal.querySelector('[data-action="sync"] .sync-icon-off').style.display='none';
+
+  // ── Show the modal BEFORE setting image sources ────────────────────────────
+  // Browsers may fire img.onload synchronously for cached images — if the modal
+  // still has [hidden] at that point, offsetWidth=0 and drawModalHighlights
+  // returns early, leaving both panes unlit.  Revealing the modal first
+  // guarantees layout dimensions are available whenever onload fires.
+  modal.removeAttribute('hidden');
+  document.body.style.overflow='hidden';
+
   setModalImage(
     modal.querySelector('.vdiff-screenshot[data-role="baseline"]'),
     modal.querySelector('.vdiff-svg-overlay[data-role="baseline"]'),
@@ -1299,6 +1569,7 @@ function openDiffModal(hpid){
     modal.querySelector('.vdiff-svg-overlay[data-role="compare"]'),
     entry.compareKeyframeId, entry.compareRect, entry.diffs, entry.compareActualDPR||2
   );
+
   var pA=modal.querySelector('[data-pane="baseline"]'), pB=modal.querySelector('[data-pane="compare"]');
   _syncCtrl=initSyncScroll(pA,pB);
   if(_resizeObs) _resizeObs.disconnect();
@@ -1306,8 +1577,10 @@ function openDiffModal(hpid){
     _resizeObs=new ResizeObserver(function(){ requestAnimationFrame(redrawAll); });
     _resizeObs.observe(modal.querySelector('.vdiff-modal__panes'));
   }
-  modal.removeAttribute('hidden');
-  document.body.style.overflow='hidden';
+  // Guaranteed fallback redraw: ResizeObserver on a fixed-inset element may not
+  // fire if the pane size hasn't changed between openings.  A single rAF after
+  // the modal is visible ensures highlights always appear on open.
+  requestAnimationFrame(redrawAll);
 }
 
 function closeModal(){

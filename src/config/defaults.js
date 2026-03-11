@@ -36,7 +36,7 @@ const rawConfig = {
     maxElements:       10_000,
     skipInvisible:     true,
     stabilityWindowMs: 500,
-    hardTimeoutMs:     3000,
+    hardTimeoutMs:     1000,
 
     section: {
       headerPositionRatio:  0.20,
