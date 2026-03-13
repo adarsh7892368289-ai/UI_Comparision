@@ -3,6 +3,98 @@ import { rowsToCsv }  from '../shared/csv-utils.js';
 
 const UTF8_BOM         = '\uFEFF';
 const CSV_TEXT_MAX     = 200;
+const HEADER_FONT_COLOR = 'FFFFFF';
+
+// ---------------------------------------------------------------------------
+// Inline XLSX helpers — kept independent from comparison/excel-exporter.js
+// ---------------------------------------------------------------------------
+
+function getXLSX() {
+  const { XLSX } = globalThis;
+  if (!XLSX) {
+    throw new Error('XLSX library not loaded. Ensure libs/xlsx.full.min.js is included before popup.js.');
+  }
+  return XLSX;
+}
+
+function _headerCellStyle(headerColor) {
+  return {
+    fill:      { patternType: 'solid', fgColor: { rgb: headerColor } },
+    font:      { color: { rgb: HEADER_FONT_COLOR }, bold: true },
+    alignment: { vertical: 'center', wrapText: false }
+  };
+}
+
+function _applyFreezePane(ws) {
+  ws['!freeze'] = { xSplit: 0, ySplit: 1, topLeftCell: 'A2', state: 'frozen' };
+}
+
+// ---------------------------------------------------------------------------
+// Shared column definition — single source of truth for CSV and Excel order.
+// display, visibility, opacity are intentionally EXCLUDED here; they are
+// already emitted as part of the cssProperties spread below.
+// ---------------------------------------------------------------------------
+
+function _buildElementHeaders(cssProperties) {
+  return [
+    'HPID',
+    'Absolute HPID',
+    'Tag Name',
+    'Element ID',
+    'Class Name',
+    'Class Occurrence Count',
+    'Text Content',
+    'CSS Selector',
+    'XPath',
+    'Shadow Path',
+    'Rect X',
+    'Rect Y',
+    'Rect Top',
+    'Rect Left',
+    'Width',
+    'Height',
+    'Tier',
+    'Depth',
+    'Page Section',
+    'Class Hierarchy',
+    'Neighbours',
+    'Attributes',
+    ...cssProperties
+  ];
+}
+
+function _buildElementRow(el, cssProperties) {
+  const styleValues = cssProperties.map(prop => el.styles?.[prop] ?? '');
+  return [
+    el.hpid                ?? '',
+    el.absoluteHpid        ?? '',
+    el.tagName             ?? '',
+    el.elementId           ?? '',
+    el.className           ?? '',
+    el.classOccurrenceCount ?? 0,
+    (el.textContent ?? '').substring(0, CSV_TEXT_MAX),
+    el.cssSelector         ?? '',
+    el.xpath               ?? '',
+    el.shadowPath          ?? '',
+    el.rect?.x             ?? '',
+    el.rect?.y             ?? '',
+    el.rect?.top           ?? '',
+    el.rect?.left          ?? '',
+    el.rect?.width         ?? '',
+    el.rect?.height        ?? '',
+    el.tier                ?? '',
+    el.depth               ?? '',
+    el.pageSection         ?? '',
+    el.classHierarchy ? JSON.stringify(el.classHierarchy) : '',
+    el.neighbours     ? JSON.stringify(el.neighbours)     : '',
+    el.attributes     ? JSON.stringify(el.attributes)     : '',
+    ...styleValues
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// CSV exports
+// ---------------------------------------------------------------------------
 
 function buildExtractedReportCsv(report) {
   const cssProperties = get('extraction.cssProperties', []);
@@ -30,75 +122,19 @@ function buildExtractedReportCsv(report) {
   const schema = report.extractOptions?.schema;
   if (schema) {
     rows.push(['SCHEMA OPTIONS']);
-    rows.push(['Styles',         schema.includeStyles         ?? false]);
-    rows.push(['Attributes',     schema.includeAttributes     ?? false]);
-    rows.push(['Rect',           schema.includeRect           ?? false]);
-    rows.push(['Neighbours',     schema.includeNeighbours     ?? false]);
+    rows.push(['Styles',          schema.includeStyles         ?? false]);
+    rows.push(['Attributes',      schema.includeAttributes     ?? false]);
+    rows.push(['Rect',            schema.includeRect           ?? false]);
+    rows.push(['Neighbours',      schema.includeNeighbours     ?? false]);
     rows.push(['Class Hierarchy', schema.includeClassHierarchy ?? false]);
     rows.push([]);
   }
 
   rows.push(['EXTRACTED ELEMENTS']);
-
-  const headers = [
-    'HPID',
-    'Absolute HPID',
-    'Tag Name',
-    'Element ID',
-    'Class Name',
-    'Class Occurrence Count',
-    'Text Content',
-    'CSS Selector',
-    'XPath',
-    'Shadow Path',
-    'Rect X',
-    'Rect Y',
-    'Rect Top',
-    'Rect Left',
-    'Width',
-    'Height',
-    'Display',
-    'Visibility',
-    'Opacity',
-    'Tier',
-    'Depth',
-    'Page Section',
-    'Class Hierarchy',
-    'Neighbours',
-    ...cssProperties
-  ];
-  rows.push(headers);
+  rows.push(_buildElementHeaders(cssProperties));
 
   for (const el of (report.elements || [])) {
-    const styleValues = cssProperties.map(prop => el.styles?.[prop] ?? '');
-
-    rows.push([
-      el.hpid                ?? '',
-      el.absoluteHpid        ?? '',
-      el.tagName             ?? '',
-      el.elementId           ?? '',
-      el.className           ?? '',
-      el.classOccurrenceCount ?? 0,
-      (el.textContent ?? '').substring(0, CSV_TEXT_MAX),
-      el.cssSelector         ?? '',
-      el.xpath               ?? '',
-      el.shadowPath          ?? '',
-      el.rect?.x             ?? '',
-      el.rect?.y             ?? '',
-      el.rect?.top           ?? '',
-      el.rect?.left          ?? '',
-      el.rect?.width         ?? '',
-      el.rect?.height        ?? '',
-      el.styles?.display     ?? '',
-      el.styles?.visibility  ?? '',
-      el.styles?.opacity     ?? '',
-      el.tier                ?? '',
-      el.depth               ?? '',
-      el.pageSection         ?? '',
-      el.classHierarchy ? JSON.stringify(el.classHierarchy) : '',
-      el.neighbours     ? JSON.stringify(el.neighbours)     : '',
-      ...styleValues
-    ]);
+    rows.push(_buildElementRow(el, cssProperties));
   }
 
   return UTF8_BOM + rowsToCsv(rows);
@@ -119,9 +155,150 @@ function buildAllExtractedReportsJson(reports) {
   return JSON.stringify(reports, null, 2);
 }
 
+// ---------------------------------------------------------------------------
+// Excel exports
+// ---------------------------------------------------------------------------
+
+function buildExtractedReportExcel(report) {
+  try {
+    const XLSX          = getXLSX();
+    const cssProperties = get('extraction.cssProperties', []);
+    const headerColor   = get('export.excel.headerColor');
+    const wb            = XLSX.utils.book_new();
+
+    // ── Sheet 1: Metadata ────────────────────────────────────────────────
+    const metaData = [
+      ['Field', 'Value'],
+      ['Report ID',       report.id],
+      ['URL',             report.url],
+      ['Title',           report.title],
+      ['Timestamp',       report.timestamp],
+      ['Total Elements',  report.totalElements],
+      ['Duration (ms)',   report.duration       ?? 'N/A'],
+      ['Capture Quality', report.captureQuality ?? 'N/A'],
+      ['Version',         report.version        ?? ''],
+      ['Filters',         report.filters        ? JSON.stringify(report.filters)        : ''],
+      ['Extract Options', report.extractOptions  ? JSON.stringify(report.extractOptions) : '']
+    ];
+
+    const metaWs = XLSX.utils.aoa_to_sheet(metaData);
+    metaWs['!cols'] = [{ wch: 20 }, { wch: 60 }];
+
+    // Style header row (row 0)
+    ['A1', 'B1'].forEach(addr => {
+      if (metaWs[addr]) { metaWs[addr].s = _headerCellStyle(headerColor); }
+    });
+    _applyFreezePane(metaWs);
+
+    XLSX.utils.book_append_sheet(wb, metaWs, 'Metadata');
+
+    // ── Sheet 2: Elements ────────────────────────────────────────────────
+    const headers    = _buildElementHeaders(cssProperties);
+    const elementRows = (report.elements || []).map(el => _buildElementRow(el, cssProperties));
+
+    const elemWs = XLSX.utils.aoa_to_sheet([headers, ...elementRows]);
+
+    // Column widths: first 23 structural columns at wch:20, CSS props at wch:15
+    const structuralCount = 23; // headers up to and including 'Attributes'
+    elemWs['!cols'] = [
+      ...Array(structuralCount).fill({ wch: 20 }),
+      ...cssProperties.map(() => ({ wch: 15 }))
+    ];
+
+    // Apply header styling to every cell in row 0
+    if (elemWs['!ref']) {
+      const range = XLSX.utils.decode_range(elemWs['!ref']);
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const addr = XLSX.utils.encode_cell({ r: 0, c });
+        if (elemWs[addr]) { elemWs[addr].s = _headerCellStyle(headerColor); }
+      }
+    }
+    _applyFreezePane(elemWs);
+
+    XLSX.utils.book_append_sheet(wb, elemWs, 'Elements');
+
+    const filename = `report-${report.id}.xlsx`;
+    XLSX.writeFile(wb, filename, { cellStyles: true });
+
+    return { success: true, filename };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+function buildAllExtractedReportsExcel(reports) {
+  try {
+    const XLSX          = getXLSX();
+    const cssProperties = get('extraction.cssProperties', []);
+    const headerColor   = get('export.excel.headerColor');
+    const wb            = XLSX.utils.book_new();
+
+    // ── Summary sheet ────────────────────────────────────────────────────
+    const summaryHeaders = ['Index', 'Report ID', 'URL', 'Title', 'Timestamp', 'Total Elements'];
+    const summaryRows    = reports.map((r, i) => [
+      i + 1,
+      (r.id || '').substring(0, 8),
+      r.url        ?? '',
+      r.title      ?? '',
+      r.timestamp  ?? '',
+      r.totalElements ?? 0
+    ]);
+
+    const summaryWs = XLSX.utils.aoa_to_sheet([summaryHeaders, ...summaryRows]);
+    summaryWs['!cols'] = [{ wch: 8 }, { wch: 12 }, { wch: 55 }, { wch: 30 }, { wch: 22 }, { wch: 14 }];
+
+    if (summaryWs['!ref']) {
+      const range = XLSX.utils.decode_range(summaryWs['!ref']);
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const addr = XLSX.utils.encode_cell({ r: 0, c });
+        if (summaryWs[addr]) { summaryWs[addr].s = _headerCellStyle(headerColor); }
+      }
+    }
+    _applyFreezePane(summaryWs);
+
+    XLSX.utils.book_append_sheet(wb, summaryWs, 'Summary');
+
+    // ── One Elements sheet per report ────────────────────────────────────
+    const headers         = _buildElementHeaders(cssProperties);
+    const structuralCount = 23;
+
+    reports.forEach((report, i) => {
+      const elementRows = (report.elements || []).map(el => _buildElementRow(el, cssProperties));
+      const ws          = XLSX.utils.aoa_to_sheet([headers, ...elementRows]);
+
+      ws['!cols'] = [
+        ...Array(structuralCount).fill({ wch: 20 }),
+        ...cssProperties.map(() => ({ wch: 15 }))
+      ];
+
+      if (ws['!ref']) {
+        const range = XLSX.utils.decode_range(ws['!ref']);
+        for (let c = range.s.c; c <= range.e.c; c++) {
+          const addr = XLSX.utils.encode_cell({ r: 0, c });
+          if (ws[addr]) { ws[addr].s = _headerCellStyle(headerColor); }
+        }
+      }
+      _applyFreezePane(ws);
+
+      // Sheet names must be ≤ 31 chars
+      const sheetName = `Report_${i + 1}`.substring(0, 31);
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    });
+
+    const filename = `all-reports.xlsx`;
+    XLSX.writeFile(wb, filename, { cellStyles: true });
+
+    return { success: true, filename };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
 export {
   buildExtractedReportCsv,
   buildExtractedReportJson,
   buildAllExtractedReportsCsv,
-  buildAllExtractedReportsJson
+  buildAllExtractedReportsJson,
+  buildExtractedReportExcel,
+  buildAllExtractedReportsExcel
 };

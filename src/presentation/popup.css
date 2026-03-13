@@ -519,6 +519,65 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+.report-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.report-index {
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  flex-shrink: 0;
+  letter-spacing: 0.02em;
+}
+
+.env-badge {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+
+.env-badge--stage {
+  background: var(--medium-bg);
+  color: var(--medium);
+}
+
+.env-badge--prod {
+  background: var(--low-bg);
+  color: var(--success);
+}
+
+.meta-path {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100px;
+}
+
+.meta-filter {
+  color: var(--accent);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  max-width: 90px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .report-card-meta {
   display: flex;
   align-items: center;
@@ -1236,4 +1295,24 @@ button, [role="button"], input, select {
   font-size: 11px; color: var(--warning, #f59e0b);
   padding: 6px 10px; background: rgba(245,158,11,.08);
   border-radius: var(--radius-sm); margin: 6px 0;
+}
+/* ── Import affordance ───────────────────────────────────────────────────── */
+.upload-report-label {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-top: 5px; padding: 3px 8px;
+  font-size: 11px; font-weight: 500; color: var(--text-secondary);
+  border: 1px dashed var(--border); border-radius: var(--radius-sm);
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  transition: color 0.15s, border-color 0.15s;
+}
+.upload-report-label:hover {
+  color: var(--accent); border-color: var(--accent);
+}
+
+/* ── Imported report badge ───────────────────────────────────────────────── */
+.meta-imported-badge {
+  font-size: 10px; font-weight: 600; color: var(--accent);
+  opacity: 0.8;
 }

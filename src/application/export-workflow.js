@@ -7,7 +7,9 @@ import {
   buildExtractedReportCsv,
   buildExtractedReportJson,
   buildAllExtractedReportsCsv,
-  buildAllExtractedReportsJson
+  buildAllExtractedReportsJson,
+  buildExtractedReportExcel,
+  buildAllExtractedReportsExcel
 }                                        from '../core/export/extraction/report-exporter.js';
 import { exportComparisonToCsv }         from '../core/export/comparison/csv-exporter.js';
 import { exportComparisonToJson }        from '../core/export/comparison/json-exporter.js';
@@ -22,13 +24,25 @@ const EXPORT_FORMAT = Object.freeze({
 });
 
 const EXTRACTED_FORMAT = Object.freeze({
-  JSON: 'json',
-  CSV:  'csv'
+  JSON:  'json',
+  CSV:   'csv',
+  EXCEL: 'excel'
 });
 
 async function exportReport(reportMeta, format) {
   const full = await getReportById(reportMeta.id);
   const data = full ?? reportMeta;
+
+  if (format === EXTRACTED_FORMAT.EXCEL) {
+    const result = buildExtractedReportExcel(data);
+    // XLSX.writeFile is called internally — no triggerDownload needed
+    if (result.success) {
+      logger.info('Extracted report exported as Excel', { id: reportMeta.id, filename: result.filename, elements: data.elements?.length ?? 0 });
+    } else {
+      logger.error('Extracted report Excel export failed', { id: reportMeta.id, error: result.error });
+    }
+    return result;
+  }
 
   if (format === EXTRACTED_FORMAT.JSON) {
     const json     = buildExtractedReportJson(data);
@@ -54,6 +68,21 @@ async function exportAllReports(format) {
   for (const meta of metas) {
     const report = await getReportById(meta.id);
     if (report) full.push(report);
+  }
+
+  if (format === EXTRACTED_FORMAT.EXCEL) {
+    const totalElements = full.reduce((sum, r) => sum + (r.elements?.length ?? 0), 0);
+    if (totalElements > 50_000) {
+      logger.warn('Bulk Excel export aborted — element count too large', { totalElements });
+      return {
+        success: false,
+        error: `Excel export limited to 50,000 elements total. Your ${full.length} reports contain ${totalElements.toLocaleString()} elements. Export individually or use JSON format.`
+      };
+    }
+    const result = buildAllExtractedReportsExcel(full);
+    if (!result.success) return { success: false, error: result.error };
+    logger.info('All extracted reports exported as Excel', { count: full.length });
+    return { success: true, count: full.length };
   }
 
   if (format === EXTRACTED_FORMAT.JSON) {

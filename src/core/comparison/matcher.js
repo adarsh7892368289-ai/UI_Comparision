@@ -1,6 +1,6 @@
 import logger                                from '../../infrastructure/logger.js';
 import { get }                               from '../../config/defaults.js';
-import { yieldToEventLoop, YIELD_CHUNK_SIZE } from './async-utils.js';
+import { yieldToEventLoop, YIELD_CHUNK_SIZE, progressFrame, resultFrame } from './async-utils.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -19,14 +19,6 @@ const MatchType = Object.freeze({
 // ---------------------------------------------------------------------------
 // Pure utility helpers
 // ---------------------------------------------------------------------------
-
-function progressFrame(label, pct) {
-  return { type: 'progress', label, pct };
-}
-
-function resultFrame(payload) {
-  return { type: 'result', payload };
-}
 
 /**
  * Returns the first matching test-attribute key found on an element, or null.

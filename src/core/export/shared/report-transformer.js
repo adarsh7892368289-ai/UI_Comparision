@@ -608,6 +608,8 @@ function buildMatchedGroups(results) {
       diffsByCategory,
       cssSelector:              el.cssSelector            ?? null,
       xpath:                    el.xpath                  ?? null,
+      compareCssSelector:       match.compareCssSelector  ?? null,
+      compareXpath:             match.compareXpath         ?? null,
       matchConfidence:          match.confidence,
       matchStrategy:            match.strategy
     });

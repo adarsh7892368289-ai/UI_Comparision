@@ -108,7 +108,10 @@ chrome.runtime.onConnect.addListener((port) => {
         : Object.keys(visualDiffs ?? {}).length > 0;
 
       send(MessageTypes.COMPARISON_COMPLETE, { result: slim });
-      try { await chrome.action.openPopup(); } catch {}
+      try {
+        await chrome.storage.session.set({ pendingComparison: { baselineId, compareId, mode, timestamp: Date.now() } });
+        await chrome.action.openPopup();
+      } catch {}
       logger.info('Comparison complete via port', { baselineId, compareId });
 
     } catch (error) {
@@ -164,7 +167,9 @@ async function handleDeleteReport(payload) {
 async function handleLoadCachedComparison(payload) {
   const { baselineId, compareId, mode } = payload;
   const cached = await getCachedComparison(baselineId, compareId, mode);
-  return { cached };
+  if (!cached) return { cached: null };
+  const results = await storage.loadComparisonDiffs(cached.id);
+  return { cached: { ...cached, results } };
 }
 
 async function handleGetVisualBlob(payload) {

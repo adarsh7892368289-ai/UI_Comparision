@@ -579,7 +579,7 @@ body{
 .detail-demotion strong{color:#99f6e4}
 /* sel-btn — Vercel style: bg-elevated, border, monospace, token colors */
 .sel-btn{background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:4px;color:var(--text-secondary);font-size:11px;padding:3px 8px;cursor:pointer;font-family:ui-monospace,'Geist Mono','Cascadia Code',monospace;transition:background .08s,border-color .08s}
-.sel-btn:hover{background:var(--bg-raised);border-color:var(--border-strong)}
+.sel-btn:hover{background:var(--bg-raised);border-color:var(--border-strong)}.sel-sep{color:var(--border-strong);padding:0 2px;font-size:11px;align-self:center}
 .detail-category{margin-bottom:14px}
 
 /* ── D9 Category Headers ─────────────────────────────────────────────────── */
@@ -811,6 +811,13 @@ function buildJs(grouped, manifest, blobData, raw) {
   const data         = JSON.stringify(grouped);
   const manifestJson = JSON.stringify(manifest ?? {});
   const blobJson     = JSON.stringify(blobData ?? {});
+  const hpidMetaJson = JSON.stringify(
+    Object.fromEntries(
+      (raw?.comparison?.results ?? [])
+        .filter(r => r.hpid)
+        .map(r => [r.hpid, { t: r.tagName ?? null, c: r.className ?? null, id: r.elementId ?? null }])
+    )
+  );
   const meta         = JSON.stringify({
     baselineUrl:  raw?.baseline?.url  ?? '',
     compareUrl:   raw?.compare?.url   ?? '',
@@ -824,6 +831,7 @@ var GROUPED         = ${data};
 var VISUAL_MANIFEST = ${manifestJson};
 var VISUAL_DATA     = ${blobJson};
 var COMPARISON_META = ${meta};
+var HPID_META       = ${hpidMetaJson};
 var SEVERITY_COLORS = {critical:'#ef4444',high:'#f97316',medium:'#eab308',low:'#6b7280',removed:'#ef4444',added:'#22c55e'};
 var URL_NOISE_ATTRS=new Set(['href','src','srcset','action','data-href','data-url','data-link','data-src','formaction']);
 
@@ -881,7 +889,20 @@ var HPID_LABEL_MAP=(function(){
   var m=new Map();
   (GROUPED.groups.unchanged||[]).forEach(function(item){ if(item.hpid) m.set(item.hpid,item.elementKey); });
   ['critical','high','medium','low','added','removed'].forEach(function(sev){
-    (GROUPED.groups[sev]||[]).forEach(function(item){ if(item.hpid) m.set(item.hpid,item.elementKey); });
+    (GROUPED.groups[sev]||[]).forEach(function(item){
+      if(item.hpid) m.set(item.hpid,item.elementKey);
+      (item.recurrenceHpids||[]).forEach(function(h){ if(h&&!m.has(h)) m.set(h,item.elementKey); });
+    });
+  });
+  Object.keys(HPID_META).forEach(function(hpid){
+    if(!m.has(hpid)){
+      var meta=HPID_META[hpid];
+      var tag=(meta.t||'unknown').toLowerCase();
+      var idPart=meta.id?'#'+meta.id:'';
+      var cls=meta.c?meta.c.trim():'';
+      var clsPart=cls?'.'+cls.split(/\s+/).slice(0,2).join('.'):'';
+      m.set(hpid,tag+idPart+clsPart);
+    }
   });
   return m;
 })();
@@ -1170,6 +1191,10 @@ function applyThumb(img, svgEl, container, rect, diffs, dpr){
   var displayW=p.paddedW*sx, displayH=p.paddedH*sy;
   svgEl.setAttribute('width',displayW);
   svgEl.setAttribute('height',displayH);
+  svgEl.style.width=displayW+'px';
+  svgEl.style.height=displayH+'px';
+  svgEl.style.right='auto';
+  svgEl.style.bottom='auto';
   var hL=Math.max(0,(p.rx-p.paddedX)*sx);
   var hT=Math.max(0,(p.ry-p.paddedY)*sy);
   var hW=Math.max(0,p.rw*sx); var hH=Math.max(0,p.rh*sy);
@@ -1388,10 +1413,15 @@ function renderMutationPanel(cl){
 function renderDiffDetail(item, hpid, severity){
   var badge   =narrativeBadge(item,severity||'modified');
   var crumbs  =hpid?buildBreadcrumbCrumbs(hpid):[];
-  var selBtns =[
-    item.xpath?'<button class="sel-btn" data-copy="'+esc(item.xpath)+'">Copy XPath</button>':'',
-    item.cssSelector?'<button class="sel-btn" data-copy="'+esc(item.cssSelector)+'">Copy CSS</button>':''
+  var baseBtns=[
+    item.xpath?'<button class="sel-btn" data-copy="'+esc(item.xpath)+'">Base XPath</button>':'',
+    item.cssSelector?'<button class="sel-btn" data-copy="'+esc(item.cssSelector)+'">Base CSS</button>':''
   ].join('');
+  var cmpBtns=[
+    item.compareXpath?'<button class="sel-btn" data-copy="'+esc(item.compareXpath)+'">Cmp XPath</button>':'',
+    item.compareCssSelector?'<button class="sel-btn" data-copy="'+esc(item.compareCssSelector)+'">Cmp CSS</button>':''
+  ].join('');
+  var selBtns=baseBtns+(baseBtns&&cmpBtns?'<span class="sel-sep">|</span>':'')+cmpBtns;
   var catBlocks=Object.keys(item.diffsByCategory||{}).map(function(cat){
     var rows=item.diffsByCategory[cat].map(function(d){
       var propName=d.property.startsWith('attr:')?d.property.slice(5):null;

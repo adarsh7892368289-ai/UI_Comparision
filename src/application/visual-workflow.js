@@ -136,15 +136,6 @@ function inPageGetRects(selectorPairs) {
   });
 }
 
-/**
- * Called AFTER the page has been scrolled to the keyframe position.
- * Returns the actual viewport-relative bounding rect of each element as the
- * browser renders it at this scroll position — NOT a computed approximation.
- * This is the ground-truth measurement that replaces the old
- * `documentY - plannedScrollY` formula which silently diverged whenever the
- * page layout differed between baseline and compare or when the actual scroll
- * landed even a few pixels off the planned target.
- */
 function inPageRemeasureRects(selectorPairs) {
   const actualScrollY = Math.round(window.scrollY);
   const vpH           = window.innerHeight;
@@ -400,16 +391,6 @@ function buildSelectorPairs(elements, role) {
   return elements.map(el => extractSelectorPair(el, role)).filter(Boolean);
 }
 
-/**
- * Scrolls to a keyframe position, re-measures element rects at that exact
- * scroll position, takes the screenshot, and returns the observed data.
- *
- * Key contract: the manifest is built from the RETURN VALUE of this function,
- * not from pre-computed coordinates. This guarantees the stored viewportRect
- * matches the pixel coordinates in the captured screenshot.
- *
- * @returns {{ keyframeId: string, actualScrollY: number, rects: Array }}
- */
 async function captureKeyframe(tabId, keyframe, kfSelectorPairs, sessionId, index, total, roleStart, actualDPR, documentHeight) {
   const { id, scrollY, viewportWidth, viewportHeight, tabRole } = keyframe;
   const kfTag = `[kf ${index + 1}/${total} scrollY=${scrollY}]`;
@@ -514,13 +495,6 @@ async function captureKeyframe(tabId, keyframe, kfSelectorPairs, sessionId, inde
   };
 }
 
-/**
- * Captures all keyframes for one tab role.
- * Passes only the selectors belonging to each keyframe's elements so that
- * inPageRemeasureRects isn't querying the entire selector list on every scroll.
- *
- * @returns {Array<{ keyframeId, actualScrollY, rects }>}  one entry per keyframe
- */
 async function captureAllKeyframes(tabId, keyframes, selectorById, sessionId, role, actualDPR, documentHeight) {
   const total          = keyframes.length;
   const roleStart      = Date.now();

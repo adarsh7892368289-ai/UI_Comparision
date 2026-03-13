@@ -130,6 +130,13 @@
             <select class="select" id="baseline-report" aria-label="Select baseline report">
               <option value="">Select report…</option>
             </select>
+            <label class="upload-report-label" for="baseline-upload" title="Import report from JSON, CSV, or Excel file">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+              </svg>
+              Import file
+            </label>
+            <input type="file" id="baseline-upload" accept=".json,.csv,.xlsx,.xls" hidden>
           </div>
           <div class="vs-row"><span class="vs-label">VS</span></div>
           <div class="form-field">
@@ -137,24 +144,19 @@
             <select class="select" id="compare-report" aria-label="Select compare report">
               <option value="">Select report…</option>
             </select>
+            <label class="upload-report-label" for="compare-upload" title="Import report from JSON, CSV, or Excel file">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+              </svg>
+              Import file
+            </label>
+            <input type="file" id="compare-upload" accept=".json,.csv,.xlsx,.xls" hidden>
           </div>
         </div>
 
         <div class="mode-grid" role="group" aria-label="Comparison mode">
           <label class="mode-option">
-            <input type="radio" name="compare-mode" value="static" checked>
-            <div class="mode-card">
-              <svg class="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>
-              </svg>
-              <div>
-                <div class="mode-name">Static</div>
-                <div class="mode-desc">Pixel-perfect diff</div>
-              </div>
-            </div>
-          </label>
-          <label class="mode-option">
-            <input type="radio" name="compare-mode" value="dynamic">
+            <input type="radio" name="compare-mode" value="dynamic" checked>
             <div class="mode-card">
               <svg class="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                 <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
@@ -162,6 +164,18 @@
               <div>
                 <div class="mode-name">Dynamic</div>
                 <div class="mode-desc">Ignore layout noise</div>
+              </div>
+            </div>
+          </label>
+          <label class="mode-option">
+            <input type="radio" name="compare-mode" value="static">
+            <div class="mode-card">
+              <svg class="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>
+              </svg>
+              <div>
+                <div class="mode-name">Static</div>
+                <div class="mode-desc">Pixel-perfect diff</div>
               </div>
             </div>
           </label>

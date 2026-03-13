@@ -1,4 +1,3 @@
-// webpack.config.cjs
 'use strict';
 
 const path       = require('path');

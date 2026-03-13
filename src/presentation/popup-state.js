@@ -10,7 +10,7 @@ const initialState = {
   comparisonLabel: '',
   selectedBaseline: null,
   selectedCompare: null,
-  compareMode: 'static',
+  compareMode: 'dynamic',
   comparisonResult: null,
   cachedAt: null,
   error: null
@@ -91,6 +91,11 @@ const transitions = {
     error
   }),
 
+  IMPORT_COMPLETE: (state, { report }) => ({
+    ...state,
+    reports: [report, ...state.reports.filter(r => r.id !== report.id)]
+  }),
+
   REPORTS_LOADED: (state, { reports }) => ({
     ...state,
     reports
@@ -146,7 +151,9 @@ const transitions = {
     comparisonLabel: '',
     cachedAt: null,
     isComparing: false
-  })
+  }),
+
+  RESET: () => ({ ...initialState })
 };
 
 class PopupState {

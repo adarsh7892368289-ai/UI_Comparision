@@ -210,7 +210,6 @@ function checkTypeExpectations(errors) {
         errors.push(`[Config] "${path}" expected ${type}, got ${actual}`);
       }
     } catch {
-      // already caught in checkRequiredPaths
     }
   }
 }
@@ -223,7 +222,6 @@ function checkSanityRanges(errors) {
         errors.push(`[Config] "${path}" value ${value} is outside expected range [${min}, ${max}]`);
       }
     } catch {
-      // already caught in checkRequiredPaths
     }
   }
 }

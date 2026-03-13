@@ -76,6 +76,7 @@ function sanitizeReport(report) {
     totalElements: Number(report.totalElements || 0),
     duration:      Number(report.duration || 0),
     filters:       report.filters || null,
+    source:        report.source  ?? null,
     elements:      Array.isArray(report.elements) ? report.elements : []
   };
 }
@@ -201,6 +202,7 @@ export {
   deleteReport,
   getReportById,
   getStorageStats,
+  isValidReport,
   loadAllReports,
   saveReport,
   searchReports

@@ -56,22 +56,18 @@ function passTwo(clusters, viewportHeight, viewportWidth, documentHeight) {
       groups.push(group);
 
     } else {
-      const scrollY_A = clampScrollY(cluster.top    - OVERFLOW_PAD,                   viewportHeight, documentHeight);
-      const scrollY_B = clampScrollY(cluster.bottom + OVERFLOW_PAD - viewportHeight,  viewportHeight, documentHeight);
-      const centerA   = scrollY_A + viewportHeight / 2;
-      const centerB   = scrollY_B + viewportHeight / 2;
-
-      const groupA = makeGroup(groups.length,     scrollY_A, viewportWidth, viewportHeight);
-      const groupB = makeGroup(groups.length + 1, scrollY_B, viewportWidth, viewportHeight);
-
-      for (const el of cluster.elements) {
-        const elCenterY = el.documentY + el.height / 2;
-        const distA     = Math.abs(elCenterY - centerA);
-        const distB     = Math.abs(elCenterY - centerB);
-        (distA <= distB ? groupA : groupB).elementIds.push(el.id);
+      const sorted = [...cluster.elements].sort((a, b) => a.documentY - b.documentY);
+      let i = 0;
+      while (i < sorted.length) {
+        const scrollY       = clampScrollY(sorted[i].documentY - OVERFLOW_PAD, viewportHeight, documentHeight);
+        const visibleBottom = scrollY + viewportHeight;
+        const group         = makeGroup(groups.length, scrollY, viewportWidth, viewportHeight);
+        while (i < sorted.length && sorted[i].documentY < visibleBottom) {
+          group.elementIds.push(sorted[i].id);
+          i++;
+        }
+        groups.push(group);
       }
-
-      groups.push(groupA, groupB);
     }
   }
 

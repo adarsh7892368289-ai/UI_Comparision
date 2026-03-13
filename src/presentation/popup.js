@@ -9,6 +9,7 @@ import {
   exportReport, exportAllReports,
   exportComparison, EXPORT_FORMAT
 } from '../application/export-workflow.js';
+import { importReportFromFile } from '../application/import-workflow.js';
 
 logger.init();
 logger.setContext({ script: 'popup' });
@@ -193,6 +194,24 @@ function hostFromUrl(url) {
   try { return new URL(url).hostname; } catch { return url; }
 }
 
+const STAGE_RE = /\b(stage|staging|dev|test|qa|uat|preview|sandbox|canary)\b/i;
+
+function envTag(url) {
+  try { return STAGE_RE.test(new URL(url).hostname) ? 'STAGE' : 'PROD'; } catch { return 'PROD'; }
+}
+
+function lastPathSegment(url) {
+  try {
+    const seg = new URL(url).pathname.replace(/\/$/, '').split('/').filter(Boolean).pop();
+    return seg ? `/${seg}` : '/';
+  } catch { return ''; }
+}
+
+function filterLabel(filters) {
+  if (!filters) return null;
+  return filters.class || filters.id || filters.tag || null;
+}
+
 const EXTRACTION_TIMEOUT_MS = 300_000;
 const EXTRACTION_POLL_INTERVAL_MS = 3_000;
 const EXTRACTION_POLL_MAX_WAIT_MS = 360_000;
@@ -310,6 +329,17 @@ async function handleComparison() {
 
     const includeScreenshots = document.getElementById('visual-diff-toggle')?.checked ?? true;
 
+    const baselineIsImported = baselineReport?.source === 'imported';
+    const compareIsImported  = compareReport?.source  === 'imported';
+
+    let resolvedIncludeScreenshots = includeScreenshots;
+    if (includeScreenshots && (baselineIsImported || compareIsImported)) {
+      resolvedIncludeScreenshots = false;
+      const toggle = document.getElementById('visual-diff-toggle');
+      if (toggle) { toggle.checked = false; toggle.disabled = true; }
+      Toast.info('Visual diff disabled — imported reports have no live tab');
+    }
+
     port = chrome.runtime.connect({ name: 'comparison' });
 
     port.onDisconnect.addListener(() => {
@@ -349,7 +379,7 @@ async function handleComparison() {
       mode:             state.compareMode,
       baselineTabId,
       compareTabId,
-      includeScreenshots
+      includeScreenshots: resolvedIncludeScreenshots
     });
 
     Progress.update('compare', 5, 'Loading reports…');
@@ -402,6 +432,40 @@ async function handleDeleteReport(report) {
   }
 }
 
+async function handleImportReport(file, slot) {
+  let result = await importReportFromFile(file);
+
+  if (!result.success && result.isDuplicate) {
+    const confirmed = await Modal.confirm(
+      'Duplicate report',
+      `A report from "${result.existingReport.url}" already exists. Replace it?`,
+      { confirmText: 'Replace' }
+    );
+    if (!confirmed) return;
+    result = await importReportFromFile(file, { forceReplace: true });
+  }
+
+  if (!result.success) {
+    Toast.error(result.error);
+    return;
+  }
+
+  await refreshReports();
+
+  const stateKey = slot === 'baseline' ? 'BASELINE_SELECTED' : 'COMPARE_SELECTED';
+  popupState.dispatch(stateKey, { id: result.report.id });
+  const selId = slot === 'baseline' ? 'baseline-report' : 'compare-report';
+  const sel   = document.getElementById(selId);
+  if (sel) sel.value = result.report.id;
+  syncCompareButton();
+
+  Toast.success(`Report imported — ${result.report.totalElements} elements`);
+
+  if (result.warning) {
+    Toast.warning(result.warning);
+  }
+}
+
 async function handleExportAll() {
   const format = document.getElementById('export-all-format')?.value ?? 'csv';
   try {
@@ -420,6 +484,8 @@ async function handleExportReport(report, format) {
   try {
     if (format === 'json') {
       await exportReport(report, 'json');
+    } else if (format === 'excel') {
+      await exportReport(report, 'excel');
     } else {
       await exportReport(report, 'csv');
     }
@@ -486,33 +552,47 @@ async function refreshReports() {
   }
 }
 
-function renderReportCard(report) {
+function renderReportCard(report, displayIndex, showEnvBadge) {
   const card = document.createElement('div');
   card.className = 'report-card';
   card.setAttribute('role', 'listitem');
 
+  const host    = hostFromUrl(report.url);
+  const path    = lastPathSegment(report.url);
+  const filter  = filterLabel(report.filters);
+  const env     = envTag(report.url);
+  const envHtml = showEnvBadge
+    ? `<span class="env-badge env-badge--${env.toLowerCase()}">${sanitize(env)}</span>`
+    : '';
+  const idxHtml = `<span class="report-index">R${displayIndex}</span>`;
+
   card.innerHTML = `
     <div class="report-card-body">
-      <div class="report-card-title">${sanitize(report.title || 'Untitled')}</div>
+      <div class="report-card-header">
+        ${idxHtml}
+        ${envHtml}
+        <span class="meta-host" title="${sanitize(report.url)}">${sanitize(host)}</span>
+      </div>
       <div class="report-card-meta">
-        <span class="meta-host">${sanitize(hostFromUrl(report.url))}</span>
-        <span class="meta-sep">·</span>
         <span>${sanitize(report.totalElements)} el</span>
         <span class="meta-sep">·</span>
-        <span>${relativeTime(report.timestamp)}</span>
+        <span class="meta-path">${sanitize(path)}</span>
+        ${filter ? `<span class="meta-sep">·</span><span class="meta-filter" title="Extraction filter">${sanitize(filter)}</span>` : ''}
         <span class="meta-sep">·</span>
-        <span class="meta-shortid" title="${sanitize(report.id)}">#${sanitize(report.id.slice(-6))}</span>
+        <span>${relativeTime(report.timestamp)}</span>
+        ${report.source === 'imported' ? `<span class="meta-sep">·</span><span class="meta-imported-badge" title="Uploaded from file">↑ imported</span>` : ''}
       </div>
     </div>
     <div class="report-card-actions">
       <details class="export-dropdown">
         <summary class="btn-ghost btn-sm" title="Export options">Export ▾</summary>
         <div class="export-menu">
+          <button class="export-menu-item" data-format="excel">Excel</button>
           <button class="export-menu-item" data-format="json">JSON</button>
           <button class="export-menu-item" data-format="csv">CSV</button>
         </div>
       </details>
-      <button class="btn-icon-danger" title="Delete report" aria-label="Delete ${sanitize(report.title || 'report')}">
+      <button class="btn-icon-danger" title="Delete report" aria-label="Delete report from ${sanitize(host)}">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
           <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/>
         </svg>
@@ -550,12 +630,25 @@ function displayReports(reports, searchQuery) {
   }
 
   empty?.classList.add('hidden');
+
+  const envTags     = reports.map(r => envTag(r.url));
+  const hasMultiEnv = envTags.some(e => e === 'STAGE');
+  const total       = reports.length;
+
   const frag = document.createDocumentFragment();
-  filtered.forEach(r => frag.appendChild(renderReportCard(r)));
+  filtered.forEach(r => {
+    const posInAll   = reports.indexOf(r);
+    const displayIdx = total - posInAll;
+    frag.appendChild(renderReportCard(r, displayIdx, hasMultiEnv));
+  });
   list.appendChild(frag);
 }
 
 function populateReportSelectors(reports) {
+  const total       = reports.length;
+  const envTags     = reports.map(r => envTag(r.url));
+  const hasMultiEnv = envTags.some(e => e === 'STAGE');
+
   ['baseline-report', 'compare-report'].forEach(selId => {
     const sel = document.getElementById(selId);
     if (!sel) {return;}
@@ -563,11 +656,17 @@ function populateReportSelectors(reports) {
     sel.textContent = '';
     const placeholder = new Option('Select report…', '');
     sel.appendChild(placeholder);
-    reports.forEach(r => {
-      const opt = new Option(
-        `${r.title || 'Untitled'} · ${r.totalElements} el · ${relativeTime(r.timestamp)} · #${r.id.slice(-6)}`,
-        r.id
-      );
+    reports.forEach((r, i) => {
+      const displayIdx = total - i;
+      const host       = hostFromUrl(r.url);
+      const path       = lastPathSegment(r.url);
+      const filter     = filterLabel(r.filters);
+      const envPrefix  = hasMultiEnv ? `${envTag(r.url)} · ` : '';
+      const importedPrefix = r.source === 'imported' ? '[↑] ' : '';
+      const label      = `${importedPrefix}R${displayIdx} · ${envPrefix}${host}${path}${filter ? ` · ${filter}` : ''}`;
+      const tooltip    = `R${displayIdx} · ${r.url} · ${r.totalElements} el${filter ? ` · ${filter}` : ''} · ${relativeTime(r.timestamp)}`;
+      const opt        = new Option(label, r.id);
+      opt.title        = tooltip;
       if (r.id === current) {opt.selected = true;}
       sel.appendChild(opt);
     });
@@ -765,7 +864,7 @@ async function tryLoadCachedComparison() {
         compare:           cached.compare,
         mode:              cached.mode,
         matching:          cached.matching,
-        comparison:        { summary: cached.summary, results: [] },
+        comparison:        { summary: cached.summary, results: cached.results ?? [] },
         unmatchedElements: cached.unmatchedElements,
         duration:          cached.duration,
         timestamp:         cached.timestamp,
@@ -844,6 +943,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('delete-all-btn')?.addEventListener('click', handleDeleteAll);
   document.getElementById('export-all-btn')?.addEventListener('click', handleExportAll);
 
+  ['baseline', 'compare'].forEach(slot => {
+    const input = document.getElementById(`${slot}-upload`);
+    if (!input) return;
+    input.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      input.value = '';
+      handleImportReport(file, slot);
+    });
+  });
+
   document.getElementById('baseline-report')?.addEventListener('change', e => {
     popupState.dispatch('BASELINE_SELECTED', { id: e.target.value });
     tryLoadCachedComparison();
@@ -891,7 +1001,33 @@ document.addEventListener('DOMContentLoaded', async () => {
   popupState.subscribe((state, type) => updateUIFromState(state, type));
 
   await refreshReports();
-  await tryLoadCachedComparison();
+
+  try {
+    const session = await chrome.storage.session.get('pendingComparison');
+    const handoff = session?.pendingComparison;
+    const HANDOFF_TTL_MS = 30_000;
+    const isStale = !handoff?.timestamp || (Date.now() - handoff.timestamp > HANDOFF_TTL_MS);
+
+    if (handoff?.baselineId && handoff?.compareId && !isStale) {
+      const baselineSel = document.getElementById('baseline-report');
+      const compareSel  = document.getElementById('compare-report');
+      if (baselineSel) baselineSel.value = handoff.baselineId;
+      if (compareSel)  compareSel.value  = handoff.compareId;
+      popupState.dispatch('BASELINE_SELECTED', { id: handoff.baselineId });
+      popupState.dispatch('COMPARE_SELECTED',  { id: handoff.compareId });
+      if (handoff.mode) popupState.dispatch('MODE_CHANGED', { mode: handoff.mode });
+      popupState.dispatch('TAB_CHANGED', { tab: 'compare' });
+      await tryLoadCachedComparison();
+      await chrome.storage.session.remove('pendingComparison');
+    } else {
+      if (handoff) {
+        await chrome.storage.session.remove('pendingComparison');
+      }
+      await tryLoadCachedComparison();
+    }
+  } catch {
+    await tryLoadCachedComparison();
+  }
 
   logger.info('Popup initialized');
 });

@@ -11,8 +11,6 @@ function yieldToEventLoop() {
   });
 }
 
-export { yieldToEventLoop, YIELD_CHUNK_SIZE, progressFrame, resultFrame };
-
 function progressFrame(label, pct) {
   return { type: 'progress', label, pct };
 }
@@ -20,3 +18,5 @@ function progressFrame(label, pct) {
 function resultFrame(payload) {
   return { type: 'result', payload };
 }
+
+export { yieldToEventLoop, YIELD_CHUNK_SIZE, progressFrame, resultFrame };
