@@ -16,6 +16,15 @@ const SCROLL_SETTLE_TOLERANCE_PX = 2;   // max compositor lead (one vsync × res
 const SCROLL_VERIFY_TOLERANCE_PX = 5;
 const SCROLL_VERIFY_RETRY_MAX    = 2;
 const SCROLL_VERIFY_RETRY_MS     = 400;
+// Gap between window.outerHeight and window.innerHeight when DevTools is docked.
+// At 100% zoom without DevTools the gap is ~88px (browser chrome only).
+// The minimum DevTools panel is 150px, giving ~238px with DevTools open.
+// 200 sits safely between both values; false positives only occur at >~110% zoom
+// where capture geometry would already be wrong.
+const DEVTOOLS_HEIGHT_THRESHOLD_PX = 200;
+// Estimated height of Chrome's browser chrome (tab bar + address bar) on all platforms.
+// Used to derive the true content-viewport height from outerHeight when DevTools is open.
+const BROWSER_CHROME_HEIGHT_PX = 88;
 
 function ms(start) {
   return `${Date.now() - start}ms`;
@@ -34,7 +43,12 @@ function inPageGetViewport() {
   const width  = Math.floor(window.innerWidth);
   const height = Math.floor(window.innerHeight);
   const documentHeight = document.documentElement.scrollHeight;
-  return { width, height, documentHeight };
+  // outerHeight/outerWidth are used by the DevTools-open check in executeTabCapture.
+  // They represent the full OS window size; the gap vs innerHeight grows when DevTools
+  // is docked because the panel steals height from the content viewport.
+  const outerHeight = Math.floor(window.outerHeight);
+  const outerWidth  = Math.floor(window.outerWidth);
+  return { width, height, documentHeight, outerHeight, outerWidth };
 }
 
 function inPageGetDPR() {
@@ -362,10 +376,12 @@ async function base64ToBlob(base64Data, mimeType) {
 // scrollbarWidth must be added back so content area = viewport.width after lockScrollbar
 // applies padding-right: scrollbarWidth.  Without the addition, content shrinks by
 // scrollbarWidth px and may cross a CSS responsive breakpoint.
-function buildMetricsOverride(viewport, scrollbarWidth = 0) {
+// targetHeight overrides viewport.height when the DevTools bypass computes a virtual height;
+// undefined falls back to viewport.height so all existing call sites are unaffected.
+function buildMetricsOverride(viewport, scrollbarWidth = 0, targetHeight) {
   return {
     width:             Math.round(viewport.width) + Math.round(scrollbarWidth || 0),
-    height:            Math.round(viewport.height),
+    height:            Math.round(targetHeight ?? viewport.height),
     deviceScaleFactor: CAPTURE_SCALE_FACTOR,
     mobile:            false
   };
@@ -793,6 +809,57 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
   logger.info(`VDIFF [${role}] inPageGetViewport DONE`, { elapsed: ms(t1), viewport });
   if (!viewport) throw new Error(`Failed to read viewport from tab ${tabId}`);
 
+  // ── DevTools bypass ─────────────────────────────────────────────────────
+  //
+  //  When DevTools is docked, outerHeight - innerHeight > DEVTOOLS_HEIGHT_THRESHOLD_PX.
+  //  Rather than aborting, we compute the true content-viewport height as
+  //  outerHeight - BROWSER_CHROME_HEIGHT_PX and issue setDeviceMetricsOverride early
+  //  with that derived height.  This creates a virtual viewport independent of DevTools
+  //  state.  After the override ACKs (synchronous on the browser side), re-reading
+  //  window.innerHeight returns the overridden value — no paint cycle needed.
+  //
+  //  confirmedHeight starts as viewport.height and is overwritten only when DevTools
+  //  is detected.  ALL spatial calculations below use confirmedHeight, not viewport.height.
+  let confirmedHeight  = viewport.height;
+  const heightGap      = (viewport.outerHeight || 0) - viewport.height;
+  const widthGap       = (viewport.outerWidth  || 0) - viewport.width;
+  const devToolsDetected = heightGap > DEVTOOLS_HEIGHT_THRESHOLD_PX || widthGap > DEVTOOLS_HEIGHT_THRESHOLD_PX;
+  let devToolsWarning  = null;
+
+  if (devToolsDetected) {
+    const targetHeight = Math.max(400, (viewport.outerHeight || viewport.height) - BROWSER_CHROME_HEIGHT_PX);
+    logger.warn(`VDIFF [${role}] DevTools detected — bypassing with computed targetHeight`, {
+      innerH: viewport.height, outerH: viewport.outerHeight, heightGap, targetHeight
+    });
+    // First override establishes the virtual height immediately so that any
+    // subsequent execInPage calls (inPageGetDPR, inPageLockScrollbar) already
+    // observe the correct viewport height.  scrollbarWidth is not yet known so
+    // width compensation is deferred to the unconditional re-fire below.
+    await sendCDP(tabId, 'Emulation.setDeviceMetricsOverride',
+      buildMetricsOverride(viewport, 0, targetHeight));
+    logger.info(`VDIFF [${role}] setDeviceMetricsOverride (DevTools bypass, pre-lock) DONE`);
+    // setDeviceMetricsOverride is synchronous on the browser side — the next JS
+    // execution sees the overridden value immediately without needing a paint cycle.
+    confirmedHeight = await execInPage(tabId, () => Math.floor(window.innerHeight)) ?? targetHeight;
+    logger.info(`VDIFF [${role}] confirmed virtual vpH after bypass`, { confirmedHeight, targetHeight });
+  } else {
+    logger.info(`VDIFF [${role}] devtools check PASSED`, { heightGap, widthGap, innerH: viewport.height, outerH: viewport.outerHeight });
+  }
+
+  // Populate devToolsWarning now that confirmedHeight is finalised.
+  // This is set unconditionally after the bypass block so the message always
+  // reflects the actual bypassHeight even if confirmedHeight differs from targetHeight.
+  if (devToolsDetected) {
+    devToolsWarning = {
+      role,
+      heightGap,
+      widthGap,
+      originalHeight: viewport.height,
+      bypassHeight:   confirmedHeight,
+      message: `DevTools bypass on ${role} tab (viewport ${viewport.height}px → ${confirmedHeight}px via virtual override)`
+    };
+  }
+
   const t1b       = Date.now();
   const actualDPR = (await execInPage(tabId, inPageGetDPR)) ?? 1;
   logger.info(`VDIFF [${role}] inPageGetDPR DONE`, { elapsed: ms(t1b), actualDPR });
@@ -803,9 +870,15 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
     elapsed: ms(t1c), scrollbarWidth: lockResult?.scrollbarWidth ?? 0
   });
 
+  // Always re-fire after lockScrollbar so scrollbarWidth is included in the width
+  // compensation.  In the bypass path, confirmedHeight is passed as targetHeight so
+  // the virtual height is preserved; in the normal path targetHeight is undefined
+  // and falls back to viewport.height.  Re-firing is idempotent for height — the
+  // only new information is the now-known scrollbarWidth.
   const t2 = Date.now();
-  await sendCDP(tabId, 'Emulation.setDeviceMetricsOverride', buildMetricsOverride(viewport, lockResult?.scrollbarWidth ?? 0));
-  logger.info(`VDIFF [${role}] setDeviceMetricsOverride DONE`, { elapsed: ms(t2) });
+  await sendCDP(tabId, 'Emulation.setDeviceMetricsOverride',
+    buildMetricsOverride(viewport, lockResult?.scrollbarWidth ?? 0, devToolsDetected ? confirmedHeight : undefined));
+  logger.info(`VDIFF [${role}] setDeviceMetricsOverride DONE`, { elapsed: ms(t2), devToolsDetected });
 
   const t3 = Date.now();
   await execInPage(tabId, inPageFreezeAnimations, [FREEZE_STYLE_ID]);
@@ -838,7 +911,7 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
 
   if (validRects.length === 0) {
     logger.warn(`VDIFF [${role}] 0 valid rects — aborting`, { tabId });
-    return new Map();
+    return { manifest: new Map(), devToolsWarning };
   }
 
   const t6b           = Date.now();
@@ -849,32 +922,29 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
     withAfter:  (pseudoResults ?? []).filter(p => p.after).length
   });
 
-  const { height: vpHeight, width: vpWidth, documentHeight } = viewport;
-  const rawFrames = groupIntoKeyframes(validRects, vpHeight, vpWidth, documentHeight);
+  // Use confirmedHeight for all spatial planning — this is the actual locked viewport
+  // height after any DevTools bypass, not the raw innerHeight that may have been
+  // shrunk by the docked DevTools panel.
+  const { width: vpWidth, documentHeight } = viewport;
+  const rawFrames = groupIntoKeyframes(validRects, confirmedHeight, vpWidth, documentHeight);
   const keyframes = prefixKeyframes(rawFrames, sessionId, role);
 
   logger.info(`VDIFF [${role}] keyframes grouped`, {
     validRects:    validRects.length,
     keyframeCount: keyframes.length,
-    scrollYValues: keyframes.map(k => k.scrollY)
+    scrollYValues: keyframes.map(k => k.scrollY),
+    confirmedHeight
   });
 
-  // Build lookup maps needed by captureAllKeyframes and buildManifestFromRemeasured.
-  // selectorById   — used to build per-keyframe selector subsets for remeasure
-  // documentYById  — used as fallback documentY in the manifest (for debugging /
-  //                  scroll-indicator rendering; not used for highlight coords)
   const selectorById  = new Map(selectorPairs.map(p => [p.id, p]));
   const documentYById = new Map(validRects.map(r => [r.id, r.documentY]));
 
-  // Capture each keyframe: scroll → remeasure → screenshot → save
-  // Returns per-keyframe { keyframeId, actualScrollY, rects[] } with observed coords.
   const remeasureResults = await captureAllKeyframes(
     tabId, keyframes, selectorById, sessionId, role, actualDPR, documentHeight
   );
 
-  // Build manifest from the ground-truth coords measured at capture time.
   const manifest = buildManifestFromRemeasured(
-    keyframes, remeasureResults, documentYById, actualDPR, documentHeight, vpHeight
+    keyframes, remeasureResults, documentYById, actualDPR, documentHeight, confirmedHeight
   );
 
   attachPseudoDataToManifest(manifest, pseudoResults ?? []);
@@ -888,7 +958,7 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
     tabId, totalElapsed: ms(t0), manifestSize: manifest.size
   });
 
-  return manifest;
+  return { manifest, devToolsWarning };
 }
 
 async function runTabCapture(tabId, selectorPairs, sessionId, role) {
@@ -900,11 +970,14 @@ async function runTabCapture(tabId, selectorPairs, sessionId, role) {
     await tryAttach(tabId);
     attached = true;
     logger.info(`VDIFF [${role}] attach DONE`, { elapsed: ms(t0), tabId });
-    return await executeTabCapture(tabId, selectorPairs, sessionId, role);
+    // executeTabCapture always returns { manifest, devToolsWarning } now.
+    const execResult = await executeTabCapture(tabId, selectorPairs, sessionId, role);
+    return { manifest: execResult.manifest, devToolsWarning: execResult.devToolsWarning };
 
   } catch (err) {
     const msg = err?.message ?? String(err);
     logger.error(`VDIFF [${role}] FAILED`, { error: msg, elapsed: ms(t0), tabId });
+
     if (msg.includes('Another debugger is already attached')) {
       logger.warn(`VDIFF [${role}] debugger conflict on tab — stale session cleanup failed or user DevTools is open`, { tabId });
       return null;
@@ -924,11 +997,14 @@ async function runTabCapture(tabId, selectorPairs, sessionId, role) {
 async function captureRoleSequential(tabId, selectorPairs, sessionId, role) {
   if (tabId == null) {
     logger.warn(`VDIFF [${role}] tabId is null, skipping`);
-    return new Map();
+    return { manifest: new Map(), devToolsWarning: null };
   }
   const result = await runTabCapture(tabId, selectorPairs, sessionId, role);
-  if (result === null) return new Map();
-  return result;
+  // runTabCapture can return:
+  //   null                         — debugger conflict (Another debugger already attached)
+  //   { manifest, devToolsWarning } — normal path (devToolsWarning may be null or populated)
+  if (result === null) return { manifest: new Map(), devToolsWarning: null };
+  return { manifest: result.manifest ?? new Map(), devToolsWarning: result.devToolsWarning ?? null };
 }
 
 async function captureVisualDiffs(comparisonResult, tabContext) {
@@ -937,7 +1013,7 @@ async function captureVisualDiffs(comparisonResult, tabContext) {
 
   if (!tabContext) {
     logger.warn('VDIFF no tabContext provided');
-    return { status: 'skipped', reason: 'No tab context provided', diffs: new Map() };
+    return { status: 'skipped', reason: 'No tab context provided', diffs: new Map(), devToolsWarnings: [] };
   }
 
   const modified = extractModifiedElements(comparisonResult);
@@ -949,7 +1025,7 @@ async function captureVisualDiffs(comparisonResult, tabContext) {
 
   if (modified.length === 0) {
     logger.warn('VDIFF 0 modified elements — nothing to capture');
-    return { status: 'skipped', reason: 'No modified elements to capture', diffs: new Map() };
+    return { status: 'skipped', reason: 'No modified elements to capture', diffs: new Map(), devToolsWarnings: [] };
   }
 
   const sessionId                       = crypto.randomUUID();
@@ -968,20 +1044,33 @@ async function captureVisualDiffs(comparisonResult, tabContext) {
 
   try {
     logger.info('VDIFF running SEQUENTIAL (bringToFront requires exclusive focus)');
-    const baselineManifest = await captureRoleSequential(baselineTabId, baselinePairs, sessionId, 'baseline');
-    const compareManifest  = await captureRoleSequential(compareTabId,  comparePairs,  sessionId, 'compare');
+    const baselineResult  = await captureRoleSequential(baselineTabId, baselinePairs, sessionId, 'baseline');
+    const compareResult   = await captureRoleSequential(compareTabId,  comparePairs,  sessionId, 'compare');
+    const baselineManifest = baselineResult.manifest ?? new Map();
+    const compareManifest  = compareResult.manifest  ?? new Map();
+    const devToolsWarnings = [baselineResult.devToolsWarning, compareResult.devToolsWarning].filter(Boolean);
 
     logger.info('VDIFF both tabs captured', {
-      baselineSize: baselineManifest.size,
-      compareSize:  compareManifest.size,
-      elapsed:      ms(sessionStart)
+      baselineSize:    baselineManifest.size,
+      compareSize:     compareManifest.size,
+      devToolsBlocked: devToolsWarnings.length,
+      elapsed:         ms(sessionStart)
     });
 
     if (baselineManifest.size === 0 && compareManifest.size === 0) {
+      if (devToolsWarnings.length > 0) {
+        return {
+          status:          'skipped',
+          reason:          'DevTools bypass ran but produced no screenshots — close DevTools and retry.',
+          diffs:           new Map(),
+          devToolsWarnings
+        };
+      }
       return {
-        status: 'skipped',
-        reason: 'Could not attach debugger to either tab. Close DevTools on both pages and retry.',
-        diffs:  new Map()
+        status:          'skipped',
+        reason:          'Could not attach debugger to either tab. Close DevTools on both pages and retry.',
+        diffs:           new Map(),
+        devToolsWarnings: []
       };
     }
 
@@ -989,13 +1078,14 @@ async function captureVisualDiffs(comparisonResult, tabContext) {
     logger.info('VDIFF captureVisualDiffs COMPLETE', {
       sessionId, diffCount: diffs.size, totalElapsed: ms(sessionStart)
     });
-    return { status: 'completed', reason: null, diffs, sessionId };
+
+    return { status: 'completed', reason: null, diffs, sessionId, devToolsWarnings };
 
   } catch (err) {
     logger.error('VDIFF captureVisualDiffs FAILED', {
       error: err.message, elapsed: ms(sessionStart), sessionId
     });
-    return { status: 'failed', reason: err.message, diffs: new Map() };
+    return { status: 'failed', reason: err.message, diffs: new Map(), devToolsWarnings: [] };
   }
 }
 

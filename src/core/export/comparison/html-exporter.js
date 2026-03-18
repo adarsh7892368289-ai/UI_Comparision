@@ -117,7 +117,7 @@ function esc(str) {
 }
 
 function buildDiagnosticBanner(vds) {
-  if (!vds || vds.status === 'success' || vds.status === 'completed') return '';
+  if (!vds || vds.status === 'success' || vds.status === 'completed' || vds.status === 'devtools-blocked') return '';
   const isFailed  = vds.status === 'failed';
   const bg        = isFailed ? '#7f1d1d' : '#78350f';
   const border    = isFailed ? '#ef4444' : '#f97316';
@@ -182,6 +182,17 @@ function buildModalHtml() {
 </div>`;
 }
 
+function buildDevToolsBanner(warnings) {
+  if (!warnings || warnings.length === 0) return '';
+  const details = warnings.map(w =>
+    `<span style="display:block;margin-top:4px;">${esc(w.role)} tab: DevTools was open (viewport reduced to ${esc(String(w.originalHeight))}px). Screenshots taken at ${esc(String(w.bypassHeight))}px using virtual viewport override.</span>`
+  ).join('');
+  return `<div style="position:sticky;top:0;z-index:9998;background:#1e3a5f;border-bottom:3px solid #3b82f6;padding:10px 16px;display:flex;align-items:flex-start;gap:10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;">
+  <span style="font-weight:800;color:#93c5fd;white-space:nowrap;">&#8505; DevTools Detected &#8212; Capture Bypassed Successfully</span>
+  <span style="flex:1;" class="u-text-secondary">${details}<span style="display:block;margin-top:4px;font-size:11px;color:#bfdbfe;">Results are accurate. Closing DevTools before capture is not required.</span></span>
+</div>`;
+}
+
 function buildDocument(grouped, raw, manifest, blobData, visualDiffStatus) {
   const { summary } = grouped;
   const title = `${raw.baseline?.url ?? ''} vs ${raw.compare?.url ?? ''}`;
@@ -195,7 +206,7 @@ function buildDocument(grouped, raw, manifest, blobData, visualDiffStatus) {
 <style>${buildCss()}</style>
 </head>
 <body>
-${buildDiagnosticBanner(visualDiffStatus)}${buildPreFlightBanner(raw.preFlightWarning ?? null)}<div class="app">
+${buildDiagnosticBanner(visualDiffStatus)}${buildDevToolsBanner(raw.devToolsWarnings ?? [])}${buildPreFlightBanner(raw.preFlightWarning ?? null)}<div class="app">
   <header class="topbar">
     <span class="topbar-title">UI Comparison</span>
     <div class="topbar-direction" title="Comparison direction">&#x25B6; ${esc(raw.baseline?.url ? new URL(raw.baseline.url).hostname : 'Baseline')} &#x2192; ${esc(raw.compare?.url ? new URL(raw.compare.url).hostname : 'Compare')}</div>
@@ -680,7 +691,7 @@ body{
 .vdiff-pane-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:6px 10px;font-weight:700;flex-shrink:0}
 .vdiff-pane-label.label-baseline{color:#60a5fa}
 .vdiff-pane-label.label-compare{color:#3fb950}
-.vdiff-thumb-wrap{position:relative;overflow:hidden;width:100%;background:#080a10;min-height:60px}
+.vdiff-thumb-wrap{position:relative;overflow:hidden;width:100%;background:#080a10;min-height:60px;max-height:320px !important}
 .vdiff-thumb-wrap.loading::before{content:'';display:block;position:absolute;inset:0;background:linear-gradient(90deg,#1a1d27 25%,#252836 50%,#1a1d27 75%);background-size:200% 100%;animation:thumb-shimmer 1.2s infinite linear;border-radius:4px}
 .vdiff-thumb-wrap[data-misaligned]::after{content:'';position:absolute;inset:0;border:2px solid #f59e0b;pointer-events:none;z-index:3}
 .vdiff-misalign-badge{position:absolute;bottom:4px;left:4px;right:4px;background:rgba(245,158,11,0.92);color:#1a1200;font-size:10px;font-weight:600;padding:3px 6px;border-radius:3px;text-align:center;z-index:4;pointer-events:none}
@@ -812,7 +823,10 @@ body{
 .sidebar{scrollbar-width:thin;scrollbar-color:var(--border-default) transparent}
 .tree-panel{scrollbar-width:thin;scrollbar-color:var(--border-default) transparent}
 .panel-detail{scrollbar-width:thin;scrollbar-color:var(--border-default) transparent}
-#summary-panel{scrollbar-width:thin;scrollbar-color:var(--border-default) transparent}`;
+#summary-panel{scrollbar-width:thin;scrollbar-color:var(--border-default) transparent}
+.vdiff-kf-bar{background:#78350f;border-bottom:1px solid #f59e0b;color:#fbbf24;font-size:10px;font-family:monospace;padding:3px 12px;cursor:default;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.vdiff-pane--baseline.vdiff-kf-mismatch>.vdiff-pane__label,
+.vdiff-pane--compare.vdiff-kf-mismatch>.vdiff-pane__label{border-bottom:2px solid #f59e0b;}`;
 }
 
 function buildJs(grouped, manifest, blobData, raw) {
@@ -839,6 +853,7 @@ var GROUPED         = ${data};
 var VISUAL_MANIFEST = ${manifestJson};
 var VISUAL_DATA     = ${blobJson};
 var COMPARISON_META = ${meta};
+var DEVTOOLS_WARNINGS = ${JSON.stringify(raw.devToolsWarnings ?? [])};
 var HPID_META       = ${hpidMetaJson};
 var SEVERITY_COLORS = {critical:'#ef4444',high:'#f97316',medium:'#eab308',low:'#6b7280',removed:'#ef4444',added:'#22c55e'};
 var URL_NOISE_ATTRS=new Set(['href','src','srcset','action','data-href','data-url','data-link','data-src','formaction']);
@@ -853,6 +868,8 @@ var _syncCtrl     = null;
 var _zoom         = 1;
 var _resizeObs    = null;
 var _activeEntry  = null;
+var _inlineThumbObs  = null;   // ResizeObserver for inline thumbnail grid
+var _inlineThumbData = [];     // [{img, svgEl, wrapper, rect, diffs, dpr, flags}] for re-render
 var _selectedNode = null;
 var _maskSeq      = 0;
 
@@ -933,6 +950,8 @@ function classifyNode(hpid){
 function teardown(){
   if(_selectedNode){ _selectedNode.classList.remove('tree-selected'); _selectedNode=null; }
   detailEl.querySelectorAll('img').forEach(function(img){ img.onload=null; img.onerror=null; img.removeAttribute('src'); });
+  if(_inlineThumbObs) { _inlineThumbObs.disconnect(); _inlineThumbObs = null; }
+  _inlineThumbData = [];
   var emptyState=document.getElementById('detail-empty-state');
   if(emptyState){
     detailEl.innerHTML='';
@@ -1167,9 +1186,9 @@ function computeCropParams(img, rect, containerWidth, dpr){
   // rendering a full-strip highlight with no visible content.  Clamping rh to the
   // visible slice makes the scale calculation use the actual visible height instead.
   rh = Math.min(rh, Math.max(1, vpH - Math.max(0, ry)));
-  var scaleX=Math.max(Math.min(containerWidth*0.60/rw, 140/Math.max(rh,1)), 0.25);
+  var scaleX=Math.max(Math.min(containerWidth*0.78/rw, 140/Math.max(rh,1)), 0.25);
   var scaleY=scaleX;
-  var ctxPx=30/scaleX;
+  var ctxPx=Math.min(30/scaleX, 28);
   var paddedX=Math.max(0,Math.min(rx-ctxPx,vpW-rw-1));
   var paddedY=Math.max(0,Math.min(ry-ctxPx,vpH-rh-1));
   var paddedW=Math.min(vpW,rx+rw+ctxPx)-paddedX;
@@ -1195,6 +1214,7 @@ function applyThumb(img, svgEl, container, rect, diffs, dpr, flags){
   img.style.transformOrigin='top left';
   img.style.position='absolute';
   container.style.height=p.displayH+'px';
+  var actualH=container.clientHeight||p.displayH;
 
   // ── 2. Draw the SVG highlight using the same p ─────────────────────────────
   if(!svgEl) return;
@@ -1202,9 +1222,9 @@ function applyThumb(img, svgEl, container, rect, diffs, dpr, flags){
   var sx=p.scaleX, sy=p.scaleY;
   var displayW=p.paddedW*sx, displayH=p.paddedH*sy;
   svgEl.setAttribute('width',displayW);
-  svgEl.setAttribute('height',displayH);
+  svgEl.setAttribute('height',actualH);
   svgEl.style.width=displayW+'px';
-  svgEl.style.height=displayH+'px';
+  svgEl.style.height=actualH+'px';
   svgEl.style.right='auto';
   svgEl.style.bottom='auto';
   var hL=Math.max(0,(p.rx-p.paddedX)*sx);
@@ -1219,7 +1239,7 @@ function applyThumb(img, svgEl, container, rect, diffs, dpr, flags){
   var blur=svgNS('feGaussianBlur'); blur.setAttribute('stdDeviation','2'); blur.setAttribute('result','b');
   var merge=svgNS('feMerge'); var mn1=svgNS('feMergeNode'); mn1.setAttribute('in','b'); var mn2=svgNS('feMergeNode'); mn2.setAttribute('in','SourceGraphic'); merge.appendChild(mn1); merge.appendChild(mn2);
   filt.appendChild(blur); filt.appendChild(merge); defs.appendChild(filt); svgEl.appendChild(defs);
-  applyFocusMask(svgEl,displayW,displayH,hL,hT,hW,hH,color);
+  applyFocusMask(svgEl,displayW,actualH,hL,hT,hW,hH,color);
   var glow=svgNS('rect');
   setAttrs(glow,{x:hL-1,y:hT-1,width:hW+2,height:hH+2,fill:'none',stroke:color,'stroke-width':2,opacity:.35,rx:2,filter:'url(#'+filtId+')'});
   svgEl.appendChild(glow);
@@ -1229,12 +1249,6 @@ function applyThumb(img, svgEl, container, rect, diffs, dpr, flags){
   hl.classList.add('hl-rect');
   svgEl.appendChild(hl);
   // ── 3. Annotation labels for diagnostics ──────────────────────────────────
-  if(flags&&flags.selectorAmbiguous){
-    var lbl=svgNS('text');
-    setAttrs(lbl,{x:hL,y:Math.max(10,hT-4),'font-size':'9','fill':'#f59e0b','font-family':'sans-serif','pointer-events':'none'});
-    lbl.textContent='\u26a0 Selector ambiguous';
-    svgEl.appendChild(lbl);
-  }
   if(flags&&flags.rectClipped){
     var lbl2=svgNS('text');
     setAttrs(lbl2,{x:hL,y:Math.min(displayH-2,hT+hH+10),'font-size':'9','fill':'#60a5fa','font-family':'sans-serif','pointer-events':'none'});
@@ -1311,12 +1325,6 @@ function drawModalHighlights(svgEl, imgEl, rect, diffs, dpr, flags){
   hl.classList.add('hl-rect');
   svgEl.appendChild(hl);
   // Annotation labels — plain <text> elements, no new filter/mask IDs.
-  if(flags&&flags.selectorAmbiguous){
-    var lbl=svgNS('text');
-    setAttrs(lbl,{x:dx,y:Math.max(14,dy-6),'font-size':'11','fill':'#f59e0b','font-family':'sans-serif','pointer-events':'none','font-weight':'600'});
-    lbl.textContent='\u26a0 Selector ambiguous (\u2265'+((flags.selectorMatchCount||'?'))+' matches)';
-    svgEl.appendChild(lbl);
-  }
   if(flags&&flags.rectClipped){
     var lbl2=svgNS('text');
     setAttrs(lbl2,{x:dx,y:Math.min(layoutH-4,dy+dh+14),'font-size':'11','fill':'#60a5fa','font-family':'sans-serif','pointer-events':'none','font-weight':'600'});
@@ -1371,9 +1379,11 @@ function attachVdiffInlineImages(hpid){
     // Snapshot diffs at closure time so a later teardown cannot mutate the reference.
     var diffs=entry.diffs||[];
     var flags=role==='compare'
-      ?{selectorAmbiguous:!!entry.compareSelectorAmbiguous,selectorMatchCount:entry.compareSelectorMatchCount,rectClipped:!!entry.compareRectClipped}
-      :{selectorAmbiguous:!!entry.baselineSelectorAmbiguous,selectorMatchCount:entry.baselineSelectorMatchCount,rectClipped:!!entry.baselineRectClipped};
+      ?{rectClipped:!!entry.compareRectClipped}
+      :{rectClipped:!!entry.baselineRectClipped};
     var svgEl=wrapper&&wrapper.querySelector('.vdiff-thumb-svg');
+    // Register in thumb data array for ResizeObserver re-render (before onload).
+    _inlineThumbData.push({img:img,svgEl:svgEl,wrapper:wrapper,rect:rect,diffs:diffs,dpr:dpr,flags:flags});
     if(wrapper) wrapper.classList.add('loading');
     img.onload=function(){
       var doApply=function(){
@@ -1393,6 +1403,28 @@ function attachVdiffInlineImages(hpid){
     img.src=uri;
     if(img.complete&&img.naturalWidth) img.onload();
   });
+  var grid=section.querySelector('.vdiff-thumb-grid');
+  if(grid&&window.ResizeObserver){
+    if(_inlineThumbObs) _inlineThumbObs.disconnect();
+    var _rafPending=false;
+    var _lastGridW=0;
+    _inlineThumbObs=new ResizeObserver(function(entries){
+      var w=Math.round(entries[0].contentRect.width);
+      if(w===_lastGridW) return;  // no real change
+      _lastGridW=w;
+      if(_rafPending) return;       // coalesce: one rAF per paint frame max
+      _rafPending=true;
+      requestAnimationFrame(function(){
+        _rafPending=false;
+        _inlineThumbData.forEach(function(d){
+          if(d.img.naturalWidth&&d.rect){
+            applyThumb(d.img,d.svgEl,d.wrapper,d.rect,d.diffs,d.dpr,d.flags);
+          }
+        });
+      });
+    });
+    _inlineThumbObs.observe(grid);
+  }
 }
 
 function renderStructuralContext(cl){
@@ -1585,11 +1617,19 @@ function redrawAll(){
     var rect=role==='baseline'?e.baselineRect:e.compareRect;
     var dpr =role==='baseline'?(e.baselineActualDPR||2):(e.compareActualDPR||2);
     var flags=role==='baseline'
-      ?{selectorAmbiguous:!!e.baselineSelectorAmbiguous,selectorMatchCount:e.baselineSelectorMatchCount,rectClipped:!!e.baselineRectClipped}
-      :{selectorAmbiguous:!!e.compareSelectorAmbiguous,selectorMatchCount:e.compareSelectorMatchCount,rectClipped:!!e.compareRectClipped};
+      ?{rectClipped:!!e.baselineRectClipped}
+      :{rectClipped:!!e.compareRectClipped};
     if(!img||!img.naturalWidth) return;
     drawModalHighlights(svg,img,rect,e.diffs,dpr,flags);
   });
+  // Re-apply kf-mismatch class — zoom/pan calls redrawAll via ResizeObserver
+  // without re-running openDiffModal, so the border highlight must be maintained here.
+  var bKfM2 = (e.baselineKeyframeId||'').match(/kf_(\d+)$/);
+  var cKfM2 = (e.compareKeyframeId||'').match(/kf_(\d+)$/);
+  var kfMis2 = bKfM2 && cKfM2 && bKfM2[1] !== cKfM2[1];
+  var bP = modal.querySelector('.vdiff-pane--baseline');
+  var cP = modal.querySelector('.vdiff-pane--compare');
+  [bP,cP].forEach(function(p){ if(p) p.classList.toggle('vdiff-kf-mismatch', !!kfMis2); });
 }
 
 function initSyncScroll(pA,pB){
@@ -1631,17 +1671,43 @@ function openDiffModal(hpid){
     modal.querySelector('.vdiff-screenshot[data-role="baseline"]'),
     modal.querySelector('.vdiff-svg-overlay[data-role="baseline"]'),
     entry.baselineKeyframeId, entry.baselineRect, entry.diffs, entry.baselineActualDPR||2,
-    {selectorAmbiguous:!!entry.baselineSelectorAmbiguous,selectorMatchCount:entry.baselineSelectorMatchCount,rectClipped:!!entry.baselineRectClipped}
+    {rectClipped:!!entry.baselineRectClipped}
   );
   setModalImage(
     modal.querySelector('.vdiff-screenshot[data-role="compare"]'),
     modal.querySelector('.vdiff-svg-overlay[data-role="compare"]'),
     entry.compareKeyframeId, entry.compareRect, entry.diffs, entry.compareActualDPR||2,
-    {selectorAmbiguous:!!entry.compareSelectorAmbiguous,selectorMatchCount:entry.compareSelectorMatchCount,rectClipped:!!entry.compareRectClipped}
+    {rectClipped:!!entry.compareRectClipped}
   );
 
   var pA=modal.querySelector('[data-pane="baseline"]'), pB=modal.querySelector('[data-pane="compare"]');
   _syncCtrl=initSyncScroll(pA,pB);
+
+  // Cross-keyframe indicator — fires when baseline and compare elements landed in
+  // different scroll keyframes, meaning the page layouts differ enough that the
+  // element sits at a different document position in one page vs the other.
+  var bKfM = (entry.baselineKeyframeId||'').match(/kf_(\d+)$/);
+  var cKfM = (entry.compareKeyframeId||'').match(/kf_(\d+)$/);
+  var kfMismatch = bKfM && cKfM && bKfM[1] !== cKfM[1];
+  var bPane = modal.querySelector('.vdiff-pane--baseline');
+  var cPane = modal.querySelector('.vdiff-pane--compare');
+  [bPane, cPane].forEach(function(p){ if(p) p.classList.remove('vdiff-kf-mismatch'); });
+  modal.querySelectorAll('.vdiff-kf-bar').forEach(function(el){ el.remove(); });
+  if (kfMismatch) {
+    if(bPane) bPane.classList.add('vdiff-kf-mismatch');
+    if(cPane) cPane.classList.add('vdiff-kf-mismatch');
+    [
+      { pane: bPane, label: 'Baseline', scrollY: entry.baselineKfScrollY },
+      { pane: cPane, label: 'Compare',  scrollY: entry.compareKfScrollY  }
+    ].forEach(function(cfg){
+      if (!cfg.pane) return;
+      var bar = document.createElement('div');
+      bar.className = 'vdiff-kf-bar';
+      bar.title = 'The compare page layout shifted this element to a different scroll position. Both screenshots are correct — the element is highlighted at its actual position in each.';
+      bar.textContent = '\u2195 Different scroll position \u00b7 ' + cfg.label + ' @' + cfg.scrollY + 'px';
+      cfg.pane.querySelector('.vdiff-pane__label').after(bar);
+    });
+  }
   if(_resizeObs) _resizeObs.disconnect();
   if(window.ResizeObserver){
     _resizeObs=new ResizeObserver(function(){ requestAnimationFrame(redrawAll); });

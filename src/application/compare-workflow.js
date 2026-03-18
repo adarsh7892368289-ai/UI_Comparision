@@ -137,6 +137,7 @@ async function compareReports(options = {}) {
     const visualResult = await runVisualPhase(result, tabContext, includeScreenshots);
     result.visualDiffs   = visualResult.diffs;
     result.visualSessionId = visualResult.sessionId ?? null;
+    result.devToolsWarnings = visualResult.devToolsWarnings ?? [];
     if (includeScreenshots) {
       result.visualDiffStatus = { status: visualResult.status, reason: visualResult.reason };
     }
