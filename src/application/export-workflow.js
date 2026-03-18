@@ -1,20 +1,20 @@
-import logger                            from '../infrastructure/logger.js';
-import { getReportById }                 from './report-manager.js';
-import storage                           from '../infrastructure/storage.js';
-import { triggerDownload }               from '../core/export/shared/download-trigger.js';
-import { safeTimestamp }                 from '../core/export/shared/csv-utils.js';
+import { exportComparisonToCsv } from '../core/export/comparison/csv-exporter.js';
+import { exportToExcel } from '../core/export/comparison/excel-exporter.js';
+import { exportToHTML } from '../core/export/comparison/html-exporter.js';
+import { exportComparisonToJson } from '../core/export/comparison/json-exporter.js';
 import {
-  buildExtractedReportCsv,
-  buildExtractedReportJson,
   buildAllExtractedReportsCsv,
+  buildAllExtractedReportsExcel,
   buildAllExtractedReportsJson,
+  buildExtractedReportCsv,
   buildExtractedReportExcel,
-  buildAllExtractedReportsExcel
-}                                        from '../core/export/extraction/report-exporter.js';
-import { exportComparisonToCsv }         from '../core/export/comparison/csv-exporter.js';
-import { exportComparisonToJson }        from '../core/export/comparison/json-exporter.js';
-import { exportToExcel }                 from '../core/export/comparison/excel-exporter.js';
-import { exportToHTML }                  from '../core/export/comparison/html-exporter.js';
+  buildExtractedReportJson
+} from '../core/export/extraction/report-exporter.js';
+import { safeTimestamp } from '../core/export/shared/csv-utils.js';
+import { triggerDownload } from '../core/export/shared/download-trigger.js';
+import logger from '../infrastructure/logger.js';
+import storage from '../infrastructure/storage.js';
+import { getReportById } from './report-manager.js';
 
 const EXPORT_FORMAT = Object.freeze({
   EXCEL: 'excel',
@@ -35,7 +35,6 @@ async function exportReport(reportMeta, format) {
 
   if (format === EXTRACTED_FORMAT.EXCEL) {
     const result = buildExtractedReportExcel(data);
-    // XLSX.writeFile is called internally — no triggerDownload needed
     if (result.success) {
       logger.info('Extracted report exported as Excel', { id: reportMeta.id, filename: result.filename, elements: data.elements?.length ?? 0 });
     } else {
@@ -118,4 +117,4 @@ async function exportComparison(comparisonResult, format) {
   }
 }
 
-export { exportReport, exportAllReports, exportComparison, EXPORT_FORMAT, EXTRACTED_FORMAT };
+export { EXPORT_FORMAT, exportAllReports, exportComparison, exportReport, EXTRACTED_FORMAT };

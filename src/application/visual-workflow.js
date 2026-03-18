@@ -12,6 +12,7 @@ const CDP_ATTACH_TIMEOUT_MS  = 8_000;
 const CDP_CAPTURE_TIMEOUT_MS = 15_000;
 const CDP_COMMAND_TIMEOUT_MS = 5_000;
 const SCROLL_SETTLE_TIMEOUT_MS   = 800;
+const SCROLL_SETTLE_TOLERANCE_PX = 2;   // max compositor lead (one vsync × residual velocity)
 const SCROLL_VERIFY_TOLERANCE_PX = 5;
 const SCROLL_VERIFY_RETRY_MAX    = 2;
 const SCROLL_VERIFY_RETRY_MS     = 400;
@@ -60,10 +61,63 @@ function inPageFreezeAnimations(styleId) {
   if (document.getElementById(styleId)) return;
   const style = document.createElement('style');
   style.id          = styleId;
-  style.textContent = '*, *::before, *::after { animation-duration: 0s !important; animation-delay: 0s !important; transition: none !important; }';
+  // scroll-behavior: auto covers the CSS-default case (html { scroll-behavior: smooth }).
+  // It does NOT cover window.scrollTo({ behavior: 'smooth' }) — the explicit options dict
+  // bypasses the CSS property and goes straight to the Blink compositor's SmoothScroll().
+  // The API patch below handles that path.
+  style.textContent = [
+    'html, body { scroll-behavior: auto !important; }',
+    '*, *::before, *::after { animation-duration: 0s !important; animation-delay: 0s !important; transition: none !important; }'
+  ].join(' ');
   document.head.appendChild(style);
+
+  // Scroll API patch — strips explicit behavior:'smooth' from ScrollToOptions so that
+  // CSS scroll-behavior:auto actually takes effect.  The {behavior:'smooth'} form is
+  // resolved by Blink's ScrollBehavior enum BEFORE the CSS property is consulted, so
+  // css-only overrides cannot stop it.  This patch intercepts all scroll entry points.
+  //
+  // Guard: __vdiffScrollPatched prevents double-wrapping if inPageFreezeAnimations is
+  // called more than once in the same document lifetime.
+  if (!window.__vdiffScrollPatched) {
+    window.__vdiffScrollPatched = true;
+
+    (function patchScrollAPIs() {
+      function stripSmooth(args) {
+        if (args.length === 1 && args[0] !== null && typeof args[0] === 'object') {
+          // Clone and force behavior to 'auto' — never mutate the caller's object.
+          return [Object.assign({}, args[0], { behavior: 'auto' })];
+        }
+        // Two-argument form scrollTo(x, y) — already treated as instant by the browser.
+        return args;
+      }
+
+      function wrap(obj, method) {
+        if (!obj || typeof obj[method] !== 'function') return;
+        const orig = obj[method];
+        obj[method] = function vdiffScrollWrap() {
+          return orig.apply(this, stripSmooth(Array.from(arguments)));
+        };
+      }
+
+      wrap(window,              'scrollTo');
+      wrap(window,              'scrollBy');
+      // Element.prototype covers window.scroll* via the prototype chain AND covers
+      // document.documentElement.scrollTo / document.body.scrollTo because both
+      // HTMLHtmlElement and HTMLBodyElement inherit from Element.
+      wrap(Element.prototype,   'scrollTo');
+      wrap(Element.prototype,   'scrollBy');
+      wrap(Element.prototype,   'scrollIntoView');
+    })();
+  }
 }
 
+// [BONUS] inPageRestoreAnimations removes the freeze <style> tag, which restores CSS
+// transitions, animations, and the scroll-behavior default.  The scroll API prototype
+// wraps injected by inPageFreezeAnimations are permanent for the tab's JS lifetime —
+// they cannot be safely unwrapped without risking a conflict with the original function
+// reference.  This is acceptable: the wraps are identity-preserving for the two-arg
+// form and only strip behavior:'smooth' from the options form, which is harmless for
+// any page code that runs after capture.  No additional restore logic is needed.
 function inPageRestoreAnimations(styleId) {
   document.getElementById(styleId)?.remove();
 }
@@ -71,6 +125,10 @@ function inPageRestoreAnimations(styleId) {
 function inPageSuppressFixed(markAttr, diffSelectors) {
   const protectedEls       = new Set();
   const protectedAncestors = new Set();
+  // Descendants must also be protected: a position:fixed child (dropdown, toast)
+  // of a diffed element is neither in protectedEls nor protectedAncestors and
+  // would otherwise be hidden, corrupting the parent element's visual state.
+  const protectedDescendants = new Set();
 
   for (const sel of (diffSelectors || [])) {
     const el = document.querySelector(sel);
@@ -81,12 +139,13 @@ function inPageSuppressFixed(markAttr, diffSelectors) {
       protectedAncestors.add(ancestor);
       ancestor = ancestor.parentElement;
     }
+    el.querySelectorAll('*').forEach(d => protectedDescendants.add(d));
   }
 
   const all    = document.querySelectorAll('*');
   const toHide = [];
   for (const domEl of all) {
-    if (protectedEls.has(domEl) || protectedAncestors.has(domEl)) continue;
+    if (protectedEls.has(domEl) || protectedAncestors.has(domEl) || protectedDescendants.has(domEl)) continue;
     const { position } = getComputedStyle(domEl);
     if (position === 'fixed' || position === 'sticky') toHide.push(domEl);
   }
@@ -105,13 +164,57 @@ function inPageRestoreFixed(markAttr) {
 }
 
 function inPageScrollAndSettle(targetY, fallbackMs) {
+  // Stability-poll design — reads window.scrollY each vsync tick and resolves
+  // only when the value is stable for two consecutive frames AND within tolerance
+  // of targetY.  This catches smooth-scroll animations that 3-rAF cannot.
+  //
+  // CRITICAL: the deadline check lives INSIDE the rAF callback.  Chrome throttles
+  // rAF in background tabs to 1fps — if the rAF budget runs out before the deadline
+  // fires, the promise hangs indefinitely.  The hard setTimeout fires unconditionally
+  // (even in hidden/background tabs) and is the guaranteed exit hatch.
+  //
+  // This was the original design; it was accidentally dropped when the stability
+  // poll was introduced, causing the compare-tab capture to hang until the user
+  // manually clicked on the tab (visible tab → rAF unthrottled → poll resolves).
   window.scrollTo(0, targetY);
-  return new Promise(resolve => {
-    const fallback = setTimeout(resolve, fallbackMs);
-    requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => {
-      clearTimeout(fallback);
-      resolve();
-    })));
+
+  const tolerance = typeof SCROLL_SETTLE_TOLERANCE_PX !== 'undefined'
+    ? SCROLL_SETTLE_TOLERANCE_PX
+    : 2;
+
+  return new Promise(function(resolve) {
+    const deadline  = Date.now() + fallbackMs;
+    var lastY       = -1;
+    var stableCount = 0;
+    var done        = false;
+
+    function finish(y) {
+      if (done) return;
+      done = true;
+      clearTimeout(hardTimer);
+      resolve(y);
+    }
+
+    // Hard deadline — fires even when rAF is throttled/suspended in background tabs.
+    var hardTimer = setTimeout(
+      function() { finish(Math.round(window.scrollY)); },
+      fallbackMs
+    );
+
+    function tick() {
+      if (done) return;
+      var y = Math.round(window.scrollY);
+      if (y === lastY && Math.abs(y - targetY) <= tolerance) {
+        stableCount++;
+        if (stableCount >= 2) { finish(y); return; }
+      } else {
+        stableCount = 0;
+      }
+      lastY = y;
+      if (Date.now() >= deadline) { finish(y); return; }
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
   });
 }
 
@@ -120,14 +223,24 @@ function inPageGetRects(selectorPairs) {
   return selectorPairs.map(({ id, selector }) => {
     const domEl = selector ? document.querySelector(selector) : null;
     if (!domEl) return { id, found: false, usable: false };
+
+    // Uniqueness guard: if more than one element matches this selector,
+    // querySelector always returns the FIRST in document order — which may be
+    // a completely different element from the one originally detected.  Flag it
+    // so the caller can fall back to a positional XPath selector.
+    const matchCount = selector ? document.querySelectorAll(selector).length : 1;
+    const selectorAmbiguous = matchCount > 1;
+
     const r = domEl.getBoundingClientRect();
     const w = Math.round(r.width);
     const h = Math.round(r.height);
-    if (w === 0 && h === 0) return { id, found: true, usable: false };
+    if (w === 0 && h === 0) return { id, found: true, usable: false, selectorAmbiguous };
     return {
       id,
-      found:     true,
-      usable:    true,
+      found:              true,
+      usable:             true,
+      selectorAmbiguous,
+      selectorMatchCount: matchCount,
       documentY: Math.round(r.top + scrollY),
       height:    h,
       width:     w,
@@ -146,23 +259,47 @@ function inPageRemeasureRects(selectorPairs) {
     if (!el) {
       return { id, found: false, inViewport: false, misalignReason: 'element-not-found' };
     }
+
+    // Selector uniqueness guard — querySelector always returns the first DOM match.
+    // On resource grids (e.g. informatica.com/resources.html) every card shares the
+    // same generated selector, so we may be re-measuring card 1 while the screenshot
+    // keyframe was planned around card 4.  Force inViewport:false so
+    // buildManifestFromRemeasured stores misaligned:true and the report shows an amber
+    // badge rather than a confidently-wrong highlight drawn at the wrong coordinates.
+    const matchCount        = selector ? document.querySelectorAll(selector).length : 1;
+    const selectorAmbiguous = matchCount > 1;
+
     const r = el.getBoundingClientRect();
     const w = Math.round(r.width);
     const h = Math.round(r.height);
     if (w === 0 && h === 0) {
-      return { id, found: true, inViewport: false, misalignReason: 'zero-dimension',
-               viewportX: Math.round(r.left), viewportY: Math.round(r.top), width: 0, height: 0 };
+      return {
+        id, found: true, inViewport: false,
+        // selectorAmbiguous is an identity annotation — NOT a spatial misalignment.
+        // zero-dimension is the spatial reason here regardless of selector uniqueness.
+        misalignReason: 'zero-dimension',
+        selectorAmbiguous,
+        selectorMatchCount: matchCount,
+        viewportX: Math.round(r.left), viewportY: Math.round(r.top),
+        width: 0, height: 0
+      };
     }
+    // selectorAmbiguous does NOT affect inViewport: the element IS spatially in the
+    // viewport.  The ambiguity is about which element was measured (identity), not
+    // where it is (position).  Setting inViewport:false here caused every card-grid
+    // element to show "Potentially misaligned" even when perfectly captured.
     const inViewport = r.bottom > 0 && r.top < vpH && r.right > 0 && r.left < vpW;
     return {
       id,
-      found:          true,
+      found:              true,
       inViewport,
-      misalignReason: inViewport ? null : 'out-of-viewport',
-      viewportX:      Math.round(r.left),
-      viewportY:      Math.round(r.top),
-      width:          w,
-      height:         h
+      misalignReason:     inViewport ? null : 'out-of-viewport',
+      selectorAmbiguous,
+      selectorMatchCount: matchCount,
+      viewportX:          Math.round(r.left),
+      viewportY:          Math.round(r.top),
+      width:              w,
+      height:             h
     };
   });
 
@@ -222,9 +359,12 @@ async function base64ToBlob(base64Data, mimeType) {
   return response.blob();
 }
 
-function buildMetricsOverride(viewport) {
+// scrollbarWidth must be added back so content area = viewport.width after lockScrollbar
+// applies padding-right: scrollbarWidth.  Without the addition, content shrinks by
+// scrollbarWidth px and may cross a CSS responsive breakpoint.
+function buildMetricsOverride(viewport, scrollbarWidth = 0) {
   return {
-    width:             Math.round(viewport.width),
+    width:             Math.round(viewport.width) + Math.round(scrollbarWidth || 0),
     height:            Math.round(viewport.height),
     deviceScaleFactor: CAPTURE_SCALE_FACTOR,
     mobile:            false
@@ -244,25 +384,20 @@ function prefixKeyframes(keyframes, sessionId, role) {
  * Builds the per-element manifest from the remeasured viewport rects that were
  * observed AFTER scrolling to each keyframe position.
  *
- * Why this replaces the old `buildViewportRects`:
- *   Old:  viewportRect.y = el.documentY (measured at scrollY=0) - kf.plannedScrollY
- *         → silently wrong whenever:
- *           (a) actualScrollY ≠ plannedScrollY (scroll clamping / content reflow)
- *           (b) page layout differs at different scroll positions (sticky headers,
- *               lazy content, compare page has taller hero section, etc.)
- *   New:  viewportRect comes directly from getBoundingClientRect() at the actual
- *         scroll position — the browser gives us the pixel-perfect answer.
- *
  * @param {Array}  keyframes        - prefixed keyframe objects (id + elementIds)
  * @param {Array}  remeasureResults - [{keyframeId, actualScrollY, rects:[…]}]
  * @param {Map}    documentYById    - hpid → documentY at scrollY=0 (for fallback logging)
  * @param {number} actualDPR
  * @param {number} documentHeight
+ * @param {number} viewportHeight   - CSS-px height of the viewport at capture time,
+ *                                    used to clip element rects to the screenshot boundary
  * @returns {Map<string, object>}   hpid → manifest entry
  */
-function buildManifestFromRemeasured(keyframes, remeasureResults, documentYById, actualDPR, documentHeight) {
+function buildManifestFromRemeasured(keyframes, remeasureResults, documentYById, actualDPR, documentHeight, viewportHeight) {
   const resultByKfId = new Map(remeasureResults.map(r => [r.keyframeId, r]));
   const manifest     = new Map();
+  // Defensive fallback: if viewportHeight is missing (old callers), skip clipping.
+  const vpH = viewportHeight > 0 ? viewportHeight : Infinity;
 
   for (const kf of keyframes) {
     const remeasure = resultByKfId.get(kf.id);
@@ -276,8 +411,6 @@ function buildManifestFromRemeasured(keyframes, remeasureResults, documentYById,
       const docY = documentYById.get(elId) ?? null;
 
       if (!m || !m.found) {
-        // Element not present in the DOM at capture time (dynamic content / DOM diff).
-        // Store a null viewportRect so the renderer knows to show the misalignment badge.
         manifest.set(elId, {
           keyframeId:          kf.id,
           actualDPR,
@@ -287,21 +420,67 @@ function buildManifestFromRemeasured(keyframes, remeasureResults, documentYById,
           totalDocumentHeight: documentHeight,
           viewportRect:        null,
           misaligned:          true,
-          misalignReason:      (m?.misalignReason) ?? 'element-not-found'
+          misalignReason:      (m?.misalignReason) ?? 'element-not-found',
+          selectorAmbiguous:   false,
+          selectorMatchCount:  null,
+          rectClipped:         false
         });
         continue;
       }
 
-      // Element found. Build viewport rect from observed coordinates.
+      // Clip viewportRect to the screenshot boundary.
+      //
+      //  getBoundingClientRect() can return elements taller than the viewport — e.g.
+      //  a full-page wrapper div (height: 5905px) or a hero section (726px in a
+      //  632px viewport).  If we store the raw height, computeCropParams receives
+      //  rh=5905, hits the 0.25 minimum scale floor, and renders hH = 5905×0.25 =
+      //  1476px — a full-width strip with no useful content visible.
+      //
+      //  We store the VISIBLE SLICE (clamped to the screenshot boundary) in
+      //  viewportRect, and the RAW geometry in rawViewportRect so renderers that
+      //  need the true size (e.g. future diff-signal displays) can access it.
+      const rawY   = m.viewportY;
+      const rawH   = m.height;
+      const clippedY      = Math.max(0, rawY);
+      const clippedBottom = Math.min(rawY + rawH, vpH);
+      const clippedH      = Math.max(1, clippedBottom - clippedY);
+      const rectClipped   = clippedH < rawH;
+
+      // Defensive: element completely below screenshot fold (shouldn't happen given
+      // inViewport check, but guard anyway).
+      if (clippedBottom <= 0) {
+        manifest.set(elId, {
+          keyframeId:          kf.id,
+          actualDPR,
+          dpr:                 CAPTURE_SCALE_FACTOR,
+          kfScrollY:           actualScrollY,
+          documentY:           docY,
+          totalDocumentHeight: documentHeight,
+          viewportRect:        null,
+          misaligned:          true,
+          misalignReason:      'clipped-below-fold',
+          selectorAmbiguous:   m.selectorAmbiguous  ?? false,
+          selectorMatchCount:  m.selectorMatchCount ?? null,
+          rectClipped:         true
+        });
+        continue;
+      }
+
       const viewportRect = {
         x:      m.viewportX,
-        y:      m.viewportY,
+        y:      clippedY,
         width:  m.width,
-        height: m.height
+        height: clippedH
+      };
+      // Raw rect preserved separately — allows renderers to display true element
+      // dimensions in tooltips without corrupting crop coordinates.
+      const rawViewportRect = {
+        x:      m.viewportX,
+        y:      rawY,
+        width:  m.width,
+        height: rawH
       };
 
-      // Flag elements that exist in DOM but weren't visible inside the viewport
-      // when the screenshot was taken (e.g. pushed below fold by layout changes).
       const misaligned = !m.inViewport;
 
       manifest.set(elId, {
@@ -312,8 +491,13 @@ function buildManifestFromRemeasured(keyframes, remeasureResults, documentYById,
         documentY:           docY,
         totalDocumentHeight: documentHeight,
         viewportRect,
+        rawViewportRect,
         misaligned:          misaligned || undefined,
-        misalignReason:      misaligned ? m.misalignReason : undefined
+        // misalignReason is spatial only — never set to 'selector-ambiguous' here.
+        misalignReason:      misaligned ? m.misalignReason : undefined,
+        selectorAmbiguous:   m.selectorAmbiguous  ?? false,
+        selectorMatchCount:  m.selectorMatchCount ?? null,
+        rectClipped
       });
     }
   }
@@ -335,8 +519,9 @@ function buildElementRectRecords(sessionId, role, manifest) {
   const records = [];
   for (const [elementKey, entry] of manifest.entries()) {
     const {
-      keyframeId, viewportRect, actualDPR, documentY, totalDocumentHeight,
-      pseudoBefore, pseudoAfter, misaligned, misalignReason
+      keyframeId, viewportRect, rawViewportRect, actualDPR, documentY, totalDocumentHeight,
+      pseudoBefore, pseudoAfter, misaligned, misalignReason,
+      selectorAmbiguous, selectorMatchCount, rectClipped
     } = entry;
     records.push({
       id:                  `${sessionId}_${role}_rect_${elementKey}`,
@@ -345,13 +530,17 @@ function buildElementRectRecords(sessionId, role, manifest) {
       tabRole:             role,
       keyframeId,
       rect:                viewportRect,
+      rawRect:             rawViewportRect ?? null,
       actualDPR,
       documentY,
       totalDocumentHeight,
-      pseudoBefore:        pseudoBefore   ?? null,
-      pseudoAfter:         pseudoAfter    ?? null,
-      misaligned:          misaligned     ?? false,
-      misalignReason:      misalignReason ?? null
+      pseudoBefore:        pseudoBefore      ?? null,
+      pseudoAfter:         pseudoAfter       ?? null,
+      misaligned:          misaligned        ?? false,
+      misalignReason:      misalignReason    ?? null,
+      selectorAmbiguous:   selectorAmbiguous ?? false,
+      selectorMatchCount:  selectorMatchCount ?? null,
+      rectClipped:         rectClipped       ?? false
     });
   }
   return records;
@@ -448,18 +637,41 @@ async function captureKeyframe(tabId, keyframe, kfSelectorPairs, sessionId, inde
   });
 
   // ── 5. Screenshot ────────────────────────────────────────────────────────
-  const t1 = Date.now();
-  logger.info(`VDIFF ${kfTag} CDP captureScreenshot START`);
-  const result = await sendCDP(tabId, 'Page.captureScreenshot', {
-    format:           'webp',
-    quality:          CAPTURE_QUALITY,
-    fromSurface:      true,
-    optimizeForSpeed: false
-  }, CDP_CAPTURE_TIMEOUT_MS);
-  logger.info(`VDIFF ${kfTag} CDP captureScreenshot DONE`, {
-    elapsed:  ms(t1),
-    b64Bytes: result?.data?.length ?? 0
-  });
+  //
+  //  Freeze JS execution on the main thread BEFORE capturing.  inPageFreezeAnimations
+  //  kills CSS transitions/animations, but does NOT stop IntersectionObserver callbacks,
+  //  MutationObserver callbacks, scroll event listeners, page rAF callbacks, or
+  //  setTimeout callbacks — any of which can shift element positions in the IPC
+  //  round-trip window between inPageRemeasureRects and Page.captureScreenshot.
+  //  setScriptExecutionDisabled blocks the main-thread task queue; the compositor
+  //  thread keeps running so fromSurface:true capture still works.
+  //
+  //  try/finally guarantees re-enable even if captureScreenshot times out or throws —
+  //  without it a throw would leave the tab with JS permanently disabled.
+  //
+  logger.info(`VDIFF ${kfTag} JS freeze START`);
+  await sendCDP(tabId, 'Emulation.setScriptExecutionDisabled', { value: true });
+  logger.info(`VDIFF ${kfTag} JS freeze DONE`);
+
+  let result;
+  try {
+    const t1 = Date.now();
+    logger.info(`VDIFF ${kfTag} CDP captureScreenshot START`);
+    result = await sendCDP(tabId, 'Page.captureScreenshot', {
+      format:           'webp',
+      quality:          CAPTURE_QUALITY,
+      fromSurface:      true,
+      optimizeForSpeed: false
+    }, CDP_CAPTURE_TIMEOUT_MS);
+    logger.info(`VDIFF ${kfTag} CDP captureScreenshot DONE`, {
+      elapsed:  ms(t1),
+      b64Bytes: result?.data?.length ?? 0
+    });
+  } finally {
+    // Always re-enable JS — if captureScreenshot threw, the tab must not be left frozen.
+    await sendCDP(tabId, 'Emulation.setScriptExecutionDisabled', { value: false });
+    logger.info(`VDIFF ${kfTag} JS unfreeze DONE`);
+  }
 
   // ── 6. Persist blob + keyframe metadata ──────────────────────────────────
   const t2 = Date.now();
@@ -560,6 +772,22 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
   const t0 = Date.now();
   logger.info(`VDIFF [${role}] executeTabCapture START`, { tabId, selectorCount: selectorPairs.length });
 
+  // Bring the tab to front before ANY setup steps, not just before each keyframe.
+  //
+  // The compare tab is in the background when executeTabCapture is called (baseline
+  // just finished).  Two problems arise in background tabs:
+  //   1. rAF is throttled to 1fps — inPageScrollAndSettle's stability poll resolves
+  //      only via the hard setTimeout fallback, adding up to SCROLL_SETTLE_TIMEOUT_MS
+  //      latency to every setup step.
+  //   2. Some pages (lazy loaders, IntersectionObserver-driven sections) defer layout
+  //      until the tab is visible, making getBoundingClientRect() return stale geometry.
+  // Bringing the tab to front here resolves both before any measurement happens.
+  //
+  // The per-keyframe bringToFront inside captureKeyframe is kept for correctness
+  // across multi-keyframe captures where Chrome may have shifted focus between steps.
+  await sendCDP(tabId, 'Page.bringToFront');
+  logger.info(`VDIFF [${role}] bringToFront (setup) DONE`, { tabId });
+
   const t1       = Date.now();
   const viewport = await execInPage(tabId, inPageGetViewport);
   logger.info(`VDIFF [${role}] inPageGetViewport DONE`, { elapsed: ms(t1), viewport });
@@ -576,7 +804,7 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
   });
 
   const t2 = Date.now();
-  await sendCDP(tabId, 'Emulation.setDeviceMetricsOverride', buildMetricsOverride(viewport));
+  await sendCDP(tabId, 'Emulation.setDeviceMetricsOverride', buildMetricsOverride(viewport, lockResult?.scrollbarWidth ?? 0));
   logger.info(`VDIFF [${role}] setDeviceMetricsOverride DONE`, { elapsed: ms(t2) });
 
   const t3 = Date.now();
@@ -646,7 +874,7 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
 
   // Build manifest from the ground-truth coords measured at capture time.
   const manifest = buildManifestFromRemeasured(
-    keyframes, remeasureResults, documentYById, actualDPR, documentHeight
+    keyframes, remeasureResults, documentYById, actualDPR, documentHeight, vpHeight
   );
 
   attachPseudoDataToManifest(manifest, pseudoResults ?? []);

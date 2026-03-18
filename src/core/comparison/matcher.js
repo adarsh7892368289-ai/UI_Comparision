@@ -2,10 +2,6 @@ import logger                                from '../../infrastructure/logger.j
 import { get }                               from '../../config/defaults.js';
 import { yieldToEventLoop, YIELD_CHUNK_SIZE, progressFrame, resultFrame } from './async-utils.js';
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const MatchType = Object.freeze({
   DEFINITIVE:         'definitive',
   POSITIONAL:         'positional',
@@ -125,18 +121,6 @@ function makeAmbiguousMatch(bi, conf, strat, candidates, baseline) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Phase 1: Linear Sequence Alignment — the core new engine
-// ---------------------------------------------------------------------------
-
-/**
- * Returns true if two elements pass the Identity Triad for sequence alignment:
- *   1. hpid segments are equal (relative structural position)
- *   2. tagName is equal (anatomical match)
- *
- * Note: test-attribute match is handled separately in Phase 0 before this
- * function is called, so we only check structural identity here.
- */
 function passesIdentityTriad(bEl, cEl) {
   if (bEl.tagName !== cEl.tagName) return false;
   const bSegs = parseHpidSegments(bEl.hpid);
@@ -144,36 +128,12 @@ function passesIdentityTriad(bEl, cEl) {
   return segmentsEqual(bSegs, cSegs);
 }
 
-/**
- * Returns true if bEl and cEl are the same tag but at the same hpid with
- * DIFFERENT tagName — this is a replacement, not a match.
- */
 function isReplacement(bEl, cEl) {
   const bSegs = parseHpidSegments(bEl.hpid);
   const cSegs = parseHpidSegments(cEl.hpid);
   return segmentsEqual(bSegs, cSegs) && bEl.tagName !== cEl.tagName;
 }
 
-/**
- * Core dual-pointer sequence alignment engine.
- *
- * Walks both arrays simultaneously in DFS order.
- * Returns four buckets:
- *   - pairs:          Array<{ bi, ci, confidence, strategy }>
- *   - added:          Array<ci>  — compare-only elements (insertions)
- *   - removed:        Array<bi>  — baseline-only elements (deletions)
- *   - orphanBaseline: Array<bi>  — unresolved baseline (for Phase 2+)
- *   - orphanCompare:  Array<ci>  — unresolved compare  (for Phase 2+)
- *
- * @param {object[]} baseline
- * @param {object[]} compare
- * @param {Set<number>} usedBaseline  — pre-claimed indices (Phase 0 matches)
- * @param {Set<number>} usedCompare   — pre-claimed indices (Phase 0 matches)
- * @param {object} config
- * @param {string[]} config.anchorAttributes
- * @param {number}   config.lookAheadWindow
- * @param {number}   config.inSequenceConf
- */
 function sequenceAlign(baseline, compare, usedBaseline, usedCompare, config) {
   const { anchorAttributes, lookAheadWindow, inSequenceConf } = config;
 

@@ -63,7 +63,20 @@ function passTwo(clusters, viewportHeight, viewportWidth, documentHeight) {
         const visibleBottom = scrollY + viewportHeight;
         const group         = makeGroup(groups.length, scrollY, viewportWidth, viewportHeight);
         while (i < sorted.length && sorted[i].documentY < visibleBottom) {
-          group.elementIds.push(sorted[i].id);
+          const el = sorted[i];
+          group.elementIds.push(el.id);
+          // Warn when an element's BOTTOM extends past the planned viewport bottom.
+          // The element is still assigned to this keyframe — grouping is unchanged.
+          // captureKeyframe will see inViewport:false on the remeasure and flag it as
+          // misaligned, but the explicit warn here makes the planning-time issue visible
+          // in the background service-worker log before any screenshot is taken.
+          if (el.documentY + el.height > visibleBottom) {
+            console.warn(
+              `[keyframe-grouper] element ${el.id} bottom (${el.documentY + el.height}px)` +
+              ` exceeds keyframe viewport bottom (${visibleBottom}px)` +
+              ` — element will be clipped in screenshot`
+            );
+          }
           i++;
         }
         groups.push(group);

@@ -1,8 +1,7 @@
-import { isValidReport, saveReport, loadAllReports } from './report-manager.js';
-import logger from '../infrastructure/logger.js';
 import { get } from '../config/defaults.js';
+import logger from '../infrastructure/logger.js';
+import { isValidReport, loadAllReports, saveReport } from './report-manager.js';
 
-// Lowercase anchor set — header detection is case-insensitive
 const ELEMENT_HEADER_ANCHORS = new Set(['hpid', 'tag name', 'css selector', 'xpath', 'absolute hpid']);
 const MIN_ANCHOR_MATCHES     = 2;
 
@@ -31,7 +30,6 @@ function _safeJsonParse(cell) {
   try { return JSON.parse(cell); } catch { return undefined; }
 }
 
-// Case-insensitive check — anchors stored lowercase, cells lowercased before comparison
 function _looksLikeElementHeader(record) {
   let matches = 0;
   for (const cell of record) {
@@ -41,9 +39,7 @@ function _looksLikeElementHeader(record) {
   return false;
 }
 
-// Required columns — without these the matcher has nothing to work with
 const REQUIRED_COLUMNS    = ['hpid', 'tag name'];
-// Recommended columns — their absence degrades match quality but does not block import
 const RECOMMENDED_COLUMNS = ['css selector', 'xpath'];
 
 function _validateColumns(headerIndex) {
@@ -64,14 +60,11 @@ function _validateColumns(headerIndex) {
   };
 }
 
-// Build a lookup map: canonical lowercase header name → original column index
-// This lets _buildElementFromRow find 'tag name' whether source says 'Tag Name',
-// 'TAG NAME', 'tag name', etc.
 function _makeHeaderIndex(headers) {
   const index = {};
-  headers.forEach((h, i) => {
+headers.forEach((h, i) => {
     const key = String(h).trim().toLowerCase();
-    if (!(key in index)) index[key] = i; // first occurrence wins
+    if (!(key in index)) index[key] = i;
   });
   return index;
 }
@@ -158,7 +151,6 @@ function _buildElementFromRow(headerIndex, row, cssProperties) {
 }
 
 function _buildReportFromMeta(metaMap, elements) {
-  // metaMap lookup is also case-insensitive — normalise keys on read
   const get = (key) => metaMap[key] ?? metaMap[key.toLowerCase()] ?? metaMap[key.toUpperCase()] ?? '';
   return {
     id:             get('Report ID')      || String(Date.now()),
@@ -347,3 +339,4 @@ async function importReportFromFile(file, { forceReplace = false } = {}) {
 }
 
 export { importReportFromFile };
+

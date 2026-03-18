@@ -38,27 +38,35 @@ function resolveVisualManifest(visualDiffs) {
     // quality captures), placing every highlight 1 viewport-width to the right of
     // the actual element. Removed. The JS crop functions read actualDPR directly.
     out[key] = {
-      baselineKeyframeId:      baseline?.keyframeId         ?? null,
-      baselineRect:            baseline?.viewportRect        ?? null,
-      baselineActualDPR:       baseline?.dpr ?? 2,
-      baselineDocumentY:       baseline?.documentY           ?? null,
-      baselineDocumentHeight:  baseline?.totalDocumentHeight ?? null,
-      baselineKfScrollY:       baseline?.kfScrollY           ?? null,
-      baselinePseudoBefore:    baseline?.pseudoBefore        ?? null,
-      baselinePseudoAfter:     baseline?.pseudoAfter         ?? null,
-      baselineMisaligned:      baseline?.misaligned          ?? false,
-      baselineMisalignReason:  baseline?.misalignReason      ?? null,
-      compareKeyframeId:       compare?.keyframeId          ?? null,
-      compareRect:             compare?.viewportRect         ?? null,
-      compareActualDPR:        compare?.dpr  ?? 2,
-      compareDocumentY:        compare?.documentY            ?? null,
-      compareDocumentHeight:   compare?.totalDocumentHeight  ?? null,
-      compareKfScrollY:        compare?.kfScrollY            ?? null,
-      comparePseudoBefore:     compare?.pseudoBefore         ?? null,
-      comparePseudoAfter:      compare?.pseudoAfter          ?? null,
-      compareMisaligned:       compare?.misaligned           ?? false,
-      compareMisalignReason:   compare?.misalignReason       ?? null,
-      diffs:                   diffs ?? []
+      baselineKeyframeId:        baseline?.keyframeId         ?? null,
+      baselineRect:              baseline?.viewportRect        ?? null,
+      baselineRawRect:           baseline?.rawViewportRect     ?? null,
+      baselineActualDPR:         baseline?.dpr ?? 2,
+      baselineDocumentY:         baseline?.documentY           ?? null,
+      baselineDocumentHeight:    baseline?.totalDocumentHeight ?? null,
+      baselineKfScrollY:         baseline?.kfScrollY           ?? null,
+      baselinePseudoBefore:      baseline?.pseudoBefore        ?? null,
+      baselinePseudoAfter:       baseline?.pseudoAfter         ?? null,
+      baselineMisaligned:        baseline?.misaligned          ?? false,
+      baselineMisalignReason:    baseline?.misalignReason      ?? null,
+      baselineSelectorAmbiguous: baseline?.selectorAmbiguous   ?? false,
+      baselineSelectorMatchCount:baseline?.selectorMatchCount  ?? null,
+      baselineRectClipped:       baseline?.rectClipped         ?? false,
+      compareKeyframeId:         compare?.keyframeId          ?? null,
+      compareRect:               compare?.viewportRect         ?? null,
+      compareRawRect:            compare?.rawViewportRect      ?? null,
+      compareActualDPR:          compare?.dpr  ?? 2,
+      compareDocumentY:          compare?.documentY            ?? null,
+      compareDocumentHeight:     compare?.totalDocumentHeight  ?? null,
+      compareKfScrollY:          compare?.kfScrollY            ?? null,
+      comparePseudoBefore:       compare?.pseudoBefore         ?? null,
+      comparePseudoAfter:        compare?.pseudoAfter          ?? null,
+      compareMisaligned:         compare?.misaligned           ?? false,
+      compareMisalignReason:     compare?.misalignReason       ?? null,
+      compareSelectorAmbiguous:  compare?.selectorAmbiguous    ?? false,
+      compareSelectorMatchCount: compare?.selectorMatchCount   ?? null,
+      compareRectClipped:        compare?.rectClipped          ?? false,
+      diffs:                     diffs ?? []
     };
   }
   return out;
@@ -1153,6 +1161,12 @@ function computeCropParams(img, rect, containerWidth, dpr){
   var rh=rect.height||rect.h||1;
   var vpW=img.naturalWidth/dpr;
   var vpH=img.naturalHeight/dpr;
+  // Cap rh to the portion of the element that fits within the screenshot.
+  // Elements taller than the viewport (e.g. 5905px page-wrapper in a 632px viewport)
+  // produce hH = rh × scaleX that far exceeds displayH when scaleX hits the 0.25 floor,
+  // rendering a full-strip highlight with no visible content.  Clamping rh to the
+  // visible slice makes the scale calculation use the actual visible height instead.
+  rh = Math.min(rh, Math.max(1, vpH - Math.max(0, ry)));
   var scaleX=Math.max(Math.min(containerWidth*0.60/rw, 140/Math.max(rh,1)), 0.25);
   var scaleY=scaleX;
   var ctxPx=30/scaleX;
@@ -1169,7 +1183,7 @@ function computeCropParams(img, rect, containerWidth, dpr){
 // called computeCropParams independently; if the container reflowed between the
 // two calls the SVG coordinate system diverged from the CSS transform, causing
 // misaligned highlight boxes.
-function applyThumb(img, svgEl, container, rect, diffs, dpr){
+function applyThumb(img, svgEl, container, rect, diffs, dpr, flags){
   if(!img||!img.naturalWidth||!rect||!container) return;
   var cw=container.clientWidth||container.offsetWidth||200;
   var p=computeCropParams(img,rect,cw,dpr||2);
@@ -1185,8 +1199,6 @@ function applyThumb(img, svgEl, container, rect, diffs, dpr){
   // ── 2. Draw the SVG highlight using the same p ─────────────────────────────
   if(!svgEl) return;
   svgEl.innerHTML='';
-  // Use p.scaleX directly — avoids a getBoundingClientRect() call whose result
-  // can be stale if the browser has not yet committed the transform above.
   var sx=p.scaleX, sy=p.scaleY;
   var displayW=p.paddedW*sx, displayH=p.paddedH*sy;
   svgEl.setAttribute('width',displayW);
@@ -1216,6 +1228,19 @@ function applyThumb(img, svgEl, container, rect, diffs, dpr){
   hl.dataset.diffs=JSON.stringify(diffs||[]);
   hl.classList.add('hl-rect');
   svgEl.appendChild(hl);
+  // ── 3. Annotation labels for diagnostics ──────────────────────────────────
+  if(flags&&flags.selectorAmbiguous){
+    var lbl=svgNS('text');
+    setAttrs(lbl,{x:hL,y:Math.max(10,hT-4),'font-size':'9','fill':'#f59e0b','font-family':'sans-serif','pointer-events':'none'});
+    lbl.textContent='\u26a0 Selector ambiguous';
+    svgEl.appendChild(lbl);
+  }
+  if(flags&&flags.rectClipped){
+    var lbl2=svgNS('text');
+    setAttrs(lbl2,{x:hL,y:Math.min(displayH-2,hT+hH+10),'font-size':'9','fill':'#60a5fa','font-family':'sans-serif','pointer-events':'none'});
+    lbl2.textContent='\u2193 Partially below fold';
+    svgEl.appendChild(lbl2);
+  }
 }
 
 // Kept for any external call sites — delegates to applyThumb.
@@ -1250,7 +1275,7 @@ function applyFocusMask(svgEl, W, H, dx, dy, dw, dh, color){
   svgEl.appendChild(ring);
 }
 
-function drawModalHighlights(svgEl, imgEl, rect, diffs, dpr){
+function drawModalHighlights(svgEl, imgEl, rect, diffs, dpr, flags){
   svgEl.innerHTML='';
   if(!rect||!imgEl||!imgEl.naturalWidth) return;
   var layoutW=imgEl.offsetWidth, layoutH=imgEl.offsetHeight;
@@ -1271,8 +1296,6 @@ function drawModalHighlights(svgEl, imgEl, rect, diffs, dpr){
   var sev=diffs&&diffs[0]?diffs[0].severity:'medium';
   var color=SEVERITY_COLORS[sev]||'#7c3aed';
   var defs=svgNS('defs');
-  // Unique filter ID per draw call — prevents baseline and compare SVGs from
-  // sharing the same id='mg' which caused one overlay to corrupt the other.
   var filtId='mg-'+(++_maskSeq);
   var filt=svgNS('filter'); filt.setAttribute('id',filtId); filt.setAttribute('x','-10%'); filt.setAttribute('y','-10%'); filt.setAttribute('width','120%'); filt.setAttribute('height','120%');
   var blur=svgNS('feGaussianBlur'); blur.setAttribute('stdDeviation','3'); blur.setAttribute('result','b');
@@ -1287,6 +1310,19 @@ function drawModalHighlights(svgEl, imgEl, rect, diffs, dpr){
   hl.dataset.diffs=JSON.stringify(diffs||[]);
   hl.classList.add('hl-rect');
   svgEl.appendChild(hl);
+  // Annotation labels — plain <text> elements, no new filter/mask IDs.
+  if(flags&&flags.selectorAmbiguous){
+    var lbl=svgNS('text');
+    setAttrs(lbl,{x:dx,y:Math.max(14,dy-6),'font-size':'11','fill':'#f59e0b','font-family':'sans-serif','pointer-events':'none','font-weight':'600'});
+    lbl.textContent='\u26a0 Selector ambiguous (\u2265'+((flags.selectorMatchCount||'?'))+' matches)';
+    svgEl.appendChild(lbl);
+  }
+  if(flags&&flags.rectClipped){
+    var lbl2=svgNS('text');
+    setAttrs(lbl2,{x:dx,y:Math.min(layoutH-4,dy+dh+14),'font-size':'11','fill':'#60a5fa','font-family':'sans-serif','pointer-events':'none','font-weight':'600'});
+    lbl2.textContent='\u2193 Partially below fold';
+    svgEl.appendChild(lbl2);
+  }
 }
 
 function buildVisualDiffSection(hpid){
@@ -1334,15 +1370,14 @@ function attachVdiffInlineImages(hpid){
     var dpr=role==='compare'?(entry.compareActualDPR||2):(entry.baselineActualDPR||2);
     // Snapshot diffs at closure time so a later teardown cannot mutate the reference.
     var diffs=entry.diffs||[];
+    var flags=role==='compare'
+      ?{selectorAmbiguous:!!entry.compareSelectorAmbiguous,selectorMatchCount:entry.compareSelectorMatchCount,rectClipped:!!entry.compareRectClipped}
+      :{selectorAmbiguous:!!entry.baselineSelectorAmbiguous,selectorMatchCount:entry.baselineSelectorMatchCount,rectClipped:!!entry.baselineRectClipped};
     var svgEl=wrapper&&wrapper.querySelector('.vdiff-thumb-svg');
     if(wrapper) wrapper.classList.add('loading');
     img.onload=function(){
       var doApply=function(){
-        // Both crop and highlight use the SAME applyThumb call, which computes
-        // params once — eliminating the coordinate divergence that occurred when
-        // applyCrop and drawInlineHighlight each called computeCropParams
-        // independently with potentially different container widths.
-        if(rect) applyThumb(img,svgEl,wrapper,rect,diffs,dpr);
+        if(rect) applyThumb(img,svgEl,wrapper,rect,diffs,dpr,flags);
         if(wrapper) wrapper.classList.remove('loading');
       };
       var w=wrapper?wrapper.clientWidth||wrapper.offsetWidth:0;
@@ -1530,13 +1565,13 @@ function attachCopyHandlers(){
   });
 }
 
-function setModalImage(imgEl, svgEl, kfId, rect, diffs, dpr){
+function setModalImage(imgEl, svgEl, kfId, rect, diffs, dpr, flags){
   svgEl.innerHTML='';
   imgEl.onload=null; imgEl.removeAttribute('src');
   if(!kfId) return;
   var uri=VISUAL_DATA[kfId]; if(!uri) return;
   imgEl.onload=function(){
-    drawModalHighlights(svgEl,imgEl,rect,diffs,dpr||2);
+    drawModalHighlights(svgEl,imgEl,rect,diffs,dpr||2,flags||{});
   };
   imgEl.src=uri;
 }
@@ -1549,8 +1584,11 @@ function redrawAll(){
     var svg=modal.querySelector('.vdiff-svg-overlay[data-role="'+role+'"]');
     var rect=role==='baseline'?e.baselineRect:e.compareRect;
     var dpr =role==='baseline'?(e.baselineActualDPR||2):(e.compareActualDPR||2);
+    var flags=role==='baseline'
+      ?{selectorAmbiguous:!!e.baselineSelectorAmbiguous,selectorMatchCount:e.baselineSelectorMatchCount,rectClipped:!!e.baselineRectClipped}
+      :{selectorAmbiguous:!!e.compareSelectorAmbiguous,selectorMatchCount:e.compareSelectorMatchCount,rectClipped:!!e.compareRectClipped};
     if(!img||!img.naturalWidth) return;
-    drawModalHighlights(svg,img,rect,e.diffs,dpr);
+    drawModalHighlights(svg,img,rect,e.diffs,dpr,flags);
   });
 }
 
@@ -1592,12 +1630,14 @@ function openDiffModal(hpid){
   setModalImage(
     modal.querySelector('.vdiff-screenshot[data-role="baseline"]'),
     modal.querySelector('.vdiff-svg-overlay[data-role="baseline"]'),
-    entry.baselineKeyframeId, entry.baselineRect, entry.diffs, entry.baselineActualDPR||2
+    entry.baselineKeyframeId, entry.baselineRect, entry.diffs, entry.baselineActualDPR||2,
+    {selectorAmbiguous:!!entry.baselineSelectorAmbiguous,selectorMatchCount:entry.baselineSelectorMatchCount,rectClipped:!!entry.baselineRectClipped}
   );
   setModalImage(
     modal.querySelector('.vdiff-screenshot[data-role="compare"]'),
     modal.querySelector('.vdiff-svg-overlay[data-role="compare"]'),
-    entry.compareKeyframeId, entry.compareRect, entry.diffs, entry.compareActualDPR||2
+    entry.compareKeyframeId, entry.compareRect, entry.diffs, entry.compareActualDPR||2,
+    {selectorAmbiguous:!!entry.compareSelectorAmbiguous,selectorMatchCount:entry.compareSelectorMatchCount,rectClipped:!!entry.compareRectClipped}
   );
 
   var pA=modal.querySelector('[data-pane="baseline"]'), pB=modal.querySelector('[data-pane="compare"]');
