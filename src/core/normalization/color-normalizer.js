@@ -1,5 +1,11 @@
-import logger from '../../infrastructure/logger.js';
+/**
+ * Converts any valid CSS color expression into a canonical `rgba(r, g, b, a)` string.
+ * Runs in the content-script context; pure synchronous computation, no I/O.
+ * Invariant: always returns a string — unknown formats are returned unchanged.
+ * Called by: normalizer-engine.js for every color-typed CSS property.
+ */
 
+// Static lookup table mapping CSS named colors to their [R, G, B] triplets.
 const NAMED_COLORS = {
   aliceblue: [240, 248, 255], antiquewhite: [250, 235, 215], aqua: [0, 255, 255],
   aquamarine: [127, 255, 212], azure: [240, 255, 255], beige: [245, 245, 220],
@@ -53,6 +59,14 @@ const NAMED_COLORS = {
   yellowgreen: [154, 205, 50]
 };
 
+/**
+ * Entry point: routes a CSS color value to the appropriate parser and returns `rgba(…)`.
+ * CSS keywords like `inherit` and `currentcolor` are returned as-is — they cannot be
+ * resolved without a live DOM context at comparison time.
+ *
+ * @param {string|*} color - Raw CSS color value from a computed style.
+ * @returns {string} Canonical `rgba(r, g, b, a)` string, or the original value if unrecognised.
+ */
 function normalizeColor(color) {
   if (!color || typeof color !== 'string') {
     return color;
@@ -88,6 +102,13 @@ function normalizeColor(color) {
   return color;
 }
 
+/**
+ * Converts 3-, 4-, 6-, or 8-digit hex strings to `rgba(…)`.
+ * 3/4-digit hex is expanded by doubling each nibble before parsing.
+ *
+ * @param {string} hex - Hex color starting with `#`.
+ * @returns {string} `rgba(r, g, b, a)` where `a` is in [0, 1].
+ */
 function hexToRgba(hex) {
   let cleaned = hex.replace('#', '');
 
@@ -102,7 +123,7 @@ function hexToRgba(hex) {
   const r = parseInt(cleaned.substring(0, 2), 16);
   const g = parseInt(cleaned.substring(2, 4), 16);
   const b = parseInt(cleaned.substring(4, 6), 16);
-  
+
   let a = 1;
   if (cleaned.length === 8) {
     a = parseInt(cleaned.substring(6, 8), 16) / 255;
@@ -112,12 +133,19 @@ function hexToRgba(hex) {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
 
+/**
+ * Normalises `rgb(…)` and `rgba(…)` strings to a consistent `rgba(…)` form.
+ * Rounds fractional RGB values so comparisons aren't thrown off by sub-pixel differences.
+ *
+ * @param {string} rgba - Raw `rgb` or `rgba` string from a computed style.
+ * @returns {string} Standardised `rgba(…)` or the original string if regex fails.
+ */
 function standardizeRgba(rgba) {
   const match = rgba.match(/rgba?\s*\(\s*([^)]+)\s*\)/);
   if (!match) {return rgba;}
 
   const parts = match[1].split(',').map(p => p.trim());
-  
+
   const r = Math.round(parseFloat(parts[0]));
   const g = Math.round(parseFloat(parts[1]));
   const b = Math.round(parseFloat(parts[2]));
@@ -126,12 +154,19 @@ function standardizeRgba(rgba) {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
 
+/**
+ * Converts `hsl(…)` / `hsla(…)` to `rgba(…)` using the standard HLS→RGB algorithm.
+ * Clamps saturation and lightness to [0, 1] and wraps hue to [0, 360) before conversion.
+ *
+ * @param {string} hsl - Raw `hsl` or `hsla` string.
+ * @returns {string} `rgba(r, g, b, a)` or the original string if parsing fails.
+ */
 function hslToRgba(hsl) {
   const match = hsl.match(/hsla?\s*\(\s*([^)]+)\s*\)/);
   if (!match) {return hsl;}
 
   const parts = match[1].split(',').map(p => p.trim());
-  
+
   let h = parseFloat(parts[0]);
   let s = parseFloat(parts[1].replace('%', '')) / 100;
   let l = parseFloat(parts[2].replace('%', '')) / 100;
@@ -139,7 +174,7 @@ function hslToRgba(hsl) {
 
   h %= 360;
   if (h < 0) {h += 360;}
-  
+
   s = Math.max(0, Math.min(1, s));
   l = Math.max(0, Math.min(1, l));
 

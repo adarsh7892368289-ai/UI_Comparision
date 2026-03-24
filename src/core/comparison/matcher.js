@@ -1,3 +1,9 @@
+/**
+ * Four-phase element matching pipeline that pairs baseline elements with compare elements
+ * before property diffing. Runs in the MV3 service worker context.
+ * Invariant: every baseline element ends up in exactly one of: matches, unmatchedBaseline, ambiguous.
+ * Called by: comparator.js -> Comparator.compare().
+ */
 import logger                                from '../../infrastructure/logger.js';
 import { get }                               from '../../config/defaults.js';
 import { yieldToEventLoop, YIELD_CHUNK_SIZE, progressFrame, resultFrame } from './async-utils.js';
@@ -6,76 +12,77 @@ const MatchType = Object.freeze({
   DEFINITIVE:         'definitive',
   POSITIONAL:         'positional',
   AMBIGUOUS:          'ambiguous',
-  ADDED:              'added',              // element present in compare only
-  REMOVED:            'removed',            // element present in baseline only
+  ADDED:              'added',
+  REMOVED:            'removed',
   UNMATCHED_BASELINE: 'unmatched-baseline', // kept for output contract compatibility
   UNMATCHED_COMPARE:  'unmatched-compare'
 });
 
-// ---------------------------------------------------------------------------
-// Pure utility helpers
-// ---------------------------------------------------------------------------
-
 /**
- * Returns the first matching test-attribute key found on an element, or null.
+ * Returns the first test-attribute match key found on an element, or null.
+ * Key is formatted as `attrName::value` so values from different attributes can never collide.
  */
 function getTestAttrKey(el, anchorAttributes) {
   for (const attr of anchorAttributes) {
     const val = el.attributes?.[attr];
-    if (val) return `${attr}::${val}`;
+    if (val) { return `${attr}::${val}`; }
   }
   return null;
 }
 
 /**
- * Returns the last `depth` dot-separated segments of an hpid as a string key.
- * e.g. hpidSuffixKey('1.4.1.1.2.1', 4) => '1.1.2.1'
+ * Returns the last `depth` dot-separated segments of an HPID as a string key.
+ * Used by Phase 2: when a wrapper ancestor is inserted the absolute HPID changes but the
+ * last N segments stay the same, allowing the element to be matched by its subtree position.
+ * @param {number} depth - Number of trailing segments to retain.
  */
 function hpidSuffixKey(hpid, depth) {
-  if (!hpid) return null;
+  if (!hpid) { return null; }
   const parts = hpid.split('.');
   return parts.length <= depth ? hpid : parts.slice(-depth).join('.');
 }
 
-/**
- * Splits an hpid string into an array of integer segments.
- * e.g. '1.3.2' => [1, 3, 2]
- */
+/** Splits a dot-separated HPID string into an integer segment array. */
 function parseHpidSegments(hpid) {
-  if (!hpid) return [];
+  if (!hpid) { return []; }
   return hpid.split('.').map(Number);
 }
 
-/**
- * Returns true if two hpid segment arrays are equal.
- */
+/** Returns true when two integer segment arrays are equal in length and values. */
 function segmentsEqual(a, b) {
-  if (a.length !== b.length) return false;
+  if (a.length !== b.length) { return false; }
   for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
+    if (a[i] !== b[i]) { return false; }
   }
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// Phase 0 + Phase 3 helpers (pool-based strategies — kept as legacy passes)
-// ---------------------------------------------------------------------------
-
+/**
+ * Builds a Map from keyFn(el) -> index[] over the given compare indices.
+ * Stores arrays (not single values) so callers can detect ambiguous keys
+ * without a separate pass.
+ */
 function buildMultiMap(items, availableIdxs, keyFn) {
   const map = new Map();
   for (const i of availableIdxs) {
     const key = keyFn(items[i]);
-    if (key == null) continue;
-    if (!map.has(key)) map.set(key, []);
+    if (key === null) { continue; }
+    if (!map.has(key)) { map.set(key, []); }
     map.get(key).push(i);
   }
   return map;
 }
 
-function resolveFromMultiMap(indices, confidence, usedCompare, minMatchThreshold, ambiguityWindow) {
-  if (!indices) return { verdict: 'no_match' };
+/**
+ * Resolves a multi-map lookup to a verdict.
+ * Two or more available candidates produce `ambiguous` rather than `definitive` because
+ * picking arbitrarily would silently create false diffs on an unchanged element.
+ * @returns {{ verdict: 'definitive'|'ambiguous'|'below_threshold'|'no_match', index?: number, confidence?: number, candidates?: object[] }}
+ */
+function resolveFromMultiMap(indices, confidence, usedCompare, minMatchThreshold) {
+  if (!indices) { return { verdict: 'no_match' }; }
   const available = indices.filter(i => !usedCompare.has(i));
-  if (available.length === 0) return { verdict: 'no_match' };
+  if (available.length === 0) { return { verdict: 'no_match' }; }
   if (available.length === 1) {
     return confidence >= minMatchThreshold
       ? { verdict: 'definitive', index: available[0], confidence }
@@ -91,6 +98,7 @@ function resolveFromMultiMap(indices, confidence, usedCompare, minMatchThreshold
   return { verdict: 'no_match' };
 }
 
+/** Constructs a definitive match record from pre-resolved baseline and compare indices. */
 function makeDefinitiveMatch({ bi, ci, conf, strat, matchType, baseline, compareElements }) {
   return {
     baselineIndex:       bi,
@@ -106,6 +114,7 @@ function makeDefinitiveMatch({ bi, ci, conf, strat, matchType, baseline, compare
   };
 }
 
+/** Constructs an ambiguous match record for a baseline element that matched multiple compare candidates. */
 function makeAmbiguousMatch(bi, conf, strat, candidates, baseline) {
   return {
     baselineIndex:       bi,
@@ -121,21 +130,35 @@ function makeAmbiguousMatch(bi, conf, strat, candidates, baseline) {
   };
 }
 
+/**
+ * Returns true when two elements are in-sequence: same tagName AND identical HPID segments.
+ * Both conditions must hold simultaneously — tag alone is too ambiguous, HPID alone misses replacements.
+ */
 function passesIdentityTriad(bEl, cEl) {
-  if (bEl.tagName !== cEl.tagName) return false;
+  if (bEl.tagName !== cEl.tagName) { return false; }
   const bSegs = parseHpidSegments(bEl.hpid);
   const cSegs = parseHpidSegments(cEl.hpid);
   return segmentsEqual(bSegs, cSegs);
 }
 
+/**
+ * Returns true when two elements share an HPID but have different tagNames.
+ * Treated as removal + addition rather than a match because diffing mismatched
+ * tag types (e.g. <div> vs <button>) produces meaningless property diffs.
+ */
 function isReplacement(bEl, cEl) {
   const bSegs = parseHpidSegments(bEl.hpid);
   const cSegs = parseHpidSegments(cEl.hpid);
   return segmentsEqual(bSegs, cSegs) && bEl.tagName !== cEl.tagName;
 }
 
+/**
+ * Phase 1 linear walk: matches elements in sequence and uses a look-ahead window
+ * to resync after insertions or deletions.
+ * @returns {{ pairs, added, removed, orphanBaseline, orphanCompare }} All as index lists.
+ */
 function sequenceAlign(baseline, compare, usedBaseline, usedCompare, config) {
-  const { anchorAttributes, lookAheadWindow, inSequenceConf } = config;
+  const { lookAheadWindow, inSequenceConf } = config;
 
   const pairs          = [];
   const added          = [];
@@ -147,15 +170,14 @@ function sequenceAlign(baseline, compare, usedBaseline, usedCompare, config) {
   let ci = 0;
 
   while (bi < baseline.length && ci < compare.length) {
-    // Skip elements already claimed by Phase 0 (test-attribute matches)
+    // Skip elements already claimed by Phase 0.
     if (usedBaseline.has(bi)) { bi++; continue; }
     if (usedCompare.has(ci))  { ci++; continue; }
 
     const bEl = baseline[bi];
     const cEl = compare[ci];
 
-    // ── REPLACEMENT CHECK: same position, different tag ──────────────────────
-    // Do NOT try to match — classify immediately as one removal + one addition
+    // Same HPID, different tag: mismatched-tag diffs are noise, so treat as removal + addition.
     if (isReplacement(bEl, cEl)) {
       removed.push(bi);
       added.push(ci);
@@ -164,7 +186,6 @@ function sequenceAlign(baseline, compare, usedBaseline, usedCompare, config) {
       continue;
     }
 
-    // ── IN-SEQUENCE MATCH ─────────────────────────────────────────────────────
     if (passesIdentityTriad(bEl, cEl)) {
       pairs.push({ bi, ci, confidence: inSequenceConf, strategy: 'sequence-hpid' });
       usedBaseline.add(bi);
@@ -174,28 +195,19 @@ function sequenceAlign(baseline, compare, usedBaseline, usedCompare, config) {
       continue;
     }
 
-    // ── MISMATCH: run Skip & Resync ───────────────────────────────────────────
-    const windowEnd = lookAheadWindow;
-
-    // Scenario A: look-ahead in COMPARE for current baseline element
-    // "Did compare insert extra elements before the one we're looking for?"
+    // Mismatch: scan ahead in compare first (elements may have been inserted before the match).
     let foundInCompare = -1;
-    for (let k = 1; k <= windowEnd; k++) {
+    for (let k = 1; k <= lookAheadWindow; k++) {
       const cLook = ci + k;
-      if (cLook >= compare.length) break;
-      if (usedCompare.has(cLook)) continue;
-      if (passesIdentityTriad(bEl, compare[cLook])) {
-        foundInCompare = cLook;
-        break;
-      }
+      if (cLook >= compare.length) { break; }
+      if (usedCompare.has(cLook)) { continue; }
+      if (passesIdentityTriad(bEl, compare[cLook])) { foundInCompare = cLook; break; }
     }
 
     if (foundInCompare !== -1) {
-      // Everything from ci to foundInCompare-1 is ADDED in compare
       for (let k = ci; k < foundInCompare; k++) {
-        if (!usedCompare.has(k)) added.push(k);
+        if (!usedCompare.has(k)) { added.push(k); }
       }
-      // Pair baseline[bi] with compare[foundInCompare]
       pairs.push({ bi, ci: foundInCompare, confidence: inSequenceConf - 0.05, strategy: 'sequence-resync-add' });
       usedBaseline.add(bi);
       usedCompare.add(foundInCompare);
@@ -204,25 +216,19 @@ function sequenceAlign(baseline, compare, usedBaseline, usedCompare, config) {
       continue;
     }
 
-    // Scenario B: look-ahead in BASELINE for current compare element
-    // "Did baseline have elements that were removed before we reach a match?"
+    // Then scan ahead in baseline (elements may have been removed before the match).
     let foundInBaseline = -1;
-    for (let k = 1; k <= windowEnd; k++) {
+    for (let k = 1; k <= lookAheadWindow; k++) {
       const bLook = bi + k;
-      if (bLook >= baseline.length) break;
-      if (usedBaseline.has(bLook)) continue;
-      if (passesIdentityTriad(baseline[bLook], cEl)) {
-        foundInBaseline = bLook;
-        break;
-      }
+      if (bLook >= baseline.length) { break; }
+      if (usedBaseline.has(bLook)) { continue; }
+      if (passesIdentityTriad(baseline[bLook], cEl)) { foundInBaseline = bLook; break; }
     }
 
     if (foundInBaseline !== -1) {
-      // Everything from bi to foundInBaseline-1 is REMOVED in baseline
       for (let k = bi; k < foundInBaseline; k++) {
-        if (!usedBaseline.has(k)) removed.push(k);
+        if (!usedBaseline.has(k)) { removed.push(k); }
       }
-      // Pair baseline[foundInBaseline] with compare[ci]
       pairs.push({ bi: foundInBaseline, ci, confidence: inSequenceConf - 0.05, strategy: 'sequence-resync-remove' });
       usedBaseline.add(foundInBaseline);
       usedCompare.add(ci);
@@ -231,8 +237,7 @@ function sequenceAlign(baseline, compare, usedBaseline, usedCompare, config) {
       continue;
     }
 
-    // ── HARD MISS: neither look-ahead found a match ───────────────────────────
-    // Advance both pointers by 1 and let Phase 2 handle these as orphans
+    // Neither look-ahead found a match within the window; advance both and pass to Phase 2.
     orphanBaseline.push(bi);
     orphanCompare.push(ci);
     usedBaseline.add(bi);
@@ -241,28 +246,21 @@ function sequenceAlign(baseline, compare, usedBaseline, usedCompare, config) {
     ci++;
   }
 
-  // Drain remaining unvisited elements
   while (bi < baseline.length) {
-    if (!usedBaseline.has(bi)) removed.push(bi);
+    if (!usedBaseline.has(bi)) { removed.push(bi); }
     bi++;
   }
   while (ci < compare.length) {
-    if (!usedCompare.has(ci)) added.push(ci);
+    if (!usedCompare.has(ci)) { added.push(ci); }
     ci++;
   }
 
   return { pairs, added, removed, orphanBaseline, orphanCompare };
 }
 
-// ---------------------------------------------------------------------------
-// Phase 2: Absolute HPID Suffix Re-alignment
-// Handles root-level shifts where the prefix changed but subtree is identical
-// ---------------------------------------------------------------------------
-
 /**
- * Builds an index from (suffixKey + tagName) → array of compare indices.
- * Only indexes elements whose hpid has depth >= minDepth, because shallow
- * hpids (e.g. '1', '1.1') produce too many collisions.
+ * Builds a suffix index from the last `suffixDepth` HPID segments + tagName.
+ * Shallow HPIDs (depth < minDepth) are excluded to prevent excessive collisions.
  */
 function buildSuffixIndex(compareElements, availableIdxs, suffixDepth) {
   const index    = new Map();
@@ -271,17 +269,18 @@ function buildSuffixIndex(compareElements, availableIdxs, suffixDepth) {
   for (const ci of availableIdxs) {
     const el   = compareElements[ci];
     const hpid = el.hpid;
-    if (!hpid || hpid.split('.').length < minDepth) continue;
+    if (!hpid || hpid.split('.').length < minDepth) { continue; }
     const key = `${hpidSuffixKey(hpid, suffixDepth)}::${el.tagName ?? ''}`;
-    if (!index.has(key)) index.set(key, []);
+    if (!index.has(key)) { index.set(key, []); }
     index.get(key).push(ci);
   }
   return index;
 }
 
 /**
- * Phase 2 pass: for each orphan baseline element, attempt a suffix + tagName
- * match against orphan compare elements. Only accepts unique matches.
+ * Phase 2: matches Phase 1 orphans by HPID suffix + tagName.
+ * Ambiguous hits (multiple candidates) are left as orphans for Phase 3 rather than
+ * guessing, because a wrong suffix match produces worse output than no match.
  */
 function suffixRealignPass(
   baseline,
@@ -292,8 +291,8 @@ function suffixRealignPass(
   suffixDepth,
   suffixConf
 ) {
-  const index   = buildSuffixIndex(compareElements, orphanCompareIdxs, suffixDepth);
-  const pairs   = [];
+  const index             = buildSuffixIndex(compareElements, orphanCompareIdxs, suffixDepth);
+  const pairs             = [];
   const stillOrphanBaseline = [];
 
   for (const bi of orphanBaselineIdxs) {
@@ -303,9 +302,8 @@ function suffixRealignPass(
       stillOrphanBaseline.push(bi);
       continue;
     }
-
-    const key      = `${hpidSuffixKey(hpid, suffixDepth)}::${bEl.tagName ?? ''}`;
-    const hits     = index.get(key);
+    const key       = `${hpidSuffixKey(hpid, suffixDepth)}::${bEl.tagName ?? ''}`;
+    const hits      = index.get(key);
     const available = hits ? hits.filter(i => !usedCompare.has(i)) : [];
 
     if (available.length === 1) {
@@ -320,18 +318,14 @@ function suffixRealignPass(
   return { pairs, stillOrphanBaseline };
 }
 
-// ---------------------------------------------------------------------------
-// Phase 3 legacy classifiers (pool-based — kept as safety net)
-// ---------------------------------------------------------------------------
-
+/** Returns a classifier function that matches elements by compound test-attribute key. */
 function buildTestAttributeClassifier(cmpIdxs, usedCompare, baseline, compareElements, matchConfig, strategy) {
-  const { anchorAttributes, minMatchThreshold, ambiguityWindow } = matchConfig;
+  const { anchorAttributes, minMatchThreshold } = matchConfig;
   const map = buildMultiMap(compareElements, cmpIdxs, el => getTestAttrKey(el, anchorAttributes));
-
   return (bi) => {
     const key = getTestAttrKey(baseline[bi], anchorAttributes);
-    if (!key) return { kind: 'orphan' };
-    const res = resolveFromMultiMap(map.get(key), strategy.confidence, usedCompare, minMatchThreshold, ambiguityWindow);
+    if (!key) { return { kind: 'orphan' }; }
+    const res = resolveFromMultiMap(map.get(key), strategy.confidence, usedCompare, minMatchThreshold);
     if (res.verdict === 'definitive') {
       usedCompare.add(res.index);
       return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, baseline, compareElements }) };
@@ -343,14 +337,14 @@ function buildTestAttributeClassifier(cmpIdxs, usedCompare, baseline, compareEle
   };
 }
 
+/** Returns a classifier function that matches elements by absolute HPID. */
 function buildAbsoluteHpidClassifier(cmpIdxs, usedCompare, baseline, compareElements, matchConfig, strategy) {
-  const { minMatchThreshold, ambiguityWindow } = matchConfig;
+  const { minMatchThreshold } = matchConfig;
   const map = buildMultiMap(compareElements, cmpIdxs, el => el.absoluteHpid ?? null);
-
   return (bi) => {
     const hpid = baseline[bi].absoluteHpid;
-    if (!hpid) return { kind: 'orphan' };
-    const res = resolveFromMultiMap(map.get(hpid), strategy.confidence, usedCompare, minMatchThreshold, ambiguityWindow);
+    if (!hpid) { return { kind: 'orphan' }; }
+    const res = resolveFromMultiMap(map.get(hpid), strategy.confidence, usedCompare, minMatchThreshold);
     if (res.verdict === 'definitive') {
       usedCompare.add(res.index);
       return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, baseline, compareElements }) };
@@ -362,14 +356,14 @@ function buildAbsoluteHpidClassifier(cmpIdxs, usedCompare, baseline, compareElem
   };
 }
 
+/** Returns a classifier function that matches elements by DOM id attribute. */
 function buildIdClassifier(cmpIdxs, usedCompare, baseline, compareElements, matchConfig, strategy) {
-  const { minMatchThreshold, ambiguityWindow } = matchConfig;
+  const { minMatchThreshold } = matchConfig;
   const map = buildMultiMap(compareElements, cmpIdxs, el => el.elementId || null);
-
   return (bi) => {
     const elId = baseline[bi].elementId;
-    if (!elId) return { kind: 'orphan' };
-    const res = resolveFromMultiMap(map.get(elId), strategy.confidence, usedCompare, minMatchThreshold, ambiguityWindow);
+    if (!elId) { return { kind: 'orphan' }; }
+    const res = resolveFromMultiMap(map.get(elId), strategy.confidence, usedCompare, minMatchThreshold);
     if (res.verdict === 'definitive') {
       usedCompare.add(res.index);
       return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, baseline, compareElements }) };
@@ -381,14 +375,14 @@ function buildIdClassifier(cmpIdxs, usedCompare, baseline, compareElements, matc
   };
 }
 
+/** Returns a classifier function that matches elements by generated CSS selector. */
 function buildCssSelectorClassifier(cmpIdxs, usedCompare, baseline, compareElements, matchConfig, strategy) {
-  const { minMatchThreshold, ambiguityWindow } = matchConfig;
+  const { minMatchThreshold } = matchConfig;
   const map = buildMultiMap(compareElements, cmpIdxs, el => el.cssSelector ?? null);
-
   return (bi) => {
     const sel = baseline[bi].cssSelector;
-    if (!sel) return { kind: 'orphan' };
-    const res = resolveFromMultiMap(map.get(sel), strategy.confidence, usedCompare, minMatchThreshold, ambiguityWindow);
+    if (!sel) { return { kind: 'orphan' }; }
+    const res = resolveFromMultiMap(map.get(sel), strategy.confidence, usedCompare, minMatchThreshold);
     if (res.verdict === 'definitive') {
       usedCompare.add(res.index);
       return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, baseline, compareElements }) };
@@ -400,14 +394,14 @@ function buildCssSelectorClassifier(cmpIdxs, usedCompare, baseline, compareEleme
   };
 }
 
+/** Returns a classifier function that matches elements by generated XPath. */
 function buildXpathClassifier(cmpIdxs, usedCompare, baseline, compareElements, matchConfig, strategy) {
-  const { minMatchThreshold, ambiguityWindow } = matchConfig;
+  const { minMatchThreshold } = matchConfig;
   const map = buildMultiMap(compareElements, cmpIdxs, el => el.xpath ?? null);
-
   return (bi) => {
     const xp = baseline[bi].xpath;
-    if (!xp) return { kind: 'orphan' };
-    const res = resolveFromMultiMap(map.get(xp), strategy.confidence, usedCompare, minMatchThreshold, ambiguityWindow);
+    if (!xp) { return { kind: 'orphan' }; }
+    const res = resolveFromMultiMap(map.get(xp), strategy.confidence, usedCompare, minMatchThreshold);
     if (res.verdict === 'definitive') {
       usedCompare.add(res.index);
       return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: res.index, conf: res.confidence, strat: strategy.id, matchType: MatchType.DEFINITIVE, baseline, compareElements }) };
@@ -419,60 +413,63 @@ function buildXpathClassifier(cmpIdxs, usedCompare, baseline, compareElements, m
   };
 }
 
+/**
+ * Builds a spatial grid keyed by `cellX:cellY:tagName` for O(1) neighbourhood lookup.
+ * Elements without a valid rect are excluded — they cannot be matched by position.
+ */
 function buildPositionGrid(compareElements, availableIdxs, cellSize) {
   const grid = new Map();
   for (const i of availableIdxs) {
     const { rect, tagName } = compareElements[i];
-    if (!rect || rect.x == null || rect.y == null) continue;
+    if (!rect || rect.x === null || rect.y === null) { continue; }
     const cx  = Math.floor(rect.x / cellSize);
     const cy  = Math.floor(rect.y / cellSize);
     const key = `${cx}:${cy}:${tagName}`;
-    if (!grid.has(key)) grid.set(key, []);
+    if (!grid.has(key)) { grid.set(key, []); }
     grid.get(key).push({ index: i, x: rect.x, y: rect.y });
   }
   return grid;
 }
 
+/**
+ * Finds the nearest unused compare element in the 3x3 cell neighbourhood around (bx, by).
+ * Confidence is scaled to max 30% of inverse-distance — position is the least reliable strategy.
+ * Returns null when nothing usable is within one cell-size.
+ */
 function pickFromGrid(bx, by, tag, grid, cellSize, usedCompare) {
-  const cx       = Math.floor(bx / cellSize);
-  const cy       = Math.floor(by / cellSize);
-  let bestIdx    = null;
-  let bestDist   = Infinity;
+  const cx     = Math.floor(bx / cellSize);
+  const cy     = Math.floor(by / cellSize);
+  let bestIdx  = null;
+  let bestDist = Infinity;
 
   for (let dx = -1; dx <= 1; dx++) {
     for (let dy = -1; dy <= 1; dy++) {
       const bucket = grid.get(`${cx + dx}:${cy + dy}:${tag}`);
-      if (!bucket) continue;
+      if (!bucket) { continue; }
       for (const { index, x, y } of bucket) {
-        if (usedCompare.has(index)) continue;
+        if (usedCompare.has(index)) { continue; }
         const dist = Math.hypot(bx - x, by - y);
-        if (dist < cellSize && dist < bestDist) {
-          bestDist = dist;
-          bestIdx  = index;
-        }
+        if (dist < cellSize && dist < bestDist) { bestDist = dist; bestIdx = index; }
       }
     }
   }
 
-  if (bestIdx === null) return null;
+  if (bestIdx === null) { return null; }
   return { index: bestIdx, confidence: Math.max(0.1, 1 - bestDist / cellSize) * 0.30 };
 }
 
+/** Returns a classifier function that matches elements by nearest spatial position. */
 function buildPositionClassifier(cmpIdxs, usedCompare, baseline, compareElements, cellSize, minConf, strategy) {
-  const grid    = buildPositionGrid(compareElements, cmpIdxs, cellSize);
+  const grid      = buildPositionGrid(compareElements, cmpIdxs, cellSize);
   const usedLocal = new Set();
-
   return (bi) => {
     const rect = baseline[bi].rect;
-    if (rect?.x == null || rect?.y == null) return { kind: 'orphan' };
+    if (rect?.x === null || rect?.y === null) { return { kind: 'orphan' }; }
     const hit = pickFromGrid(rect.x, rect.y, baseline[bi].tagName, grid, cellSize, usedCompare);
     if (hit && hit.confidence >= minConf && !usedLocal.has(hit.index)) {
       usedLocal.add(hit.index);
       usedCompare.add(hit.index);
-      return {
-        kind:  'match',
-        match: makeDefinitiveMatch({ bi, ci: hit.index, conf: hit.confidence, strat: strategy.id, matchType: MatchType.POSITIONAL, baseline, compareElements })
-      };
+      return { kind: 'match', match: makeDefinitiveMatch({ bi, ci: hit.index, conf: hit.confidence, strat: strategy.id, matchType: MatchType.POSITIONAL, baseline, compareElements }) };
     }
     return { kind: 'orphan' };
   };
@@ -493,10 +490,11 @@ const LEGACY_CLASSIFIER_BUILDERS = Object.freeze({
     buildPositionClassifier(cmpIdxs, usedCompare, baseline, cmpEls, cellSize, minConf, strategy)
 });
 
-// ---------------------------------------------------------------------------
-// Chunked pass runner (used for Phase 3 pool-based strategies)
-// ---------------------------------------------------------------------------
-
+/**
+ * Runs a classify function over `indices` in YIELD_CHUNK_SIZE batches, yielding one progress
+ * frame per batch so the SW event loop is not starved during large element sets.
+ * Yields a single result frame last containing `{ matches, ambiguous, orphans }`.
+ */
 async function* runChunkedPass(indices, classifyFn, progressCtx) {
   const { label, startPct, endPct } = progressCtx;
   const total     = indices.length;
@@ -508,24 +506,26 @@ async function* runChunkedPass(indices, classifyFn, progressCtx) {
     const end = Math.min(start + YIELD_CHUNK_SIZE, total);
     for (let i = start; i < end; i++) {
       const hit = classifyFn(indices[i]);
-      if (hit.kind === 'match')          matches.push(hit.match);
-      else if (hit.kind === 'ambiguous') ambiguous.push(hit.entry);
-      else                               orphans.push(indices[i]);
+      if (hit.kind === 'match')          { matches.push(hit.match); }
+      else if (hit.kind === 'ambiguous') { ambiguous.push(hit.entry); }
+      else                               { orphans.push(indices[i]); }
     }
     await yieldToEventLoop();
     yield progressFrame(label, Math.round(startPct + (end / total) * (endPct - startPct)));
   }
 
-  if (total === 0) yield progressFrame(label, endPct);
+  if (total === 0) { yield progressFrame(label, endPct); }
   yield resultFrame({ matches, ambiguous, orphans });
 }
 
-// ---------------------------------------------------------------------------
-// ElementMatcher — public class
-// ---------------------------------------------------------------------------
-
+/**
+ * Runs the four-phase matching pipeline on two element arrays, yielding progress frames
+ * followed by a single result frame.
+ * Does not own property diffing, severity scoring, or IDB persistence.
+ * Invariant: all config values are read once at construction — callers must not mutate
+ * config defaults between construction and the first matchElements call.
+ */
 class ElementMatcher {
-  // Private config fields
   #minConf;
   #minMatchThreshold;
   #ambiguityWindow;
@@ -537,6 +537,7 @@ class ElementMatcher {
   #suffixConf;
   #sequenceAlignEnabled;
 
+  /** Reads all matching strategy parameters from config once; defaults apply when keys are absent. */
   constructor() {
     this.#minConf              = get('comparison.matching.confidenceThreshold', 0.5);
     this.#minMatchThreshold    = get('comparison.matching.minMatchThreshold', 0.70);
@@ -550,6 +551,13 @@ class ElementMatcher {
     this.#sequenceAlignEnabled = get('comparison.matching.sequenceAlignment.enabled', true);
   }
 
+  /**
+   * Runs Phases 0-3 and yields progress frames then one result frame.
+   * Falls back to full legacy pool matching when sequenceAlignment is disabled.
+   * @param {object[]} baseline        - Extracted elements from the baseline capture.
+   * @param {object[]} compareElements - Extracted elements from the compare capture.
+   * @yields {{ type: 'progress', label: string, pct: number } | { type: 'result', payload: { matches, ambiguous, unmatchedBaseline, unmatchedCompare } }}
+   */
   async* matchElements(baseline, compareElements) {
     logger.info('Sequence-aware matching start', {
       baseline: baseline.length,
@@ -561,7 +569,6 @@ class ElementMatcher {
     const allMatches   = [];
     const allAmbiguous = [];
 
-    // ── PHASE 0: Test-attribute anchoring (pool-based, runs first) ──────────
     yield progressFrame('Anchoring by test attributes…', 5);
 
     const testAttrStrategy = get('comparison.matching.strategies')
@@ -582,12 +589,11 @@ class ElementMatcher {
 
       let phase0Result = null;
       for await (const frame of runChunkedPass(
-        allBaseIdxs,
-        phase0Classify,
+        allBaseIdxs, phase0Classify,
         { label: testAttrStrategy.label, startPct: 5, endPct: 20 }
       )) {
-        if (frame.type === 'result') phase0Result = frame.payload;
-        else yield frame;
+        if (frame.type === 'result') { phase0Result = frame.payload; }
+        else { yield frame; }
       }
 
       for (const match of phase0Result.matches) {
@@ -600,7 +606,6 @@ class ElementMatcher {
 
     yield progressFrame('Running sequence alignment…', 20);
 
-    // ── PHASE 1: Linear Sequence Alignment ──────────────────────────────────
     if (this.#sequenceAlignEnabled) {
       await yieldToEventLoop();
 
@@ -613,50 +618,39 @@ class ElementMatcher {
       for (const { bi, ci, confidence, strategy } of alignResult.pairs) {
         allMatches.push(makeDefinitiveMatch({
           bi, ci, conf: confidence, strat: strategy,
-          matchType: MatchType.DEFINITIVE,
-          baseline, compareElements
+          matchType: MatchType.DEFINITIVE, baseline, compareElements
         }));
       }
 
-      // Mark added and removed elements in usedCompare / usedBaseline
-      // so they don't get claimed by Phase 2+
-      for (const ci of alignResult.added)   usedCompare.add(ci);
-      for (const bi of alignResult.removed)  usedBaseline.add(bi);
+      // Mark added/removed so Phases 2-3 never re-examine them.
+      for (const ci of alignResult.added)  { usedCompare.add(ci); }
+      for (const bi of alignResult.removed) { usedBaseline.add(bi); }
 
       yield progressFrame('Sequence alignment complete…', 45);
       await yieldToEventLoop();
 
-      // ── PHASE 2: Suffix Re-alignment (handles root shifts) ─────────────────
       const orphanCompareIdxs = alignResult.orphanCompare.filter(i => !usedCompare.has(i));
 
       const { pairs: suffixPairs, stillOrphanBaseline } = suffixRealignPass(
-        baseline,
-        compareElements,
-        alignResult.orphanBaseline,
-        orphanCompareIdxs,
-        usedCompare,
-        this.#suffixDepth,
-        this.#suffixConf
+        baseline, compareElements,
+        alignResult.orphanBaseline, orphanCompareIdxs,
+        usedCompare, this.#suffixDepth, this.#suffixConf
       );
 
       for (const { bi, ci, confidence, strategy } of suffixPairs) {
         allMatches.push(makeDefinitiveMatch({
           bi, ci, conf: confidence, strat: strategy,
-          matchType: MatchType.DEFINITIVE,
-          baseline, compareElements
+          matchType: MatchType.DEFINITIVE, baseline, compareElements
         }));
         usedBaseline.add(bi);
       }
 
       yield progressFrame('Re-alignment complete…', 55);
 
-      // ── PHASE 3: Legacy pool-based fallback passes ──────────────────────────
-      // Run absolute-hpid, id, css-selector, xpath, position on remaining orphans
       const legacyStrategies = get('comparison.matching.strategies')
         .filter(s => s.enabled && s.id !== 'test-attribute')
         .sort((a, b) => b.confidence - a.confidence);
 
-      // Re-build orphan lists from anything still unused
       const legacyBaseOrphans = stillOrphanBaseline.filter(i => !usedBaseline.has(i));
       const legacyCmpOrphans  = Array.from({ length: compareElements.length }, (_, i) => i)
         .filter(i => !usedCompare.has(i));
@@ -672,11 +666,11 @@ class ElementMatcher {
 
       const totalLegacy = legacyStrategies.length;
       for (let si = 0; si < totalLegacy; si++) {
-        const strategy  = legacyStrategies[si];
-        const startPct  = 55 + Math.round((si       / totalLegacy) * 35);
-        const endPct    = 55 + Math.round(((si + 1) / totalLegacy) * 35);
-        const builder   = LEGACY_CLASSIFIER_BUILDERS[strategy.id];
-        if (!builder) continue;
+        const strategy = legacyStrategies[si];
+        const startPct = 55 + Math.round((si       / totalLegacy) * 35);
+        const endPct   = 55 + Math.round(((si + 1) / totalLegacy) * 35);
+        const builder  = LEGACY_CLASSIFIER_BUILDERS[strategy.id];
+        if (!builder) { continue; }
 
         const classify = builder(
           mutableCmpOrphans, usedCompare, baseline, compareElements,
@@ -685,12 +679,10 @@ class ElementMatcher {
 
         let passResult = null;
         for await (const frame of runChunkedPass(
-          mutableBaseOrphans,
-          classify,
-          { label: strategy.label, startPct, endPct }
+          mutableBaseOrphans, classify, { label: strategy.label, startPct, endPct }
         )) {
-          if (frame.type === 'result') passResult = frame.payload;
-          else yield frame;
+          if (frame.type === 'result') { passResult = frame.payload; }
+          else { yield frame; }
         }
 
         allMatches.push(...passResult.matches);
@@ -699,17 +691,13 @@ class ElementMatcher {
         mutableCmpOrphans  = mutableCmpOrphans.filter(i => !usedCompare.has(i));
       }
 
-      // ── Finalise unmatched sets ─────────────────────────────────────────────
       const reservedByAmbiguous = new Set(
         allAmbiguous.flatMap(e => (e.ambiguousCandidates ?? []).map(c => c.compareIndex))
       );
 
-      // Merge: items explicitly marked as REMOVED in Phase 1 + legacy orphans
-      const finalUnmatchedBaselineIdxs = new Set([
-        ...alignResult.removed,
-        ...mutableBaseOrphans
-      ]);
-      const finalUnmatchedCompareIdxs = new Set([
+      // Phase 1 REMOVED + legacy orphans are both unmatched baseline elements.
+      const finalUnmatchedBaselineIdxs = new Set([...alignResult.removed, ...mutableBaseOrphans]);
+      const finalUnmatchedCompareIdxs  = new Set([
         ...alignResult.added,
         ...mutableCmpOrphans.filter(i => !reservedByAmbiguous.has(i))
       ]);
@@ -735,9 +723,9 @@ class ElementMatcher {
       yield resultFrame({ matches: allMatches, ambiguous: allAmbiguous, unmatchedBaseline, unmatchedCompare });
 
     } else {
-      // Sequence alignment disabled — fall through to full legacy pool matching
-      const allBaseIdxs  = Array.from({ length: baseline.length },        (_, i) => i).filter(i => !usedBaseline.has(i));
-      const allCmpIdxs   = Array.from({ length: compareElements.length }, (_, i) => i).filter(i => !usedCompare.has(i));
+      // Sequence alignment disabled: run full legacy pool matching only.
+      const allBaseIdxs = Array.from({ length: baseline.length },        (_, i) => i).filter(i => !usedBaseline.has(i));
+      const allCmpIdxs  = Array.from({ length: compareElements.length }, (_, i) => i).filter(i => !usedCompare.has(i));
       const legacyStrategies = get('comparison.matching.strategies')
         .filter(s => s.enabled && s.id !== 'test-attribute')
         .sort((a, b) => b.confidence - a.confidence);
@@ -756,7 +744,7 @@ class ElementMatcher {
         const startPct = Math.round((si       / total) * 79) + 20;
         const endPct   = Math.round(((si + 1) / total) * 79) + 20;
         const builder  = LEGACY_CLASSIFIER_BUILDERS[strategy.id];
-        if (!builder) continue;
+        if (!builder) { continue; }
 
         const classify = builder(
           cmpOrphans, usedCompare, baseline, compareElements,
@@ -765,8 +753,8 @@ class ElementMatcher {
 
         let passResult = null;
         for await (const frame of runChunkedPass(baseOrphans, classify, { label: strategy.label, startPct, endPct })) {
-          if (frame.type === 'result') passResult = frame.payload;
-          else yield frame;
+          if (frame.type === 'result') { passResult = frame.payload; }
+          else { yield frame; }
         }
 
         allMatches.push(...passResult.matches);

@@ -1,14 +1,27 @@
+/**
+ * Builds and triggers a CSV download of a full comparison result.
+ * Runs in the popup context (uses triggerDownload which touches the DOM).
+ * Invariant: never throws — failures are caught and returned as {success:false}.
+ * Called by: export-workflow.js → exportComparisonToCsv().
+ */
 import logger              from '../../../infrastructure/logger.js';
 import { rowsToCsv }       from '../shared/csv-utils.js';
 import { triggerDownload } from '../shared/download-trigger.js';
 
+// Prepended to output so Excel auto-detects UTF-8 encoding on open.
 const UTF8_BOM = '\uFEFF';
 
+/**
+ * Converts a full comparison result into a BOM-prefixed CSV string with five
+ * sections: summary, severity breakdown, differences, matched elements, and
+ * unmatched elements.
+ * @param {object} result - Fully-resolved comparison result from compare-workflow.
+ * @returns {string} BOM-prefixed CSV text ready for download.
+ */
 function buildComparisonCsv(result) {
   const s    = result.comparison.summary;
   const rows = [];
 
-  // ── Summary ─────────────────────────────────────────────────────────────
   rows.push(['COMPARISON SUMMARY']);
   rows.push(['Baseline ID',        result.baseline.id]);
   rows.push(['Baseline URL',       result.baseline.url]);
@@ -40,7 +53,6 @@ function buildComparisonCsv(result) {
   rows.push(['Total Elements',                              s.totalElements]);
   rows.push([]);
 
-  // ── Differences ──────────────────────────────────────────────────────────
   rows.push(['DIFFERENCES']);
   rows.push([
     'HPID', 'Absolute HPID', 'Tag Name', 'Element ID', 'Class Name',
@@ -74,7 +86,6 @@ function buildComparisonCsv(result) {
 
   rows.push([]);
 
-  // ── Matched Elements ─────────────────────────────────────────────────────
   rows.push(['MATCHED ELEMENTS']);
   rows.push([
     'HPID', 'Tag Name', 'Element ID Attr', 'Class Name',
@@ -96,7 +107,6 @@ function buildComparisonCsv(result) {
 
   rows.push([]);
 
-  // ── Unmatched Elements ───────────────────────────────────────────────────
   rows.push(['UNMATCHED ELEMENTS']);
   rows.push([
     'Status', 'HPID', 'Absolute HPID', 'Tag Name', 'Element ID',
@@ -123,7 +133,6 @@ function buildComparisonCsv(result) {
 
   rows.push([]);
 
-  // ── By Severity ──────────────────────────────────────────────────────────
   rows.push(['BY SEVERITY']);
 
   const groups = { critical: [], high: [], medium: [], low: [] };
@@ -156,6 +165,11 @@ function buildComparisonCsv(result) {
   return UTF8_BOM + rowsToCsv(rows);
 }
 
+/**
+ * Builds the CSV for the given result and triggers a browser download. Never throws.
+ * @param {object} result - Fully-resolved comparison result from compare-workflow.
+ * @returns {{ success: true, filename: string } | { success: false, error: string }}
+ */
 function exportComparisonToCsv(result) {
   try {
     const csv      = buildComparisonCsv(result);

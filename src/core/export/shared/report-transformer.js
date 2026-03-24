@@ -1,11 +1,21 @@
+/**
+ * Transforms a raw comparison result into a grouped, scored, and suppression-processed
+ * report ready for rendering in the popup and for export.
+ * Runs in the popup context (called after IDB load, not in the SW).
+ * Invariant: never mutates the original comparison result — only annotates matched elements in place.
+ * Called by: popup.js and all export workflows via transformToGroupedReport().
+ */
+
 const SEVERITY_ORDER = Object.freeze({ critical: 0, high: 1, medium: 2, low: 3 });
 
+/** CSS properties whose values cascade down the DOM tree via inheritance. */
 const INHERITABLE_PROPS = new Set([
   'color', 'font-family', 'font-size', 'font-weight', 'font-style',
   'line-height', 'letter-spacing', 'text-align', 'word-spacing',
   'visibility', 'text-transform', 'white-space'
 ]);
 
+/** Layout properties whose pixel deltas propagate to children via document flow. */
 const LAYOUT_PROPAGATION_PROPS = new Set([
   'width', 'height',
   'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
@@ -21,18 +31,19 @@ const MAX_PENALTY            = 100.0;
 const TEXT_RATIO_CAP         =  4.0;
 const LEVENSHTEIN_MAX_LEN    =  500;
 
-// ─── UTILITY ─────────────────────────────────────────────────────────────────
-
+/** Parses a CSS value string to a float pixel number, returning null if unparseable. */
 function parsePx(val) {
   const n = parseFloat(val);
   return Number.isFinite(n) ? n : null;
 }
 
-// ─── WAGNER-FISCHER (O(n) space) ─────────────────────────────────────────────
-
+/**
+ * Computes Levenshtein edit distance in O(n) space using the Wagner-Fischer algorithm.
+ * Capped at LEVENSHTEIN_MAX_LEN characters per side to bound worst-case runtime.
+ */
 function wagnerFischer(a, b) {
-  if (a.length === 0) return b.length;
-  if (b.length === 0) return a.length;
+  if (a.length === 0) { return b.length; }
+  if (b.length === 0) { return a.length; }
   const m = a.length, n = b.length;
   let prev = Array.from({ length: n + 1 }, (_, i) => i);
   const curr = new Array(n + 1);
@@ -47,11 +58,17 @@ function wagnerFischer(a, b) {
   return prev[n];
 }
 
+/**
+ * Returns a 0–1 text divergence score between two strings.
+ * Numeric-looking strings are capped at 0.20 so price/count changes don't
+ * inflate the content-divergence signal and demote real layout regressions.
+ * Short strings (<8 chars) are down-weighted to 0.30× to avoid false positives on labels.
+ */
 function textDivergenceScore(baseText, compareText) {
   const a = String(baseText  ?? '').trim().slice(0, LEVENSHTEIN_MAX_LEN);
   const b = String(compareText ?? '').trim().slice(0, LEVENSHTEIN_MAX_LEN);
   const maxLen = Math.max(a.length, b.length);
-  if (maxLen === 0) return 0.0;
+  if (maxLen === 0) { return 0.0; }
 
   let ratio = wagnerFischer(a, b) / maxLen;
 
@@ -67,8 +84,12 @@ function textDivergenceScore(baseText, compareText) {
   return Math.min(ratio, 1.0);
 }
 
-// ─── SIGNAL 2: GEOMETRIC PROPORTIONALITY ─────────────────────────────────────
-
+/**
+ * Computes how proportional a dimension change is relative to text-content growth.
+ * Returns a signal enum: PROPORTIONAL, DISPROPORTIONAL, DIRECTION_MISMATCH, or AMBIGUOUS.
+ * Returns a 0.5 neutral error on unparseable values or zero-length baseline text —
+ * the caller treats these as AMBIGUOUS rather than either content or layout.
+ */
 function geometricProportionalityError(item, diff) {
   const basePx    = parsePx(diff.baseValue);
   const comparePx = parsePx(diff.compareValue);
@@ -105,8 +126,8 @@ function geometricProportionalityError(item, diff) {
 
   const signal = dirMismatch ? 'DIRECTION_MISMATCH'
     : normError < 0.20 ? 'PROPORTIONAL'
-    : normError > 0.65 ? 'DISPROPORTIONAL'
-    : 'AMBIGUOUS';
+      : normError > 0.65 ? 'DISPROPORTIONAL'
+        : 'AMBIGUOUS';
 
   return {
     error:            normError,
@@ -116,17 +137,25 @@ function geometricProportionalityError(item, diff) {
   };
 }
 
-// ─── SIGNAL 3: CORROBORATION ─────────────────────────────────────────────────
-
+/**
+ * Returns S3 corroboration scores based on how many times this element pattern recurs.
+ * Isolated elements (rc=1) get a content bonus; widely-recurring elements (rc≥4) get
+ * a layout penalty — recurring structural changes are more likely to be layout regressions.
+ */
 function corroborationScores(recurrenceCount) {
   const rc = recurrenceCount ?? 1;
-  if (rc === 1)              return { S3_content: 0.20, S3_layout: 0.00 };
-  if (rc === 2 || rc === 3)  return { S3_content: 0.05, S3_layout: 0.05 };
+  if (rc === 1)              { return { S3_content: 0.20, S3_layout: 0.00 }; }
+  if (rc === 2 || rc === 3)  { return { S3_content: 0.05, S3_layout: 0.05 }; }
   return                            { S3_content: 0.00, S3_layout: 0.20 };
 }
 
-// ─── COMPOSITE CLASSIFIER ────────────────────────────────────────────────────
-
+/**
+ * Classifies a single width/height diff as content-driven or layout-driven using
+ * three signals: text divergence (S1), geometric proportionality (S2), recurrence (S3).
+ * Mutates `diff` in place, adding severity, narrativeLabel, and confidence fields.
+ * Invariant: severity can only be demoted (lowered), never promoted — content intelligence
+ * cannot increase severity above what the static analyzer assigned.
+ */
 function classifyDimensionalChange(item, diff) {
   const S1 = textDivergenceScore(item.baseTextContent, item.compareTextContent);
   const geo = geometricProportionalityError(item, diff);
@@ -163,7 +192,6 @@ function classifyDimensionalChange(item, diff) {
   const oldOrder = SEVERITY_ORDER[diff.severity] ?? 3;
   const newOrder = SEVERITY_ORDER[newSeverity]   ?? 3;
   if (newOrder < oldOrder) {
-    // Invariant: content intelligence severity cannot increase — only demote or retain
     newSeverity = diff.severity;
     action      = 'RETAIN';
   }
@@ -177,26 +205,29 @@ function classifyDimensionalChange(item, diff) {
   return { action, narrativeLabel, newSeverity, confidence: diff.classificationCf };
 }
 
-// ─── CONTENT INTELLIGENCE PASS ───────────────────────────────────────────────
-
+/**
+ * Runs the content intelligence classifier on all width/height diffs across every
+ * severity group. Mutates group items in place and re-buckets items whose overall
+ * severity changed after classification.
+ */
 function runContentIntelligenceOnGroups(groups) {
   for (const sev of ['critical', 'high', 'medium', 'low']) {
     for (const item of (groups[sev] ?? [])) {
       const baseText = (item.baseTextContent    ?? '').trim();
       const cmpText  = (item.compareTextContent ?? '').trim();
-      if (!baseText || !cmpText || baseText === cmpText) continue;
+      if (!baseText || !cmpText || baseText === cmpText) { continue; }
 
       let anyChanged = false;
 
       for (const diffs of Object.values(item.diffsByCategory ?? {})) {
         for (const diff of diffs) {
-          if (diff.property !== 'width' && diff.property !== 'height') continue;
+          if (diff.property !== 'width' && diff.property !== 'height') { continue; }
           const result = classifyDimensionalChange(item, diff);
-          if (result.action !== 'RETAIN') anyChanged = true;
+          if (result.action !== 'RETAIN') { anyChanged = true; }
         }
       }
 
-      if (!anyChanged) continue;
+      if (!anyChanged) { continue; }
 
       const allDiffs = Object.values(item.diffsByCategory).flat();
       const newSev   = getTopSeverity(allDiffs);
@@ -217,6 +248,7 @@ function runContentIntelligenceOnGroups(groups) {
   }
 }
 
+/** Moves items to their correct severity bucket after content-intelligence reclassification. */
 function rebucketAfterIntelligence(groups) {
   const allSeverities = ['critical', 'high', 'medium', 'low'];
   const displaced     = [];
@@ -224,15 +256,15 @@ function rebucketAfterIntelligence(groups) {
   for (const sev of allSeverities) {
     const staying = [];
     for (const item of (groups[sev] ?? [])) {
-      if (item.severity !== sev) displaced.push(item);
-      else staying.push(item);
+      if (item.severity !== sev) { displaced.push(item); }
+      else { staying.push(item); }
     }
     groups[sev] = staying;
   }
 
   for (const item of displaced) {
     const target = item.severity;
-    if (groups[target]) groups[target].push(item);
+    if (groups[target]) { groups[target].push(item); }
   }
 
   for (const sev of allSeverities) {
@@ -240,17 +272,17 @@ function rebucketAfterIntelligence(groups) {
   }
 }
 
-// ─── BADGE CLASSIFIER (transformer-side, for distribution) ───────────────────
-
+/** Returns a coarse badge category string ('content'|'layout'|'style') for an element item. */
 function classifyItemBadge(item) {
-  if (item.narrativeLabel === 'CONTENT DIVERGENCE') return 'content';
+  if (item.narrativeLabel === 'CONTENT DIVERGENCE') { return 'content'; }
   const allProps = Object.values(item.diffsByCategory || {}).flat().map(d => d.property);
   const hasLayout = allProps.some(p => /position|display|flex|grid|float|overflow|visibility|z-index/.test(p));
   const hasSize   = allProps.some(p => /^width$|^height$|max-width|min-width|^margin|^padding/.test(p));
-  if (hasLayout || hasSize) return 'layout';
+  if (hasLayout || hasSize) { return 'layout'; }
   return 'style';
 }
 
+/** Returns the narrative badge label and CSS class for an element item used in the HTML report. */
 function getNarrativeBadgeForItem(item) {
   if (item.narrativeLabel === 'CONTENT DIVERGENCE') {
     return { label: 'CONTENT DIVERGENCE', cls: 'nb-content' };
@@ -259,13 +291,16 @@ function getNarrativeBadgeForItem(item) {
   const hasLayout = allProps.some(p => /position|display|flex|grid|float|overflow|visibility|z-index/.test(p));
   const hasSize   = allProps.some(p => /^width$|^height$|max-width|min-width|^margin|^padding/.test(p));
   const hasPos    = allProps.some(p => /^top$|^left$|^right$|^bottom$|transform/.test(p));
-  if (hasLayout || hasSize) return { label: 'LAYOUT SHIFT',    cls: 'nb-layout'   };
-  if (hasPos)               return { label: 'POSITION DRIFT',  cls: 'nb-position' };
-  return                           { label: 'STYLE REGRESSION',cls: 'nb-style'    };
+  if (hasLayout || hasSize) { return { label: 'LAYOUT SHIFT',    cls: 'nb-layout'   }; }
+  if (hasPos)               { return { label: 'POSITION DRIFT',  cls: 'nb-position' }; }
+  return                           { label: 'STYLE REGRESSION', cls: 'nb-style'    };
 }
 
-// ─── IMPACT SCORE ─────────────────────────────────────────────────────────────
-
+/**
+ * Computes a 0–100 impact score for the whole comparison and writes distribution,
+ * topApexNodes, and rootCauseCount onto the summary object in place.
+ * Score decreases from 100 as weighted severity counts accumulate; floor is 0.
+ */
 function computeImpactScore(groups, summary, rawDiffCount) {
   const allRootCauses = [
     ...(groups.critical ?? []),
@@ -296,9 +331,9 @@ function computeImpactScore(groups, summary, rawDiffCount) {
   let layoutCount = 0, styleCount = 0, contentCount = 0;
   for (const item of allRootCauses) {
     const cat = classifyItemBadge(item);
-    if      (cat === 'content') contentCount++;
-    else if (cat === 'layout')  layoutCount++;
-    else                        styleCount++;
+    if      (cat === 'content') {contentCount++;}
+    else if (cat === 'layout')  {layoutCount++;}
+    else                        {styleCount++;}
   }
   const domCount = (groups.added?.length ?? 0) + (groups.removed?.length ?? 0);
 
@@ -323,33 +358,39 @@ function computeImpactScore(groups, summary, rawDiffCount) {
   });
 }
 
-// ─── BFS APEX SUPPRESSION ────────────────────────────────────────────────────
-
+/** Returns the numeric pixel delta between two CSS values, or null if either is unparseable. */
 function extractPxDelta(baseValue, compareValue) {
   const base = parseFloat(baseValue);
   const cmp  = parseFloat(compareValue);
-  if (isNaN(base) || isNaN(cmp)) return null;
+  if (isNaN(base) || isNaN(cmp)) { return null; }
   return cmp - base;
 }
 
+/**
+ * Walks up the HPID path looking for the nearest ancestor that has a diff entry.
+ * Returns the ancestor's absHpid, or null if none is found before reaching the root.
+ * Used by BFS suppression to identify which apex node owns a child's inherited diffs.
+ */
 function walkUpToNearestDiffAncestor(absHpid, diffIndex) {
   let cursor = absHpid;
   for (;;) {
     const lastDot = cursor.lastIndexOf('.');
-    if (lastDot === -1) return null;
+    if (lastDot === -1) { return null; }
     cursor = cursor.slice(0, lastDot);
-    if (diffIndex.has(cursor)) return cursor;
+    if (diffIndex.has(cursor)) { return cursor; }
   }
 }
 
+/** Classifies a suppressed property set as CSS_INHERIT, LAYOUT_FLOW, or MIXED. */
 function classifySuppressionType(propNames) {
   const hasInheritable = propNames.some(p => INHERITABLE_PROPS.has(p));
   const hasLayout      = propNames.some(p => LAYOUT_PROPAGATION_PROPS.has(p));
-  if (hasInheritable && hasLayout) return 'MIXED';
-  if (hasInheritable)               return 'CSS_INHERIT';
+  if (hasInheritable && hasLayout) { return 'MIXED'; }
+  if (hasInheritable)               { return 'CSS_INHERIT'; }
   return 'LAYOUT_FLOW';
 }
 
+/** Builds a human-readable summary string for an apex node's suppressed children. */
 function buildSuppressionSummary(apexMatch) {
   const diffs       = apexMatch.suppressedDiffs ?? [];
   const cssCount    = diffs.filter(d => INHERITABLE_PROPS.has(d.property)).length;
@@ -359,14 +400,23 @@ function buildSuppressionSummary(apexMatch) {
        + `(${cssCount} CSS inherited · ${layoutCount} layout reflow)`;
 }
 
+/** Extracts the absolute HPID from either the nested baselineElement or the flat match fields. */
 function matchAbsoluteHpid(match) {
   return match.baselineElement?.absoluteHpid ?? match.absoluteHpid ?? null;
 }
 
+/** Extracts the relative HPID from either the nested baselineElement or the flat match fields. */
 function matchRelativeHpid(match) {
   return match.baselineElement?.hpid ?? match.hpid ?? null;
 }
 
+/**
+ * BFS apex-suppression pass: walks the diff tree from shallowest to deepest and marks
+ * child elements whose diffs are fully explained by an ancestor's diff as isInherited.
+ * Partially-inherited children have their redundant diffs removed from annotatedDifferences.
+ * Returns the filtered results array with isInherited elements removed.
+ * Invariant: only properties in INHERITABLE_PROPS or LAYOUT_PROPAGATION_PROPS are suppressed.
+ */
 function runBFSSuppression(results) {
   const diffIndex             = new Map();
   const absoluteToRelativeMap = new Map();
@@ -376,7 +426,7 @@ function runBFSSuppression(results) {
     const relHpid = matchRelativeHpid(match);
     if (absHpid && (match.annotatedDifferences?.length ?? 0) > 0) {
       diffIndex.set(absHpid, match);
-      if (relHpid) absoluteToRelativeMap.set(absHpid, relHpid);
+      if (relHpid) { absoluteToRelativeMap.set(absHpid, relHpid); }
     }
   }
 
@@ -393,15 +443,16 @@ function runBFSSuppression(results) {
     propMap.set(absHpid, inner);
   }
 
+  // Process shallowest nodes first so each child walks up to a fully-resolved apex.
   const queue = Array.from(diffIndex.keys())
     .sort((a, b) => a.split('.').length - b.split('.').length);
 
   for (const childAbsHpid of queue) {
     const childMatch = diffIndex.get(childAbsHpid);
-    if (childMatch.isInherited) continue;
+    if (childMatch.isInherited) { continue; }
 
     const parentAbsHpid = walkUpToNearestDiffAncestor(childAbsHpid, diffIndex);
-    if (!parentAbsHpid) continue;
+    if (!parentAbsHpid) { continue; }
 
     let apexAbsHpid = parentAbsHpid;
     let apexMatch   = diffIndex.get(apexAbsHpid);
@@ -412,12 +463,12 @@ function runBFSSuppression(results) {
 
     const childProps = propMap.get(childAbsHpid);
     const apexProps  = propMap.get(apexAbsHpid);
-    if (!childProps || !apexProps) continue;
+    if (!childProps || !apexProps) { continue; }
 
     const inheritedPropNames = [];
 
     for (const [prop, childDiff] of childProps) {
-      if (!apexProps.has(prop)) continue;
+      if (!apexProps.has(prop)) { continue; }
       const apexDiff = apexProps.get(prop);
 
       if (INHERITABLE_PROPS.has(prop)) {
@@ -432,7 +483,7 @@ function runBFSSuppression(results) {
       }
     }
 
-    if (inheritedPropNames.length === 0) continue;
+    if (inheritedPropNames.length === 0) { continue; }
 
     const suppressedSet  = new Set(inheritedPropNames);
     const residualDiffs  = childMatch.annotatedDifferences.filter(d => !suppressedSet.has(d.property));
@@ -470,14 +521,13 @@ function runBFSSuppression(results) {
   }
 
   for (const match of diffIndex.values()) {
-    if (match.isApex) match.suppressionSummary = buildSuppressionSummary(match);
+    if (match.isApex) { match.suppressionSummary = buildSuppressionSummary(match); }
   }
 
   return results.filter(m => !matchAbsoluteHpid(m) || !m.isInherited);
 }
 
-// ─── TRANSFORMER HELPERS ──────────────────────────────────────────────────────
-
+/** Returns a short human-readable label for an element: tag + first id/class fragments. */
 function elementLabel(el) {
   const tag     = (el.tagName  || 'unknown').toLowerCase();
   const idPart  = el.elementId ? `#${el.elementId}` : '';
@@ -487,22 +537,28 @@ function elementLabel(el) {
   return `${tag}${idPart}${clsPart}`;
 }
 
+/** Returns the best available selector string for an element, falling back to elementLabel. */
 function elementBreadcrumb(el) {
   return el.cssSelector || el.xpath || elementLabel(el);
 }
 
+/** Returns the worst severity level present in an annotated diff array, defaulting to 'low'. */
 function getTopSeverity(annotatedDifferences) {
   for (const level of ['critical', 'high', 'medium', 'low']) {
-    if (annotatedDifferences.some(d => d.severity === level)) return level;
+    if (annotatedDifferences.some(d => d.severity === level)) { return level; }
   }
   return 'low';
 }
 
+/**
+ * Groups an annotated diff array by property category and sorts each group
+ * worst-severity-first so renderers can display the most important diffs at the top.
+ */
 function buildDiffsByCategory(annotatedDifferences) {
   const map = {};
   for (const diff of annotatedDifferences) {
     const cat = diff.category || 'other';
-    if (!map[cat]) map[cat] = [];
+    if (!map[cat]) { map[cat] = []; }
     map[cat].push(diff);
   }
   for (const cat of Object.keys(map)) {
@@ -511,6 +567,10 @@ function buildDiffsByCategory(annotatedDifferences) {
   return map;
 }
 
+/**
+ * Returns a stable string fingerprint of a diffsByCategory object.
+ * Used by deduplicateGroup to detect visually identical elements with the same diff set.
+ */
 function diffSignature(diffsByCategory) {
   const parts = [];
   for (const diffs of Object.values(diffsByCategory || {})) {
@@ -521,6 +581,11 @@ function diffSignature(diffsByCategory) {
   return parts.sort().join('\x00');
 }
 
+/**
+ * Removes duplicate items from a severity group where both the elementKey and full diff set
+ * are identical. Keeps the first occurrence and increments its recurrenceCount.
+ * Used to collapse repeated card/grid elements with identical diffs into one representative entry.
+ */
 function deduplicateGroup(items) {
   const seen   = new Map();
   const result = [];
@@ -529,8 +594,8 @@ function deduplicateGroup(items) {
     if (seen.has(sig)) {
       const rep = result[seen.get(sig)];
       rep.recurrenceCount = (rep.recurrenceCount ?? 1) + 1;
-      if (!rep.recurrenceHpids) rep.recurrenceHpids = [rep.hpid];
-      if (item.hpid) rep.recurrenceHpids.push(item.hpid);
+      if (!rep.recurrenceHpids) { rep.recurrenceHpids = [rep.hpid]; }
+      if (item.hpid) { rep.recurrenceHpids.push(item.hpid); }
     } else {
       seen.set(sig, result.length);
       result.push({ ...item, recurrenceCount: 1, recurrenceHpids: item.hpid ? [item.hpid] : [] });
@@ -539,8 +604,12 @@ function deduplicateGroup(items) {
   return result;
 }
 
+/**
+ * Returns the baselineElement object from a match, or reconstructs a minimal element object
+ * from the match's flat fields when baselineElement is absent (slimmed IDB records).
+ */
 function resolveElement(match) {
-  if (match.baselineElement) return match.baselineElement;
+  if (match.baselineElement) { return match.baselineElement; }
   return {
     tagName:      match.tagName,
     elementId:    match.elementId,
@@ -555,8 +624,10 @@ function resolveElement(match) {
   };
 }
 
-// ─── MATCHED GROUPS ───────────────────────────────────────────────────────────
-
+/**
+ * Partitions the suppression-filtered results into {critical, high, medium, low, unchanged}
+ * buckets, deduplicates each bucket, and sorts by totalDiffs descending.
+ */
 function buildMatchedGroups(results) {
   const groups = { critical: [], high: [], medium: [], low: [], unchanged: [] };
 
@@ -623,6 +694,7 @@ function buildMatchedGroups(results) {
   return groups;
 }
 
+/** Builds the ambiguous group array for elements the matcher could not definitively pair. */
 function buildAmbiguousGroup(ambiguousList) {
   return ambiguousList.map(entry => {
     const el = entry.baselineElement ?? {
@@ -653,8 +725,13 @@ function buildAmbiguousGroup(ambiguousList) {
   });
 }
 
-// ─── MAIN EXPORT ──────────────────────────────────────────────────────────────
-
+/**
+ * Main entry point: runs BFS suppression, content intelligence, groups matched elements
+ * by severity, appends added/removed/ambiguous groups, computes the impact score,
+ * and returns {summary, groups} ready for the popup renderer and all export formats.
+ * @param {object} comparisonResult - Full comparison result loaded from IDB.
+ * @returns {{ summary: object, groups: object }}
+ */
 function transformToGroupedReport(comparisonResult) {
   const { comparison, unmatchedElements, matching } = comparisonResult;
   const results         = comparison?.results   ?? [];
@@ -718,29 +795,19 @@ function transformToGroupedReport(comparisonResult) {
 
   computeImpactScore(groups, summary, rawDiffCount);
 
-  // ── POST-SUPPRESSION CANONICAL SUMMARY ───────────────────────────────────
-  // summary.modified arrives from comparison-modes.js as modifiedElements —
-  // the pre-suppression count of all matched elements with any diff (73).
-  // After BFS suppression, rootCauseCount holds the post-suppression apex node
-  // count (31). The gap (42) is suppressed children absorbed into apex diffs.
-  // All downstream consumers — sidebar, overlay chips, popup, CSV, Excel —
-  // must read from the post-suppression fields below.
-
+  // summary.modified arrives as the pre-suppression count (all matched elements with any diff).
+  // After BFS, rootCauseCount holds only apex nodes; the gap is suppressed children.
+  // All downstream consumers (sidebar, popup, CSV, Excel) must read the post-suppression fields.
   summary.modifiedPreSuppression = summary.modified;
   summary.suppressedChildCount   = summary.modified - summary.rootCauseCount;
   summary.modified               = summary.rootCauseCount;
 
-  // matchedPairCount is the correct semantic label for rawDiffCount.
-  // rawDiffCount === totalMatched by construction — it counts matched element
-  // pairs regardless of whether they differ, making "raw diff count" a lie.
-  // We expose both names; rawDiffCount is kept for any consumer that already
-  // reads it, but must never be used as a diff metric.
+  // rawDiffCount === totalMatched by construction — it counts matched pairs, not diffs.
+  // Kept for backward compatibility; consumers must not use it as a diff metric.
   summary.matchedPairCount = rawDiffCount;
 
-  // propertyDiffCount: the only number that answers "how many CSS properties
-  // changed?" — computed from the visible apex groups post-suppression.
-  // Distinct from totalDifferences (pre-suppression property events = 109)
-  // and rawDiffCount (= totalMatched = 292).
+  // propertyDiffCount: post-suppression CSS property changes across visible apex groups.
+  // Distinct from totalDifferences (pre-suppression) and rawDiffCount (matched pair count).
   let propertyDiffCount = 0;
   for (const sev of ['critical', 'high', 'medium', 'low']) {
     for (const item of (groups[sev] ?? [])) {
@@ -751,10 +818,8 @@ function transformToGroupedReport(comparisonResult) {
   }
   summary.propertyDiffCount = propertyDiffCount;
 
-  // ── ACCOUNTING INVARIANTS ─────────────────────────────────────────────────
-  // These identities must hold on every report. Any failure signals a pipeline
-  // data integrity regression.
-  if (process.env.NODE_ENV !== 'production') {
+  // Accounting invariants: any failure signals a pipeline data integrity regression.
+  if (globalThis.process?.env?.NODE_ENV !== 'production') {
     const sevBreakdownSum = Object.values(summary.severityBreakdown ?? {}).reduce((a, b) => a + b, 0);
     const checks = [
       [sevBreakdownSum === summary.modified,
@@ -763,7 +828,7 @@ function transformToGroupedReport(comparisonResult) {
         `modified(${summary.modified})+suppressed(${summary.suppressedChildCount})+unchanged(${summary.unchanged}) !== totalMatched(${summary.totalMatched})`],
     ];
     for (const [ok, msg] of checks) {
-      if (!ok) throw new Error(`[report-transformer] Invariant violated: ${msg}`);
+      if (!ok) {throw new Error(`[report-transformer] Invariant violated: ${msg}`);}
     }
   }
 

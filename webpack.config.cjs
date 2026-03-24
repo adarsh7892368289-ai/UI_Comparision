@@ -21,7 +21,7 @@ module.exports = (env, argv) => {
       clean:    true,
     },
 
-    devtool: isDev ? 'inline-source-map' : 'source-map',
+    devtool: isDev ? 'inline-source-map' : false,
 
     plugins: [
       new CopyPlugin({

@@ -1,14 +1,20 @@
+/**
+ * Serialises extracted element reports to CSV, JSON, and XLSX formats.
+ * Runs in the popup context — depends on the global XLSX library and document.createElement.
+ * Invariant: never throws — all XLSX paths catch internally and return {success:false}.
+ * Called by: export-workflow.js (all six exported build functions).
+ */
 import { get }        from '../../../config/defaults.js';
 import { rowsToCsv }  from '../shared/csv-utils.js';
 
-const UTF8_BOM         = '\uFEFF';
-const CSV_TEXT_MAX     = 200;
+const UTF8_BOM          = '\uFEFF';
+const CSV_TEXT_MAX      = 200;
 const HEADER_FONT_COLOR = 'FFFFFF';
 
-// ---------------------------------------------------------------------------
-// Inline XLSX helpers — kept independent from comparison/excel-exporter.js
-// ---------------------------------------------------------------------------
-
+/**
+ * Retrieves the global XLSX library object.
+ * @throws {Error} When libs/xlsx.full.min.js has not been loaded before this call.
+ */
 function getXLSX() {
   const { XLSX } = globalThis;
   if (!XLSX) {
@@ -17,6 +23,7 @@ function getXLSX() {
   return XLSX;
 }
 
+/** Returns an XLSX cell style object for bold header cells with the configured fill colour. */
 function _headerCellStyle(headerColor) {
   return {
     fill:      { patternType: 'solid', fgColor: { rgb: headerColor } },
@@ -25,16 +32,19 @@ function _headerCellStyle(headerColor) {
   };
 }
 
+/** Freezes the top row of a worksheet so headers stay visible while scrolling. */
 function _applyFreezePane(ws) {
   ws['!freeze'] = { xSplit: 0, ySplit: 1, topLeftCell: 'A2', state: 'frozen' };
 }
 
-// ---------------------------------------------------------------------------
-// Shared column definition — single source of truth for CSV and Excel order.
-// display, visibility, opacity are intentionally EXCLUDED here; they are
-// already emitted as part of the cssProperties spread below.
-// ---------------------------------------------------------------------------
-
+/**
+ * Returns the ordered column header array for an element export.
+ * CSS properties are appended after the 22 structural columns.
+ * display, visibility, and opacity are intentionally absent here — they appear
+ * via the cssProperties spread and must not be duplicated as structural columns.
+ * @param {string[]} cssProperties - Ordered list of CSS property names to append as columns.
+ * @returns {string[]} Full header array.
+ */
 function _buildElementHeaders(cssProperties) {
   return [
     'HPID',
@@ -63,6 +73,14 @@ function _buildElementHeaders(cssProperties) {
   ];
 }
 
+/**
+ * Maps one extracted element to a flat value array matching the _buildElementHeaders order.
+ * textContent is capped at CSV_TEXT_MAX characters to keep cell sizes manageable.
+ * JSON columns (classHierarchy, neighbours, attributes) are serialised to a single string.
+ * @param {object} el - Extracted element object from the report.
+ * @param {string[]} cssProperties - Ordered list of CSS property names to resolve from el.styles.
+ * @returns {Array} Row value array aligned to _buildElementHeaders.
+ */
 function _buildElementRow(el, cssProperties) {
   const styleValues = cssProperties.map(prop => el.styles?.[prop] ?? '');
   return [
@@ -92,10 +110,12 @@ function _buildElementRow(el, cssProperties) {
   ];
 }
 
-// ---------------------------------------------------------------------------
-// CSV exports
-// ---------------------------------------------------------------------------
-
+/**
+ * Builds a multi-section BOM-prefixed CSV string for a single extraction report.
+ * Sections: report metadata, optional filters, optional schema options, element rows.
+ * @param {object} report - Extraction report object from idb-repository.
+ * @returns {string} BOM-prefixed CSV string.
+ */
 function buildExtractedReportCsv(report) {
   const cssProperties = get('extraction.cssProperties', []);
   const rows          = [];
@@ -140,10 +160,16 @@ function buildExtractedReportCsv(report) {
   return UTF8_BOM + rowsToCsv(rows);
 }
 
+/** Serialises a single report to a pretty-printed JSON string. */
 function buildExtractedReportJson(report) {
   return JSON.stringify(report, null, 2);
 }
 
+/**
+ * Concatenates multiple reports into one BOM-prefixed CSV with a separator header
+ * between each report section. The BOM on inner reports is stripped to avoid
+ * duplicates mid-file.
+ */
 function buildAllExtractedReportsCsv(reports) {
   const sections = reports.map((report, i) =>
     `## ===== REPORT ${i + 1} of ${reports.length} =====\n${buildExtractedReportCsv(report).replace(UTF8_BOM, '')}`
@@ -151,14 +177,16 @@ function buildAllExtractedReportsCsv(reports) {
   return UTF8_BOM + sections.join('\n\n');
 }
 
+/** Serialises all reports to a pretty-printed JSON array string. */
 function buildAllExtractedReportsJson(reports) {
   return JSON.stringify(reports, null, 2);
 }
 
-// ---------------------------------------------------------------------------
-// Excel exports
-// ---------------------------------------------------------------------------
-
+/**
+ * Builds a two-sheet XLSX workbook (Metadata + Elements) for one report.
+ * Never throws — XLSX errors are caught and returned as {success:false, error}.
+ * @returns {{ success: true, filename: string } | { success: false, error: string }}
+ */
 function buildExtractedReportExcel(report) {
   try {
     const XLSX          = getXLSX();
@@ -166,7 +194,6 @@ function buildExtractedReportExcel(report) {
     const headerColor   = get('export.excel.headerColor');
     const wb            = XLSX.utils.book_new();
 
-    // ── Sheet 1: Metadata ────────────────────────────────────────────────
     const metaData = [
       ['Field', 'Value'],
       ['Report ID',       report.id],
@@ -183,29 +210,23 @@ function buildExtractedReportExcel(report) {
 
     const metaWs = XLSX.utils.aoa_to_sheet(metaData);
     metaWs['!cols'] = [{ wch: 20 }, { wch: 60 }];
-
-    // Style header row (row 0)
     ['A1', 'B1'].forEach(addr => {
       if (metaWs[addr]) { metaWs[addr].s = _headerCellStyle(headerColor); }
     });
     _applyFreezePane(metaWs);
-
     XLSX.utils.book_append_sheet(wb, metaWs, 'Metadata');
 
-    // ── Sheet 2: Elements ────────────────────────────────────────────────
-    const headers    = _buildElementHeaders(cssProperties);
+    const headers     = _buildElementHeaders(cssProperties);
     const elementRows = (report.elements || []).map(el => _buildElementRow(el, cssProperties));
+    const elemWs      = XLSX.utils.aoa_to_sheet([headers, ...elementRows]);
 
-    const elemWs = XLSX.utils.aoa_to_sheet([headers, ...elementRows]);
-
-    // Column widths: first 23 structural columns at wch:20, CSS props at wch:15
-    const structuralCount = 23; // headers up to and including 'Attributes'
+    // 23 structural columns (up to and including 'Attributes') at wch:20; CSS props at wch:15.
+    const structuralCount = 23;
     elemWs['!cols'] = [
       ...Array(structuralCount).fill({ wch: 20 }),
       ...cssProperties.map(() => ({ wch: 15 }))
     ];
 
-    // Apply header styling to every cell in row 0
     if (elemWs['!ref']) {
       const range = XLSX.utils.decode_range(elemWs['!ref']);
       for (let c = range.s.c; c <= range.e.c; c++) {
@@ -214,7 +235,6 @@ function buildExtractedReportExcel(report) {
       }
     }
     _applyFreezePane(elemWs);
-
     XLSX.utils.book_append_sheet(wb, elemWs, 'Elements');
 
     const filename = `report-${report.id}.xlsx`;
@@ -226,6 +246,11 @@ function buildExtractedReportExcel(report) {
   }
 }
 
+/**
+ * Builds an XLSX workbook with a Summary sheet plus one Elements sheet per report.
+ * Never throws — errors are caught and returned as {success:false, error}.
+ * @returns {{ success: true, filename: string } | { success: false, error: string }}
+ */
 function buildAllExtractedReportsExcel(reports) {
   try {
     const XLSX          = getXLSX();
@@ -233,7 +258,6 @@ function buildAllExtractedReportsExcel(reports) {
     const headerColor   = get('export.excel.headerColor');
     const wb            = XLSX.utils.book_new();
 
-    // ── Summary sheet ────────────────────────────────────────────────────
     const summaryHeaders = ['Index', 'Report ID', 'URL', 'Title', 'Timestamp', 'Total Elements'];
     const summaryRows    = reports.map((r, i) => [
       i + 1,
@@ -255,12 +279,10 @@ function buildAllExtractedReportsExcel(reports) {
       }
     }
     _applyFreezePane(summaryWs);
-
     XLSX.utils.book_append_sheet(wb, summaryWs, 'Summary');
 
-    // ── One Elements sheet per report ────────────────────────────────────
     const headers         = _buildElementHeaders(cssProperties);
-    const structuralCount = 23;
+    const structuralCount = 23; // columns up to and including 'Attributes'
 
     reports.forEach((report, i) => {
       const elementRows = (report.elements || []).map(el => _buildElementRow(el, cssProperties));
@@ -280,12 +302,12 @@ function buildAllExtractedReportsExcel(reports) {
       }
       _applyFreezePane(ws);
 
-      // Sheet names must be ≤ 31 chars
+      // XLSX sheet names are capped at 31 characters.
       const sheetName = `Report_${i + 1}`.substring(0, 31);
       XLSX.utils.book_append_sheet(wb, ws, sheetName);
     });
 
-    const filename = `all-reports.xlsx`;
+    const filename = 'all-reports.xlsx';
     XLSX.writeFile(wb, filename, { cellStyles: true });
 
     return { success: true, filename };

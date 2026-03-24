@@ -18,13 +18,18 @@
 
     <header class="popup-header">
       <div class="header-brand">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" aria-hidden="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-brand)" stroke-width="2.5" aria-hidden="true">
           <rect x="2" y="3" width="20" height="14" rx="2"/>
           <path d="M8 21h8M12 17v4"/>
         </svg>
         <span class="header-title">UI Compare</span>
       </div>
       <div id="header-url" class="header-url" title=""></div>
+      <button class="btn-close" id="close-popup-btn" aria-label="Close extension" title="Close">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+          <path d="M18 6L6 18M6 6l12 12"/>
+        </svg>
+      </button>
     </header>
 
     <nav class="tab-bar" role="tablist" aria-label="Main navigation">
@@ -54,18 +59,24 @@
             <span class="badge-optional">optional</span>
           </div>
           <div class="filter-grid">
-            <input class="input" id="filter-class" type="text"
-                   placeholder="Class (e.g. btn)" aria-label="Filter by CSS class">
-            <input class="input" id="filter-id" type="text"
-                   placeholder="ID (e.g. header)" aria-label="Filter by element ID">
-            <input class="input" id="filter-tag" type="text"
-                   placeholder="Tag (e.g. button)" aria-label="Filter by HTML tag">
+            <div class="form-field">
+              <label class="label" for="filter-class">Class</label>
+              <input class="input" id="filter-class" type="text" placeholder="e.g. btn">
+            </div>
+            <div class="form-field">
+              <label class="label" for="filter-id">ID</label>
+              <input class="input" id="filter-id" type="text" placeholder="e.g. header">
+            </div>
+            <div class="form-field">
+              <label class="label" for="filter-tag">Tag</label>
+              <input class="input" id="filter-tag" type="text" placeholder="e.g. button">
+            </div>
           </div>
         </div>
 
         <button class="btn-primary" id="extract-btn" aria-describedby="extract-progress">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true">
-            <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+            <path d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4"/>
           </svg>
           Extract Elements
         </button>
@@ -79,10 +90,11 @@
           <span class="progress-label" id="extract-progress-label">Scanning…</span>
         </div>
 
-        <div class="section-row">
+        <div class="card card--toolbar">
           <h2 class="section-title">Saved Reports</h2>
           <div class="section-row-actions">
             <select class="select select-sm" id="export-all-format" aria-label="Bulk export format">
+              <option value="excel">Excel</option>
               <option value="csv">CSV</option>
               <option value="json">JSON</option>
             </select>
@@ -96,23 +108,25 @@
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true">
                 <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/>
               </svg>
+              Delete All
             </button>
           </div>
         </div>
 
-        <div class="search-wrap">
-          <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+        <div class="search-bar-wrap">
+          <svg class="search-bar__icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
             <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
           </svg>
-          <input class="search-input" id="search-reports" type="search"
-                 placeholder="Search reports… (press /)" aria-label="Search saved reports">
+          <input class="search-bar__input" id="search-reports" type="search"
+                 placeholder="Search reports…" aria-label="Search saved reports">
+          <kbd class="search-bar__kbd">/</kbd>
         </div>
 
         <div id="reports-list" class="reports-list" role="list" aria-label="Saved reports"></div>
 
         <div id="reports-empty" class="empty-state hidden" aria-live="polite">
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none"
-               stroke="var(--text-tertiary)" stroke-width="1.5" aria-hidden="true">
+               stroke="var(--color-text-tertiary)" stroke-width="1.5" aria-hidden="true">
             <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
             <polyline points="14 2 14 8 20 8"/>
           </svg>
@@ -125,6 +139,7 @@
       <section id="panel-compare" role="tabpanel" aria-labelledby="tab-compare" hidden>
 
         <div class="card">
+
           <div class="form-field">
             <label class="label" for="baseline-report">Baseline</label>
             <select class="select" id="baseline-report" aria-label="Select baseline report">
@@ -138,7 +153,9 @@
             </label>
             <input type="file" id="baseline-upload" accept=".json,.csv,.xlsx,.xls" hidden>
           </div>
-          <div class="vs-row"><span class="vs-label">VS</span></div>
+
+          <div class="vs-divider"><span class="vs-label">VS</span></div>
+
           <div class="form-field">
             <label class="label" for="compare-report">Compare</label>
             <select class="select" id="compare-report" aria-label="Select compare report">
@@ -152,45 +169,47 @@
             </label>
             <input type="file" id="compare-upload" accept=".json,.csv,.xlsx,.xls" hidden>
           </div>
-        </div>
 
-        <div class="mode-grid" role="group" aria-label="Comparison mode">
-          <label class="mode-option">
-            <input type="radio" name="compare-mode" value="dynamic" checked>
-            <div class="mode-card">
-              <svg class="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-              </svg>
-              <div>
-                <div class="mode-name">Dynamic</div>
-                <div class="mode-desc">Ignore layout noise</div>
-              </div>
+          <hr class="card-sep">
+
+          <div class="form-field">
+            <label class="label">Mode</label>
+            <div class="segmented-control" role="group" aria-label="Comparison mode">
+              <label class="seg-option">
+                <input type="radio" name="compare-mode" value="dynamic" checked>
+                <span class="seg-label">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                  </svg>
+                  Dynamic
+                </span>
+              </label>
+              <label class="seg-option">
+                <input type="radio" name="compare-mode" value="static">
+                <span class="seg-label">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+                    <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>
+                  </svg>
+                  Static
+                </span>
+              </label>
+            </div>
+            <p class="field-hint" id="mode-hint-dynamic">Compares key styles only — skips text and minor size differences.</p>
+            <p class="field-hint" id="mode-hint-static">Compares everything — all styles, text content, and attributes.</p>
+          </div>
+
+          <label class="toggle-row" for="visual-diff-toggle" id="visual-toggle-wrap">
+            <div class="toggle-row__text">
+              <span class="toggle-row__label">Visual Diff</span>
+              <span class="toggle-row__hint">Side-by-side screenshot diff of both open tabs</span>
+            </div>
+            <div class="visual-toggle__track">
+              <input type="checkbox" id="visual-diff-toggle" checked>
+              <span class="visual-toggle__thumb" aria-hidden="true"></span>
             </div>
           </label>
-          <label class="mode-option">
-            <input type="radio" name="compare-mode" value="static">
-            <div class="mode-card">
-              <svg class="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>
-              </svg>
-              <div>
-                <div class="mode-name">Static</div>
-                <div class="mode-desc">Pixel-perfect diff</div>
-              </div>
-            </div>
-          </label>
-        </div>
 
-        <label class="visual-toggle" id="visual-toggle-wrap">
-          <div class="visual-toggle__track">
-            <input type="checkbox" id="visual-diff-toggle" checked aria-describedby="visual-toggle-hint">
-            <span class="visual-toggle__thumb" aria-hidden="true"></span>
-          </div>
-          <div class="visual-toggle__text">
-            <span class="visual-toggle__label">Include Visual Diff</span>
-            <span class="visual-toggle__hint" id="visual-toggle-hint">Captures screenshots via CDP — requires source tabs to be open</span>
-          </div>
-        </label>
+        </div>
 
         <button class="btn-primary" id="compare-btn" disabled>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true">

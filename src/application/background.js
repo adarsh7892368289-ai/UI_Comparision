@@ -1,14 +1,22 @@
+/**
+ * MV3 service worker entry point. Owns message dispatch, port-based comparison
+ * streaming, and the SW fetch handler that serves visual blobs from IDB.
+ * Failure mode contained here: a broken config reaching handler registration —
+ * prevented by the top-level validateConfig() throw that halts SW startup.
+ * Callers: Chrome runtime (message, connect, fetch events). Not imported by any module.
+ */
 import { validateConfig } from '../config/validator.js';
 import { MessageTypes, onMessage } from '../infrastructure/chrome-messaging.js';
-import logger from '../infrastructure/logger.js';
-import { StorageTransport } from '../infrastructure/logger.js';
-import storage from '../infrastructure/storage.js';
+import logger, { StorageTransport } from '../infrastructure/logger.js';
+import storage from '../infrastructure/idb-repository.js';
 import { compareReports, exportComparisonAsHTML, getCachedComparison } from './compare-workflow.js';
 import { extractFromActiveTab } from './extract-workflow.js';
 
 logger.init();
 logger.addTransport(new StorageTransport());
 
+// Intentional top-level throw — a bad config must halt the SW before any handler
+// is registered. Silent continuation would cause cryptic per-request failures later.
 try {
   validateConfig({ throwOnError: true });
   logger.info('Config validation passed');
@@ -17,6 +25,8 @@ try {
   throw err;
 }
 
+// Dispatch table for sendMessage-based requests. START_COMPARISON is intentionally
+// absent — it streams N progress frames over time and uses the onConnect port instead.
 const handlers = {
   [MessageTypes.EXTRACT_ELEMENTS]:       handleExtractElements,
   [MessageTypes.LOAD_CACHED_COMPARISON]: handleLoadCachedComparison,
@@ -27,6 +37,8 @@ const handlers = {
   [MessageTypes.GET_VISUAL_BLOB]:        handleGetVisualBlob
 };
 
+// Unknown message types throw — the error propagates back as {success:false} via
+// chrome-messaging.js's onMessage wrapper, not as an unhandled SW rejection.
 onMessage(async (msgType, payload, sender) => {
   const handler = handlers[msgType];
   if (!handler) {
@@ -36,13 +48,15 @@ onMessage(async (msgType, payload, sender) => {
   return handler(payload, sender);
 });
 
+// SW fetch interceptor: serves visual blobs stored in IDB under the virtual
+// /blob/{id} path. This avoids a server round-trip — the SW is its own blob server.
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
-  if (!url.pathname.startsWith('/blob/')) return;
+  if (!url.pathname.startsWith('/blob/')) { return; }
   const blobId = url.pathname.slice(6);
   event.respondWith(
     storage.loadVisualBlob(blobId).then(blob => {
-      if (!blob) return new Response('Not found', { status: 404 });
+      if (!blob) { return new Response('Not found', { status: 404 }); }
       return new Response(blob, {
         headers: {
           'Content-Type':  blob.type || 'image/webp',
@@ -53,6 +67,8 @@ self.addEventListener('fetch', event => {
   );
 });
 
+// Port-based comparison channel. sendMessage is single-shot and cannot stream
+// progress across the N frames a comparison takes — a persistent port is required.
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'comparison') {
     return;
@@ -73,6 +89,9 @@ chrome.runtime.onConnect.addListener((port) => {
     const { baselineId, compareId, mode, baselineTabId, compareTabId, includeScreenshots } = msg;
     logger.info('Comparison port connected', { baselineId, compareId, mode });
 
+    // send() is a no-op once aborted. postMessage throws synchronously when Chrome
+    // has already closed the port on the other side — catching it here prevents an
+    // unhandled rejection if onDisconnect fires slightly after a send is attempted.
     const send = (msgType, data = {}) => {
       if (aborted) {
         return;
@@ -102,6 +121,9 @@ chrome.runtime.onConnect.addListener((port) => {
         onProgress
       });
 
+      // visualDiffs is a Map of large blob data — not serialisable over the message
+      // channel. Strip it and send a boolean flag instead; the popup fetches blobs
+      // individually via handleGetVisualBlob when it needs them.
       const { visualDiffs, ...slim } = result;
       slim.hasVisualDiffs = (visualDiffs instanceof Map)
         ? visualDiffs.size > 0
@@ -123,6 +145,7 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
+/** Triggers a DOM extraction on the active tab and returns the report. */
 async function handleExtractElements(payload) {
   const { filters } = payload;
   logger.info('Extract elements requested', { filters });
@@ -130,6 +153,11 @@ async function handleExtractElements(payload) {
   return { report };
 }
 
+/**
+ * Normalises both thrown errors and {success:false} returns from exportComparisonAsHTML
+ * into thrown errors — the function can surface failures either way, and the message
+ * boundary expects a single error contract.
+ */
 async function handleExportComparisonHTML(payload) {
   const { baselineId, compareId, mode } = payload;
   let exportResult;
@@ -149,33 +177,47 @@ async function handleExportComparisonHTML(payload) {
   return { success: true };
 }
 
+/** Persists a report to IDB via the serialised write queue. */
 async function handleSaveReport(payload) {
   const { report } = payload;
   return storage.saveReport(report);
 }
 
+/** Returns all saved reports newest-first, wrapped in an object for the message envelope. */
 async function handleLoadReports() {
   const reports = await storage.loadReports();
   return { reports };
 }
 
+/** Deletes a report and all comparisons referencing it atomically. */
 async function handleDeleteReport(payload) {
   const { id } = payload;
   return storage.deleteReport(id);
 }
 
+/**
+ * Loads a cached comparison and its diff results in two separate reads.
+ * Diffs are stored in a separate IDB store from the comparison metadata,
+ * so both must be fetched and merged before returning.
+ */
 async function handleLoadCachedComparison(payload) {
   const { baselineId, compareId, mode } = payload;
   const cached = await getCachedComparison(baselineId, compareId, mode);
-  if (!cached) return { cached: null };
+  if (!cached) { return { cached: null }; }
   const results = await storage.loadComparisonDiffs(cached.id);
   return { cached: { ...cached, results } };
 }
 
+/**
+ * Converts a stored blob to a base64 data URI for transfer over the message channel.
+ * Blobs cannot be sent directly across Chrome message boundaries — they must be
+ * serialised. The array is chunked at 0x8000 bytes before String.fromCharCode to
+ * avoid a call stack overflow when spreading large Uint8Arrays as function arguments.
+ */
 async function handleGetVisualBlob(payload) {
   const { blobId } = payload;
   const blob = await storage.loadVisualBlob(blobId);
-  if (!blob) return { dataUri: null };
+  if (!blob) { return { dataUri: null }; }
   const buf     = await blob.arrayBuffer();
   const bytes   = new Uint8Array(buf);
   const chunk   = 0x8000;

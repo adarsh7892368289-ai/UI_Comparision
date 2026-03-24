@@ -1,6 +1,16 @@
+/**
+ * Messaging bridge between the extension's three contexts: popup, content script,
+ * and background service worker. Imported by all three.
+ * Failure mode contained here: the Chrome message channel staying open indefinitely
+ * when a response is never sent — prevented by the timeout in sendToBackground and
+ * the `return true` contract in onMessage.
+ * Callers: background.js (onMessage), popup.js, content.js (sendToBackground),
+ *          compare-workflow.js (sendToTab).
+ */
 import logger from './logger.js';
 import { TabAdapter } from './chrome-tabs.js';
 
+/** Frozen enum of every message type string used across the extension. */
 export const MessageTypes = Object.freeze({
   EXTRACT_ELEMENTS:       'extractElements',
   EXTRACTION_PROGRESS:    'extractionProgress',
@@ -30,6 +40,17 @@ export const MessageTypes = Object.freeze({
   VISUAL_REVERT:          'VISUAL_REVERT'
 });
 
+/**
+ * Sends a message to the background service worker and waits for a response.
+ * Rejects on three distinct failure paths: a Chrome-level error (`lastError`),
+ * a timeout, or a `{success: false}` response from the SW — callers must handle all three.
+ *
+ * @param {string} type - A MessageTypes constant.
+ * @param {Object} [payload]
+ * @param {number} [timeoutMs=30000] - 30 s is too short for comparison workflows;
+ *   callers that stream progress over time should pass a higher value.
+ * @returns {Promise<*>}
+ */
 export function sendToBackground(type, payload = {}, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -57,11 +78,30 @@ export function sendToBackground(type, payload = {}, timeoutMs = 30000) {
   });
 }
 
+/**
+ * Sends a message to a content script running in a specific tab and waits for a reply.
+ *
+ * @param {number} tabId
+ * @param {string} type - A MessageTypes constant.
+ * @param {Object} [payload]
+ * @param {number} [timeoutMs=60000] - Higher default than sendToBackground because
+ *   content script operations like DOM traversal and CDP calls take longer.
+ * @returns {Promise<*>}
+ */
 export function sendToTab(tabId, type, payload = {}, timeoutMs = 60000) {
   const message = { type, ...payload };
   return TabAdapter.sendMessage(tabId, message, timeoutMs);
 }
 
+/**
+ * Registers a handler for incoming messages in the current context.
+ * Errors thrown by the handler are caught and sent back as `{success: false}` —
+ * the handler must not suppress errors it wants the caller to receive.
+ *
+ * @param {(type: string, payload: Object, sender: chrome.runtime.MessageSender) => * | Promise<*>} handler
+ *   Return value becomes `response.data` on the sending side.
+ * @returns {() => void} Call this to unregister the listener and avoid memory leaks.
+ */
 export function onMessage(handler) {
   const listener = (message, sender, sendResponse) => {
     const { type, ...payload } = message;
@@ -80,6 +120,8 @@ export function onMessage(handler) {
         sendResponse({ success: false, error: errorMsg });
       });
 
+    // Must return true to keep the channel open until sendResponse is called
+    // asynchronously — returning false or undefined closes it immediately.
     return true;
   };
 
@@ -90,6 +132,15 @@ export function onMessage(handler) {
   };
 }
 
+/**
+ * Sends a message to every open tab without waiting for confirmation.
+ * Individual tab failures are swallowed — this never rejects. Use sendToTab
+ * directly when delivery confirmation is required.
+ *
+ * @param {string} type - A MessageTypes constant.
+ * @param {Object} [payload]
+ * @returns {Promise<PromiseSettledResult[]>}
+ */
 export function broadcastToAllTabs(type, payload = {}) {
   return TabAdapter.query({})
     .then(tabs => {

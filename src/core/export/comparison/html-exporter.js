@@ -1,7 +1,19 @@
+/**
+ * Builds and downloads a fully self-contained HTML diff report from a comparison result.
+ * All screenshots are embedded as base64 data URIs; no network access is needed to view the file.
+ * Runs in the popup context — depends on chrome.downloads and IDB blob storage.
+ * Invariant: never throws — all failures are caught and returned as {success:false}.
+ * Called by: export-workflow.js → exportComparisonAsHTML().
+ */
 import logger from '../../../infrastructure/logger.js';
-import storage from '../../../infrastructure/storage.js';
+import storage from '../../../infrastructure/idb-repository.js';
 import { transformToGroupedReport } from '../shared/report-transformer.js';
 
+/**
+ * Transforms, embeds screenshots, builds the HTML document, and triggers a download.
+ * @param {object} comparisonResult - Fully-resolved comparison result from compare-workflow.
+ * @returns {Promise<{ success: true } | { success: false, error: string }>}
+ */
 async function exportToHTML(comparisonResult) {
   try {
     const grouped          = transformToGroupedReport(comparisonResult);
@@ -25,18 +37,20 @@ async function exportToHTML(comparisonResult) {
   }
 }
 
+/**
+ * Normalises the visualDiffs value (Map or plain object) into a flat plain object keyed by HPID.
+ * Uses actualDPR from the captured entry rather than the legacy hardcoded captureScaleFactor:2,
+ * which silently doubled crop coordinates when the capture DPR was 1.
+ * @param {Map|object|null} visualDiffs - Raw visualDiffs from the comparison result.
+ * @returns {object} Plain object mapping HPID → normalised entry, or empty object if null.
+ */
 function resolveVisualManifest(visualDiffs) {
-  if (!visualDiffs) return {};
+  if (!visualDiffs) { return {}; }
   const out     = Object.create(null);
   const entries = visualDiffs instanceof Map ? visualDiffs.entries() : Object.entries(visualDiffs);
   for (const [key, entry] of entries) {
     const { baseline, compare, diffs } = entry ?? {};
-    if (!baseline && !compare) continue;
-    // baselineActualDPR / compareActualDPR are the ground-truth values captured at
-    // runtime by the visual workflow. The old captureScaleFactor:2 was a hardcoded
-    // constant that silently doubled all crop coordinates when actualDPR=1 (DEGRADED
-    // quality captures), placing every highlight 1 viewport-width to the right of
-    // the actual element. Removed. The JS crop functions read actualDPR directly.
+    if (!baseline && !compare) { continue; }
     out[key] = {
       baselineKeyframeId:        baseline?.keyframeId         ?? null,
       baselineRect:              baseline?.viewportRect        ?? null,
@@ -72,6 +86,12 @@ function resolveVisualManifest(visualDiffs) {
   return out;
 }
 
+/**
+ * Converts a Blob to a base64 data URI string.
+ * Processes in 32KB chunks to avoid exceeding the call stack limit of String.fromCharCode.
+ * @param {Blob} blob - Image blob from IDB visual storage.
+ * @returns {Promise<string>} Data URI string with the blob's media type prefix.
+ */
 async function blobToDataUri(blob) {
   const buf   = await blob.arrayBuffer();
   const bytes = new Uint8Array(buf);
@@ -83,20 +103,32 @@ async function blobToDataUri(blob) {
   return `data:${blob.type || 'image/webp'};base64,${btoa(binary)}`;
 }
 
+/**
+ * Loads all unique keyframe blobs referenced in the manifest and converts them to data URIs.
+ * @param {object} manifest - Normalised visual manifest from resolveVisualManifest.
+ * @returns {Promise<object>} Plain object mapping keyframe ID → base64 data URI.
+ */
 async function loadBlobData(manifest) {
   const ids = new Set();
   for (const entry of Object.values(manifest)) {
-    if (entry.baselineKeyframeId) ids.add(entry.baselineKeyframeId);
-    if (entry.compareKeyframeId)  ids.add(entry.compareKeyframeId);
+    if (entry.baselineKeyframeId) {ids.add(entry.baselineKeyframeId);}
+    if (entry.compareKeyframeId)  {ids.add(entry.compareKeyframeId);}
   }
   const out = Object.create(null);
   for (const id of ids) {
     const blob = await storage.loadVisualBlob(id);
-    if (blob) out[id] = await blobToDataUri(blob);
+    if (blob) {out[id] = await blobToDataUri(blob);}
   }
   return out;
 }
 
+/**
+ * Encodes the HTML string as a base64 data URI and triggers a chrome.downloads.download call.
+ * Base64 encoding is used because data URI length limits block large files in some Chrome versions.
+ * @param {string} html - Complete HTML document string.
+ * @param {string} filename - Suggested filename for the download.
+ * @returns {Promise<void>}
+ */
 async function triggerDownload(html, filename) {
   const bytes = new TextEncoder().encode(html);
   const chunk = 0x8000;
@@ -108,6 +140,7 @@ async function triggerDownload(html, filename) {
   await chrome.downloads.download({ url, filename, saveAs: false });
 }
 
+/** Escapes a value for safe insertion into HTML attribute values and text content. */
 function esc(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')
@@ -116,8 +149,14 @@ function esc(str) {
     .replace(/"/g, '&quot;');
 }
 
+/**
+ * Returns a sticky error/warning banner HTML string when visual capture failed or was skipped.
+ * Returns an empty string when status is success, completed, or devtools-blocked.
+ * @param {{ status: string, reason?: string }|null} vds - Visual diff status from compare-workflow.
+ * @returns {string} HTML string, or '' when no banner is needed.
+ */
 function buildDiagnosticBanner(vds) {
-  if (!vds || vds.status === 'success' || vds.status === 'completed' || vds.status === 'devtools-blocked') return '';
+  if (!vds || vds.status === 'success' || vds.status === 'completed' || vds.status === 'devtools-blocked') { return ''; }
   const isFailed  = vds.status === 'failed';
   const bg        = isFailed ? '#7f1d1d' : '#78350f';
   const border    = isFailed ? '#ef4444' : '#f97316';
@@ -132,19 +171,29 @@ function buildDiagnosticBanner(vds) {
 </div>`;
 }
 
+/**
+ * Returns a sticky info banner HTML string when the URL pre-flight check raised a CAUTION.
+ * Returns an empty string when the warning is absent or not classified as CAUTION.
+ * @param {{ classification: string, mismatchDelta?: object, estimatedFalseNegatives?: number }|null} w
+ * @returns {string} HTML string, or '' when no banner is needed.
+ */
 function buildPreFlightBanner(w) {
-  if (!w || w.classification !== 'CAUTION') return '';
+  if (!w || w.classification !== 'CAUTION') { return ''; }
   const { mismatchDelta, estimatedFalseNegatives } = w;
   const parts = [];
-  if (mismatchDelta?.hash)        parts.push(`SPA hash mismatch: <code>${esc(mismatchDelta.hash.baseline)}</code> vs <code>${esc(mismatchDelta.hash.compare)}</code>`);
-  if (mismatchDelta?.queryParams) parts.push(`Query differences: ${mismatchDelta.queryParams.map(p => esc(p.key)).join(', ')}`);
-  const fn = estimatedFalseNegatives != null ? ` ~${estimatedFalseNegatives} false negatives estimated.` : '';
+  if (mismatchDelta?.hash)        {parts.push(`SPA hash mismatch: <code>${esc(mismatchDelta.hash.baseline)}</code> vs <code>${esc(mismatchDelta.hash.compare)}</code>`);}
+  if (mismatchDelta?.queryParams) {parts.push(`Query differences: ${mismatchDelta.queryParams.map(p => esc(p.key)).join(', ')}`);}
+  const fn = estimatedFalseNegatives !== null ? ` ~${estimatedFalseNegatives} false negatives estimated.` : '';
   return `<div style="position:sticky;top:0;z-index:9998;background:#1e3a5f;border-bottom:3px solid #3b82f6;padding:10px 16px;display:flex;align-items:flex-start;gap:10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;">
   <span style="font-weight:800;color:#93c5fd;white-space:nowrap;">\u26a0 Page State Mismatch</span>
   <span style="flex:1;" class="u-text-secondary">${parts.join(' \u00b7 ')}${fn}</span>
 </div>`;
 }
 
+/**
+ * Returns the full-screen workbench modal HTML structure with pane controls and scroll containers.
+ * @returns {string} Static HTML string for the visual diff workbench modal.
+ */
 function buildModalHtml() {
   return `<div id="vdiff-modal" class="vdiff-modal" aria-modal="true" role="dialog" hidden>
   <div class="vdiff-modal__header">
@@ -182,8 +231,14 @@ function buildModalHtml() {
 </div>`;
 }
 
+/**
+ * Returns a sticky info banner HTML string when DevTools was detected open during capture.
+ * Returns an empty string when warnings is empty — capture proceeded normally.
+ * @param {Array<{ role: string, originalHeight: number, bypassHeight: number }>} warnings
+ * @returns {string} HTML string, or '' when warnings is empty.
+ */
 function buildDevToolsBanner(warnings) {
-  if (!warnings || warnings.length === 0) return '';
+  if (!warnings || warnings.length === 0) { return ''; }
   const details = warnings.map(w =>
     `<span style="display:block;margin-top:4px;">${esc(w.role)} tab: DevTools was open (viewport reduced to ${esc(String(w.originalHeight))}px). Screenshots taken at ${esc(String(w.bypassHeight))}px using virtual viewport override.</span>`
   ).join('');
@@ -193,10 +248,18 @@ function buildDevToolsBanner(warnings) {
 </div>`;
 }
 
+/**
+ * Assembles the complete self-contained HTML document string from all sub-sections.
+ * @param {object} grouped - Grouped report from report-transformer.
+ * @param {object} raw - Original comparison result (used for URLs, timestamps, warnings).
+ * @param {object} manifest - Normalised visual manifest from resolveVisualManifest.
+ * @param {object} blobData - Keyframe ID → base64 data URI map from loadBlobData.
+ * @param {{ status: string }|null} visualDiffStatus - Visual capture status for the banner.
+ * @returns {string} Complete HTML document string.
+ */
 function buildDocument(grouped, raw, manifest, blobData, visualDiffStatus) {
   const { summary } = grouped;
   const title = `${raw.baseline?.url ?? ''} vs ${raw.compare?.url ?? ''}`;
-  const date  = new Date(raw.timestamp ?? Date.now()).toLocaleString();
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -249,6 +312,12 @@ ${buildModalHtml()}
 </html>`;
 }
 
+/**
+ * Builds the left sidebar HTML with match rate, severity badges, and filter buttons.
+ * @param {object} s - Summary object from the grouped report.
+ * @param {object} raw - Original comparison result (used for URL hostnames).
+ * @returns {string} HTML string for the sidebar contents.
+ */
 function buildSidebar(s, raw) {
   const bar         = Math.round(s.matchRate ?? 0);
   // Fix #1: severityBreakdown counts apex elements (post-suppression).
@@ -302,6 +371,7 @@ function buildSidebar(s, raw) {
 </div>`;
 }
 
+/** Returns the complete CSS string for the self-contained HTML report. */
 function buildCss() {
   return `
 :root{
@@ -829,6 +899,15 @@ body{
 .vdiff-pane--compare.vdiff-kf-mismatch>.vdiff-pane__label{border-bottom:2px solid #f59e0b;}`;
 }
 
+/**
+ * Serialises all report data as JSON literals and returns the complete inline <script> string.
+ * The embedded script runs in the exported HTML file's browser context, not in the extension.
+ * @param {object} grouped - Grouped report data for the tree and detail panel.
+ * @param {object} manifest - Normalised visual manifest (HPID → screenshot metadata).
+ * @param {object} blobData - Keyframe ID → base64 data URI map.
+ * @param {object} raw - Original comparison result (used for URLs and warnings).
+ * @returns {string} Self-contained IIFE script string.
+ */
 function buildJs(grouped, manifest, blobData, raw) {
   const data         = JSON.stringify(grouped);
   const manifestJson = JSON.stringify(manifest ?? {});

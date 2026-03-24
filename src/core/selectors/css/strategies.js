@@ -1,15 +1,34 @@
+/**
+ * Ordered CSS selector strategies organised into 12 tiers by stability.
+ * Lower tier = more stable (test attributes > semantic > positional).
+ * Runs in the content-script context; all methods are synchronous.
+ * Invariant: every static method returns an array — never null or undefined.
+ * Called by: css/generator.js via `getAllStrategies()`.
+ */
 import { isStableId, isStableValue, isStableClass } from '../selector-utils.js';
 import { escapeCss } from './validator.js';
 
+/**
+ * Confidence score per tier. Lower tier = higher score.
+ * Exported so generator.js can attach confidence to the returned selector object.
+ */
 const TIER_ROBUSTNESS = {
   1: 100, 2: 91, 3: 88, 4: 85, 5: 82, 6: 78, 7: 72, 8: 68,
   9: 64, 10: 58, 11: 46, 12: 37, 13: 28
 };
 
+// Ordered list of test-automation attributes to probe before generic data-* attributes.
 const TEST_ATTRS = ['data-testid', 'data-test', 'data-qa', 'data-cy', 'data-automation-id'];
 
+/**
+ * Collection of static CSS selector strategy methods, one per tier.
+ * Each method receives the target element and its lowercase tag name,
+ * and returns an array of candidate `{ selector, strategy, tier }` objects.
+ * The generator picks the first candidate that is unique in the document.
+ */
 class CSSStrategies {
 
+  /** Tier 1 — stable ID: most reliable; filtered by `isStableId` to exclude generated IDs. */
   static tier1Id(element, tag) {
     const {id} = element;
     if (!id || !isStableId(id)) {return [];}
@@ -17,17 +36,19 @@ class CSSStrategies {
     return [{ selector: `${tag}#${escaped}`, strategy: 'id', tier: 1 }];
   }
 
+  /** Tier 2 — test-automation attributes (data-testid, data-qa, etc.); intended to be stable by convention. */
   static tier2TestAttributes(element, tag) {
     const results = [];
     for (const attr of TEST_ATTRS) {
       const value = element.getAttribute(attr);
       if (value && isStableValue(value)) {
-        results.push({ selector: `[${attr}="${escapeCss(value)}"]`, strategy: 'test-attr', tier: 2 });
+        results.push({ selector: `${tag}[${attr}="${escapeCss(value)}"]`, strategy: 'test-attr', tier: 2 });
       }
     }
     return results;
   }
 
+  /** Tier 3 — non-test `data-*` attributes with stable values; excludes test attrs already covered by tier 2. */
   static tier3DataAttributes(element, tag) {
     const results = [];
     for (const { name, value } of Array.from(element.attributes)) {
@@ -39,6 +60,7 @@ class CSSStrategies {
     return results;
   }
 
+  /** Tier 4 — `[type][name]` combination; reliable for form inputs where both attributes are meaningful. */
   static tier4TypeName(element, tag) {
     const type = element.getAttribute('type');
     const name = element.getAttribute('name');
@@ -48,6 +70,7 @@ class CSSStrategies {
     return [];
   }
 
+  /** Tier 5 — ARIA label / labelledby; stable for accessible components but can change with i18n. */
   static tier5AriaLabel(element, tag) {
     const results = [];
     const ariaLabel = element.getAttribute('aria-label');
@@ -61,6 +84,7 @@ class CSSStrategies {
     return results;
   }
 
+  /** Tier 6 — semantic HTML attributes (placeholder, alt, title, name, value, for); less stable across locales. */
   static tier6SemanticAttributes(element, tag) {
     const results = [];
     const checks = [
@@ -79,6 +103,10 @@ class CSSStrategies {
     return results;
   }
 
+  /**
+   * Tier 7 — class names; prefers two-class combos over single classes for uniqueness.
+   * Only includes classes that pass `isStableClass` to exclude CSS-in-JS generated names.
+   */
   static tier7Classes(element, tag) {
     const results = [];
     const classList = Array.from(element.classList).filter(isStableClass);
@@ -101,14 +129,16 @@ class CSSStrategies {
     return results;
   }
 
+  /**
+   * Tier 8 — scopes the tag under a stable ancestor's ID or test attribute.
+   * Walks up to 5 levels; stops at the first stable anchor found.
+   */
   static tier8ParentContextual(element, tag) {
     const results = [];
     let ancestor = element.parentElement;
     let depth = 0;
 
     while (ancestor && depth < 5) {
-      const parentTag = ancestor.tagName.toLowerCase();
-
       if (ancestor.id && isStableId(ancestor.id)) {
         const escaped = CSS.escape ? CSS.escape(ancestor.id) : escapeCss(ancestor.id);
         results.push({ selector: `#${escaped} > ${tag}`, strategy: 'parent-id-direct', tier: 8 });
@@ -131,6 +161,7 @@ class CSSStrategies {
     return results;
   }
 
+  /** Tier 9 — state pseudo-classes (disabled, required, checked, read-only); fragile if state changes between captures. */
   static tier9Pseudo(element, tag) {
     const pseudos = [];
     if (element.disabled) {pseudos.push(':disabled');}
@@ -141,6 +172,7 @@ class CSSStrategies {
     return [{ selector: `${tag}${pseudos.join('')}`, strategy: 'pseudo', tier: 9 }];
   }
 
+  /** Tier 10 — href / src attribute; length-capped and `javascript:` links excluded. */
   static tier10HrefSrc(element, tag) {
     const results = [];
     const href = element.getAttribute('href');
@@ -154,6 +186,7 @@ class CSSStrategies {
     return results;
   }
 
+  /** Tier 11 — `nth-child` scoped under the nearest stable ancestor; positional but anchored. */
   static tier11NthChildScoped(element, tag) {
     const parent = element.parentElement;
     if (!parent) {return [];}
@@ -173,6 +206,7 @@ class CSSStrategies {
     return [{ selector: nthSelector, strategy: 'nth-child', tier: 11 }];
   }
 
+  /** Tier 12 — `nth-of-type` scoped under the nearest stable ancestor; last resort before positional fallback. */
   static tier12NthTypeScoped(element, tag) {
     const parent = element.parentElement;
     if (!parent) {return [];}
@@ -193,6 +227,13 @@ class CSSStrategies {
   }
 }
 
+/**
+ * Walks the ancestor chain (max 6 levels) returning the first element with a stable
+ * ID or test attribute — used to scope positional selectors.
+ *
+ * @param {Element} element
+ * @returns {Element|null}
+ */
 function _findStableAncestor(element) {
   let current = element.parentElement;
   let depth = 0;
@@ -207,6 +248,13 @@ function _findStableAncestor(element) {
   return null;
 }
 
+/**
+ * Converts a stable ancestor element into the shortest reliable CSS selector for it.
+ * Prefers ID over test attribute over tag name.
+ *
+ * @param {Element} ancestor
+ * @returns {string}
+ */
 function _buildAncestorSelector(ancestor) {
   if (ancestor.id && isStableId(ancestor.id)) {
     const escaped = CSS.escape ? CSS.escape(ancestor.id) : escapeCss(ancestor.id);
@@ -219,6 +267,12 @@ function _buildAncestorSelector(ancestor) {
   return ancestor.tagName.toLowerCase();
 }
 
+/**
+ * Returns the full ordered strategy list for use by the generator.
+ * Each entry wraps the static method in an arrow function to preserve the call signature.
+ *
+ * @returns {Array<{tier: number, fn: Function, name: string}>}
+ */
 function getAllStrategies() {
   return [
     { tier: 1,  fn: (el, tag) => CSSStrategies.tier1Id(el, tag),               name: 'id' },

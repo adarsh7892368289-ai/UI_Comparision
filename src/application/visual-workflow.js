@@ -1,5 +1,22 @@
+/**
+ * Visual diff capture workflow: scrolls both comparison tabs through their
+ * modified elements, screenshots each keyframe via CDP, and stores blobs and
+ * rect manifests in IDB. Runs in the MV3 service worker.
+ *
+ * Architecture note: CDP (not captureVisibleTab) is used because only CDP exposes
+ * Emulation.setScriptExecutionDisabled, which freezes the main thread between
+ * inPageRemeasureRects and Page.captureScreenshot to eliminate layout-shift races.
+ * Captures run sequentially (baseline → compare) because Page.bringToFront
+ * requires exclusive tab focus and cannot be parallelised.
+ *
+ * inPage* functions are serialised and injected into the page's MAIN JS context
+ * via chrome.scripting.executeScript. They cannot close over any SW-scope variables —
+ * all inputs must be passed as the args array.
+ *
+ * Callers: compare-workflow.js (captureVisualDiffs via runVisualPhase).
+ */
 import logger from '../infrastructure/logger.js';
-import storage from '../infrastructure/storage.js';
+import storage from '../infrastructure/idb-repository.js';
 import { groupIntoKeyframes } from '../core/comparison/keyframe-grouper.js';
 
 const CAPTURE_SCALE_FACTOR   = 2;
@@ -26,19 +43,29 @@ const DEVTOOLS_HEIGHT_THRESHOLD_PX = 200;
 // Used to derive the true content-viewport height from outerHeight when DevTools is open.
 const BROWSER_CHROME_HEIGHT_PX = 88;
 
+/** Returns a human-readable elapsed-time string since `start` (Date.now()). */
 function ms(start) {
   return `${Date.now() - start}ms`;
 }
 
+/**
+ * Races a promise against a rejection timeout. Used to bound all CDP commands
+ * so a hung debugger session does not block the SW indefinitely.
+ */
 function withTimeout(promise, timeoutMs, label) {
   return Promise.race([
     promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`CDP timeout: ${label} after ${timeoutMs}ms`)), timeoutMs)
-    )
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`CDP timeout: ${label} after ${timeoutMs}ms`)), timeoutMs);
+    })
   ]);
 }
 
+/**
+ * IN-PAGE — runs in the tab's MAIN JS context via execInPage.
+ * Returns viewport and document dimensions including outerHeight/outerWidth for
+ * the DevTools-open detection check in executeTabCapture.
+ */
 function inPageGetViewport() {
   const width  = Math.floor(window.innerWidth);
   const height = Math.floor(window.innerHeight);
@@ -51,28 +78,40 @@ function inPageGetViewport() {
   return { width, height, documentHeight, outerHeight, outerWidth };
 }
 
+/** IN-PAGE — returns the page's devicePixelRatio for DPR-aware rect scaling. */
 function inPageGetDPR() {
   return window.devicePixelRatio;
 }
 
+/**
+ * IN-PAGE — hides the scrollbar by setting overflow:hidden and compensates with
+ * equivalent padding-right so page layout does not reflow across a CSS breakpoint.
+ * Returns the measured scrollbar width so the SW can pass it to buildMetricsOverride.
+ */
 function inPageLockScrollbar() {
   const before = window.innerWidth;
   document.body.style.setProperty('overflow', 'hidden', 'important');
   const after      = window.innerWidth;
   const scrollbarW = after - before;
   if (scrollbarW > 0) {
-    document.body.style.setProperty('padding-right', scrollbarW + 'px', 'important');
+    document.body.style.setProperty('padding-right', `${scrollbarW}px`, 'important');
   }
   return { scrollbarWidth: scrollbarW };
 }
 
+/** IN-PAGE — reverses inPageLockScrollbar, restoring overflow and padding-right. */
 function inPageUnlockScrollbar() {
   document.body.style.removeProperty('overflow');
   document.body.style.removeProperty('padding-right');
 }
 
+/**
+ * IN-PAGE — kills CSS animations/transitions and patches the scroll APIs to strip
+ * behavior:'smooth' from ScrollToOptions. The scroll API wraps are permanent for the
+ * tab's JS lifetime (see inPageRestoreAnimations for why they are not unwrapped).
+ */
 function inPageFreezeAnimations(styleId) {
-  if (document.getElementById(styleId)) return;
+  if (document.getElementById(styleId)) { return; }
   const style = document.createElement('style');
   style.id          = styleId;
   // scroll-behavior: auto covers the CSS-default case (html { scroll-behavior: smooth }).
@@ -106,7 +145,7 @@ function inPageFreezeAnimations(styleId) {
       }
 
       function wrap(obj, method) {
-        if (!obj || typeof obj[method] !== 'function') return;
+        if (!obj || typeof obj[method] !== 'function') { return; }
         const orig = obj[method];
         obj[method] = function vdiffScrollWrap() {
           return orig.apply(this, stripSmooth(Array.from(arguments)));
@@ -125,17 +164,23 @@ function inPageFreezeAnimations(styleId) {
   }
 }
 
-// [BONUS] inPageRestoreAnimations removes the freeze <style> tag, which restores CSS
-// transitions, animations, and the scroll-behavior default.  The scroll API prototype
-// wraps injected by inPageFreezeAnimations are permanent for the tab's JS lifetime —
-// they cannot be safely unwrapped without risking a conflict with the original function
-// reference.  This is acceptable: the wraps are identity-preserving for the two-arg
-// form and only strip behavior:'smooth' from the options form, which is harmless for
-// any page code that runs after capture.  No additional restore logic is needed.
+/**
+ * IN-PAGE — removes the freeze <style> tag, restoring CSS transitions and animations.
+ * The scroll API prototype wraps from inPageFreezeAnimations are NOT removed — unwrapping
+ * them would require holding a reference to the original function across injections, which
+ * is not safe. The wraps are identity-preserving for the two-argument scroll form and only
+ * strip behavior:'smooth' from ScrollToOptions, which is harmless to leave in place.
+ */
 function inPageRestoreAnimations(styleId) {
   document.getElementById(styleId)?.remove();
 }
 
+/**
+ * IN-PAGE — hides all position:fixed and position:sticky elements except those
+ * that are the target of a diff (and their ancestors/descendants). Fixed elements
+ * at different scroll positions would otherwise appear in every keyframe screenshot,
+ * corrupting the crop coordinates for elements beneath them.
+ */
 function inPageSuppressFixed(markAttr, diffSelectors) {
   const protectedEls       = new Set();
   const protectedAncestors = new Set();
@@ -146,7 +191,7 @@ function inPageSuppressFixed(markAttr, diffSelectors) {
 
   for (const sel of (diffSelectors || [])) {
     const el = document.querySelector(sel);
-    if (!el) continue;
+    if (!el) { continue; }
     protectedEls.add(el);
     let ancestor = el.parentElement;
     while (ancestor && ancestor !== document.documentElement) {
@@ -159,9 +204,9 @@ function inPageSuppressFixed(markAttr, diffSelectors) {
   const all    = document.querySelectorAll('*');
   const toHide = [];
   for (const domEl of all) {
-    if (protectedEls.has(domEl) || protectedAncestors.has(domEl) || protectedDescendants.has(domEl)) continue;
+    if (protectedEls.has(domEl) || protectedAncestors.has(domEl) || protectedDescendants.has(domEl)) { continue; }
     const { position } = getComputedStyle(domEl);
-    if (position === 'fixed' || position === 'sticky') toHide.push(domEl);
+    if (position === 'fixed' || position === 'sticky') { toHide.push(domEl); }
   }
   for (const domEl of toHide) {
     domEl.setAttribute(markAttr, '1');
@@ -170,6 +215,7 @@ function inPageSuppressFixed(markAttr, diffSelectors) {
   return { suppressed: toHide.length, domSize: all.length };
 }
 
+/** IN-PAGE — reverses inPageSuppressFixed by removing the display:none and the marker attribute. */
 function inPageRestoreFixed(markAttr) {
   for (const domEl of document.querySelectorAll(`[${markAttr}]`)) {
     domEl.style.removeProperty('display');
@@ -177,6 +223,11 @@ function inPageRestoreFixed(markAttr) {
   }
 }
 
+/**
+ * IN-PAGE — scrolls to targetY and resolves when scrollY is stable within tolerance
+ * for two consecutive animation frames. A hard setTimeout fires unconditionally to
+ * guarantee exit even when rAF is throttled in background tabs.
+ */
 function inPageScrollAndSettle(targetY, fallbackMs) {
   // Stability-poll design — reads window.scrollY each vsync tick and resolves
   // only when the value is stable for two consecutive frames AND within tolerance
@@ -198,26 +249,26 @@ function inPageScrollAndSettle(targetY, fallbackMs) {
 
   return new Promise(function(resolve) {
     const deadline  = Date.now() + fallbackMs;
-    var lastY       = -1;
-    var stableCount = 0;
-    var done        = false;
+    let lastY       = -1;
+    let stableCount = 0;
+    let done        = false;
 
     function finish(y) {
-      if (done) return;
+      if (done) { return; }
       done = true;
       clearTimeout(hardTimer);
       resolve(y);
     }
 
     // Hard deadline — fires even when rAF is throttled/suspended in background tabs.
-    var hardTimer = setTimeout(
+    const hardTimer = setTimeout(
       function() { finish(Math.round(window.scrollY)); },
       fallbackMs
     );
 
     function tick() {
-      if (done) return;
-      var y = Math.round(window.scrollY);
+      if (done) { return; }
+      const y = Math.round(window.scrollY);
       if (y === lastY && Math.abs(y - targetY) <= tolerance) {
         stableCount++;
         if (stableCount >= 2) { finish(y); return; }
@@ -232,11 +283,16 @@ function inPageScrollAndSettle(targetY, fallbackMs) {
   });
 }
 
+/**
+ * IN-PAGE — measures bounding rects for all selector pairs at the current scroll
+ * position. Flags ambiguous selectors (more than one DOM match) so the caller can
+ * fall back to an XPath selector rather than using potentially the wrong element.
+ */
 function inPageGetRects(selectorPairs) {
   const { scrollY } = window;
   return selectorPairs.map(({ id, selector }) => {
     const domEl = selector ? document.querySelector(selector) : null;
-    if (!domEl) return { id, found: false, usable: false };
+    if (!domEl) { return { id, found: false, usable: false }; }
 
     // Uniqueness guard: if more than one element matches this selector,
     // querySelector always returns the FIRST in document order — which may be
@@ -248,7 +304,7 @@ function inPageGetRects(selectorPairs) {
     const r = domEl.getBoundingClientRect();
     const w = Math.round(r.width);
     const h = Math.round(r.height);
-    if (w === 0 && h === 0) return { id, found: true, usable: false, selectorAmbiguous };
+    if (w === 0 && h === 0) { return { id, found: true, usable: false, selectorAmbiguous }; }
     return {
       id,
       found:              true,
@@ -263,6 +319,13 @@ function inPageGetRects(selectorPairs) {
   });
 }
 
+/**
+ * IN-PAGE — re-measures bounding rects after the page has been scrolled to the
+ * keyframe position. Returns the actual scrollY alongside rects so the manifest
+ * builder can detect drift between planned and actual scroll. Flags ambiguous
+ * selectors as inViewport:false to show an amber badge rather than confident
+ * but potentially wrong crop coordinates.
+ */
 function inPageRemeasureRects(selectorPairs) {
   const actualScrollY = Math.round(window.scrollY);
   const vpH           = window.innerHeight;
@@ -320,6 +383,11 @@ function inPageRemeasureRects(selectorPairs) {
   return { actualScrollY, rects };
 }
 
+/**
+ * IN-PAGE — reads ::before and ::after computed styles for each selector. Returns
+ * null for a pseudo-element if its content property is empty or 'none', indicating
+ * no visible pseudo content to capture.
+ */
 function inPageGetPseudoStyles(selectorPairs) {
   const PSEUDO_PROPS = [
     'content', 'display', 'width', 'height', 'background-color', 'color',
@@ -331,18 +399,18 @@ function inPageGetPseudoStyles(selectorPairs) {
   function collectPseudo(el, pseudo) {
     const cs      = window.getComputedStyle(el, pseudo);
     const content = cs.getPropertyValue('content');
-    if (!content || content === 'none' || content === 'normal' || content === '""' || content === "''") return null;
+    if (!content || content === 'none' || content === 'normal' || content === '""' || content === "''") { return null; }
     const styles = Object.create(null);
     for (const p of PSEUDO_PROPS) {
       const val = cs.getPropertyValue(p);
-      if (val) styles[p] = val;
+      if (val) { styles[p] = val; }
     }
     return styles;
   }
 
   return selectorPairs.map(({ id, selector }) => {
     const el = selector ? document.querySelector(selector) : null;
-    if (!el) return { id, before: null, after: null };
+    if (!el) { return { id, before: null, after: null }; }
     return {
       id,
       before: collectPseudo(el, '::before'),
@@ -351,6 +419,10 @@ function inPageGetPseudoStyles(selectorPairs) {
   });
 }
 
+/**
+ * Sends a CDP command to the attached debugger on a tab, bounded by CDP_COMMAND_TIMEOUT_MS.
+ * All CDP calls in this module go through here to enforce a consistent timeout.
+ */
 function sendCDP(tabId, method, params, timeoutMs = CDP_COMMAND_TIMEOUT_MS) {
   return withTimeout(
     chrome.debugger.sendCommand({ tabId }, method, params ?? {}),
@@ -359,6 +431,11 @@ function sendCDP(tabId, method, params, timeoutMs = CDP_COMMAND_TIMEOUT_MS) {
   );
 }
 
+/**
+ * Injects and executes a function in the tab's MAIN JS world, returning the result.
+ * MAIN world (not ISOLATED) is required so the function can read page globals like
+ * window.scrollY and document.body — the isolated world has a separate JS environment.
+ */
 function execInPage(tabId, func, args) {
   return chrome.scripting.executeScript({
     target: { tabId },
@@ -368,16 +445,24 @@ function execInPage(tabId, func, args) {
   }).then(results => results?.[0]?.result);
 }
 
+/**
+ * Converts a base64-encoded string to a Blob via a data URI fetch.
+ * CDP's Page.captureScreenshot returns raw base64 — this is the lightest
+ * conversion path available in the SW without a TextDecoder loop.
+ */
 async function base64ToBlob(base64Data, mimeType) {
   const response = await fetch(`data:${mimeType};base64,${base64Data}`);
   return response.blob();
 }
 
-// scrollbarWidth must be added back so content area = viewport.width after lockScrollbar
-// applies padding-right: scrollbarWidth.  Without the addition, content shrinks by
-// scrollbarWidth px and may cross a CSS responsive breakpoint.
-// targetHeight overrides viewport.height when the DevTools bypass computes a virtual height;
-// undefined falls back to viewport.height so all existing call sites are unaffected.
+/**
+ * Builds the params object for Emulation.setDeviceMetricsOverride. scrollbarWidth
+ * is added to the width so the content area equals the viewport width after
+ * inPageLockScrollbar adds an equivalent padding-right — without this the layout
+ * may cross a CSS responsive breakpoint. targetHeight overrides viewport.height
+ * only when the DevTools bypass computes a virtual height; undefined falls through
+ * to viewport.height so existing call sites without a bypass are unaffected.
+ */
 function buildMetricsOverride(viewport, scrollbarWidth = 0, targetHeight) {
   return {
     width:             Math.round(viewport.width) + Math.round(scrollbarWidth || 0),
@@ -387,6 +472,11 @@ function buildMetricsOverride(viewport, scrollbarWidth = 0, targetHeight) {
   };
 }
 
+/**
+ * Stamps each keyframe with a session-scoped ID, sessionId, and tabRole before
+ * storage. Without prefixing, keyframe IDs from baseline and compare captures
+ * for different sessions would collide in the STORE_VISUAL_KEYFRAMES store.
+ */
 function prefixKeyframes(keyframes, sessionId, role) {
   return keyframes.map(kf => ({
     ...kf,
@@ -417,7 +507,7 @@ function buildManifestFromRemeasured(keyframes, remeasureResults, documentYById,
 
   for (const kf of keyframes) {
     const remeasure = resultByKfId.get(kf.id);
-    if (!remeasure) continue;
+    if (!remeasure) { continue; }
 
     const { actualScrollY, rects } = remeasure;
     const measuredById = new Map(rects.map(r => [r.id, r]));
@@ -521,16 +611,25 @@ function buildManifestFromRemeasured(keyframes, remeasureResults, documentYById,
   return manifest;
 }
 
+/**
+ * Merges ::before / ::after computed style data from inPageGetPseudoStyles into
+ * the manifest entries in place. Entries with no pseudo content are left unchanged.
+ */
 function attachPseudoDataToManifest(manifest, pseudoResults) {
-  if (!pseudoResults?.length) return;
+  if (!pseudoResults?.length) { return; }
   for (const { id, before, after } of pseudoResults) {
     const entry = manifest.get(id);
-    if (!entry) continue;
-    if (before) entry.pseudoBefore = { ...before, parentHpid: id, pseudoType: 'before' };
-    if (after)  entry.pseudoAfter  = { ...after,  parentHpid: id, pseudoType: 'after'  };
+    if (!entry) { continue; }
+    if (before) { entry.pseudoBefore = { ...before, parentHpid: id, pseudoType: 'before' }; }
+    if (after)  { entry.pseudoAfter  = { ...after,  parentHpid: id, pseudoType: 'after'  }; }
   }
 }
 
+/**
+ * Flattens the manifest Map into an array of IDB-ready rect records, one per element
+ * per tab role. These are written to STORE_VISUAL_ELEMENT_RECTS and read back by
+ * the popup's visual diff renderer to draw highlight overlays.
+ */
 function buildElementRectRecords(sessionId, role, manifest) {
   const records = [];
   for (const [elementKey, entry] of manifest.entries()) {
@@ -562,6 +661,11 @@ function buildElementRectRecords(sessionId, role, manifest) {
   return records;
 }
 
+/**
+ * Builds the final diff Map keyed by hpid. Only elements with at least one manifest
+ * entry (baseline or compare) are included — elements where both manifests returned
+ * nothing (e.g. not found in either tab) are dropped silently.
+ */
 function buildDiffMap(elements, baselineManifest, compareManifest) {
   const diffs = new Map();
 
@@ -569,7 +673,7 @@ function buildDiffMap(elements, baselineManifest, compareManifest) {
     const hpid          = el.baselineElement.hpid;
     const baselineEntry = baselineManifest.get(hpid) ?? null;
     const compareEntry  = compareManifest.get(hpid)  ?? null;
-    if (!baselineEntry && !compareEntry) continue;
+    if (!baselineEntry && !compareEntry) { continue; }
     diffs.set(hpid, {
       baseline: baselineEntry,
       compare:  compareEntry,
@@ -580,18 +684,26 @@ function buildDiffMap(elements, baselineManifest, compareManifest) {
   return diffs;
 }
 
+/** Filters comparison results to only elements that have at least one CSS difference. */
 function extractModifiedElements(comparisonResult) {
   return comparisonResult.comparison.results.filter(r => (r.totalDifferences ?? 0) > 0);
 }
 
+/**
+ * Extracts the CSS selector for one side of a matched element pair. Returns null
+ * if the element for the given role is absent (unmatched) or has no cssSelector.
+ * The HPID of the baseline element is always used as the shared identifier regardless
+ * of role so baseline and compare entries align in the diff map.
+ */
 function extractSelectorPair(element, role) {
   const roleEl = role === 'baseline' ? element.baselineElement : element.compareElement;
-  if (!roleEl) return null;
+  if (!roleEl) { return null; }
   const { cssSelector } = roleEl;
-  if (!cssSelector) return null;
+  if (!cssSelector) { return null; }
   return { id: element.baselineElement.hpid, selector: cssSelector };
 }
 
+/** Maps a list of modified elements to selector pairs for one role, dropping nulls. */
 function buildSelectorPairs(elements, role) {
   return elements.map(el => extractSelectorPair(el, role)).filter(Boolean);
 }
@@ -626,7 +738,7 @@ async function captureKeyframe(tabId, keyframe, kfSelectorPairs, sessionId, inde
   for (let attempt = 0; attempt < SCROLL_VERIFY_RETRY_MAX; attempt++) {
     const readY = await execInPage(tabId, () => Math.round(window.scrollY));
     actualScrollY = readY;
-    if (Math.abs(readY - scrollY) <= SCROLL_VERIFY_TOLERANCE_PX) break;
+    if (Math.abs(readY - scrollY) <= SCROLL_VERIFY_TOLERANCE_PX) { break; }
     logger.warn(`VDIFF ${kfTag} scroll mismatch`, { expected: scrollY, actual: readY, attempt });
     await execInPage(tabId, inPageScrollAndSettle, [scrollY, SCROLL_VERIFY_RETRY_MS]);
   }
@@ -723,6 +835,11 @@ async function captureKeyframe(tabId, keyframe, kfSelectorPairs, sessionId, inde
   };
 }
 
+/**
+ * Iterates all keyframes sequentially for a single tab role. Sequential execution
+ * is required — each keyframe calls Page.bringToFront and scrolls the tab, which
+ * are stateful operations that must not interleave with another keyframe's scroll.
+ */
 async function captureAllKeyframes(tabId, keyframes, selectorById, sessionId, role, actualDPR, documentHeight) {
   const total          = keyframes.length;
   const roleStart      = Date.now();
@@ -752,6 +869,12 @@ async function captureAllKeyframes(tabId, keyframes, selectorById, sessionId, ro
   return remeasureResults;
 }
 
+/**
+ * Restores the page to its pre-capture state: unlocks the scrollbar, shows
+ * suppressed fixed elements, removes the animation freeze style, scrolls back to 0,
+ * and clears the device metrics override. All steps swallow errors — restore must
+ * never throw, as it is called from a finally block.
+ */
 async function safeRestorePage(tabId) {
   await execInPage(tabId, inPageUnlockScrollbar).catch(() => undefined);
   await execInPage(tabId, inPageRestoreFixed, [SUPPRESS_ATTR]).catch(() => undefined);
@@ -760,10 +883,20 @@ async function safeRestorePage(tabId) {
   await sendCDP(tabId, 'Emulation.clearDeviceMetricsOverride').catch(() => undefined);
 }
 
+/**
+ * Detaches the CDP debugger from a tab. Swallows errors — called unconditionally
+ * in the finally block of runTabCapture regardless of how capture ended.
+ */
 async function safeDetach(tabId) {
   await chrome.debugger.detach({ tabId }).catch(() => undefined);
 }
 
+/**
+ * Attaches the CDP debugger to a tab, first force-detaching any stale session.
+ * Stale sessions arise when a previous capture was killed mid-flight before its
+ * finally block ran. Without cleanup, the subsequent attach fails with "Another
+ * debugger is already attached".
+ */
 async function tryAttach(tabId) {
   try {
     const targets = await chrome.debugger.getTargets();
@@ -771,10 +904,10 @@ async function tryAttach(tabId) {
     if (stale) {
       logger.warn(`VDIFF stale debugger found on tab ${tabId} — force-detaching`, { targetId: stale.id });
       await chrome.debugger.detach({ tabId }).catch(() => undefined);
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise(r => { setTimeout(r, 200); });
     }
   } catch (e) {
-    logger.warn(`VDIFF getTargets failed — proceeding with attach`, { error: e.message });
+    logger.warn('VDIFF getTargets failed — proceeding with attach', { error: e.message });
   }
 
   await withTimeout(
@@ -807,7 +940,7 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
   const t1       = Date.now();
   const viewport = await execInPage(tabId, inPageGetViewport);
   logger.info(`VDIFF [${role}] inPageGetViewport DONE`, { elapsed: ms(t1), viewport });
-  if (!viewport) throw new Error(`Failed to read viewport from tab ${tabId}`);
+  if (!viewport) { throw new Error(`Failed to read viewport from tab ${tabId}`); }
 
   // ── DevTools bypass ─────────────────────────────────────────────────────
   //
@@ -961,6 +1094,12 @@ async function executeTabCapture(tabId, selectorPairs, sessionId, role) {
   return { manifest, devToolsWarning };
 }
 
+/**
+ * Attaches the CDP debugger, runs executeTabCapture, then always detaches and
+ * restores the page in the finally block — regardless of success or failure.
+ * Returns null (not throws) on a debugger conflict so captureRoleSequential can
+ * degrade gracefully rather than aborting the entire comparison.
+ */
 async function runTabCapture(tabId, selectorPairs, sessionId, role) {
   let attached = false;
   const t0 = Date.now();
@@ -994,8 +1133,13 @@ async function runTabCapture(tabId, selectorPairs, sessionId, role) {
   }
 }
 
+/**
+ * Entry point for capturing one tab role. Guards against a null tabId (same-tab
+ * comparison where compare tab is absent) and normalises the null return from
+ * runTabCapture on debugger conflict into an empty manifest.
+ */
 async function captureRoleSequential(tabId, selectorPairs, sessionId, role) {
-  if (tabId == null) {
+  if (tabId === null || tabId === undefined) {
     logger.warn(`VDIFF [${role}] tabId is null, skipping`);
     return { manifest: new Map(), devToolsWarning: null };
   }
@@ -1003,10 +1147,20 @@ async function captureRoleSequential(tabId, selectorPairs, sessionId, role) {
   // runTabCapture can return:
   //   null                         — debugger conflict (Another debugger already attached)
   //   { manifest, devToolsWarning } — normal path (devToolsWarning may be null or populated)
-  if (result === null) return { manifest: new Map(), devToolsWarning: null };
+  if (result === null) { return { manifest: new Map(), devToolsWarning: null }; }
   return { manifest: result.manifest ?? new Map(), devToolsWarning: result.devToolsWarning ?? null };
 }
 
+/**
+ * Top-level visual diff entry point. Extracts modified elements, runs sequential
+ * CDP captures on both tabs, builds the diff map, and returns a status object.
+ * Never throws — all failures are caught and returned as {status:'failed'}.
+ * Called by compare-workflow.js via runVisualPhase.
+ *
+ * @param {Object} comparisonResult - Full comparison result from compareReports.
+ * @param {{baselineTabId: number, compareTabId: number}|null} tabContext
+ * @returns {Promise<{status: string, reason: string|null, diffs: Map, sessionId?: string, devToolsWarnings: Array}>}
+ */
 async function captureVisualDiffs(comparisonResult, tabContext) {
   const sessionStart = Date.now();
   logger.info('VDIFF captureVisualDiffs ENTER');

@@ -1,40 +1,47 @@
+/**
+ * Parses and imports extraction reports from JSON, CSV, and Excel files into IDB.
+ * Runs in the MV3 service worker.
+ * Failure mode contained here: all parse and validation errors are returned as
+ * {success:false} — this function never throws. The one exception is the isDuplicate
+ * path which returns an extra field so the caller can offer a replace prompt.
+ * Callers: popup.js (importReportFromFile).
+ */
 import { get } from '../config/defaults.js';
 import logger from '../infrastructure/logger.js';
+import { versionAtLeast } from './compare-workflow.js';
 import { isValidReport, loadAllReports, saveReport } from './report-manager.js';
 
 const ELEMENT_HEADER_ANCHORS = new Set(['hpid', 'tag name', 'css selector', 'xpath', 'absolute hpid']);
 const MIN_ANCHOR_MATCHES     = 2;
 
-function _parseVersion(versionStr) {
-  const parts = (versionStr ?? '0.0').split('.');
-  return { major: parseInt(parts[0], 10) || 0, minor: parseInt(parts[1], 10) || 0 };
-}
-
-function _versionAtLeast(versionStr, minStr) {
-  const subject = _parseVersion(versionStr);
-  const minimum = _parseVersion(minStr);
-  if (subject.major !== minimum.major) return subject.major > minimum.major;
-  return subject.minor >= minimum.minor;
-}
-
+/** Infers the import format from the file extension. Returns null for unsupported types. */
 function _detectFormat(filename) {
   const ext = filename.toLowerCase().split('.').pop();
-  if (ext === 'json')                  return 'json';
-  if (ext === 'csv')                   return 'csv';
-  if (ext === 'xlsx' || ext === 'xls') return 'excel';
+  if (ext === 'json')                  {return 'json';}
+  if (ext === 'csv')                   {return 'csv';}
+  if (ext === 'xlsx' || ext === 'xls') {return 'excel';}
   return null;
 }
 
+/**
+ * Parses a CSV/Excel cell value as JSON. Returns undefined (not null) so callers
+ * can distinguish an empty cell from a cell containing the JSON string "null".
+ */
 function _safeJsonParse(cell) {
-  if (!cell || !String(cell).trim()) return undefined;
+  if (!cell || !String(cell).trim()) {return undefined;}
   try { return JSON.parse(cell); } catch { return undefined; }
 }
 
+/**
+ * Returns true if a record row contains at least MIN_ANCHOR_MATCHES of the known
+ * element column headers. Used to locate the header row in files where metadata
+ * rows precede the data table.
+ */
 function _looksLikeElementHeader(record) {
   let matches = 0;
   for (const cell of record) {
-    if (ELEMENT_HEADER_ANCHORS.has(String(cell).trim().toLowerCase())) matches++;
-    if (matches >= MIN_ANCHOR_MATCHES) return true;
+    if (ELEMENT_HEADER_ANCHORS.has(String(cell).trim().toLowerCase())) {matches++;}
+    if (matches >= MIN_ANCHOR_MATCHES) { return true; }
   }
   return false;
 }
@@ -42,6 +49,12 @@ function _looksLikeElementHeader(record) {
 const REQUIRED_COLUMNS    = ['hpid', 'tag name'];
 const RECOMMENDED_COLUMNS = ['css selector', 'xpath'];
 
+/**
+ * Validates the parsed header index against required and recommended column lists.
+ * Missing required columns return {valid:false} — import cannot proceed without them.
+ * Missing recommended columns return {valid:true, warning} — import continues but
+ * some matching phases will be skipped during comparison.
+ */
 function _validateColumns(headerIndex) {
   const missing = REQUIRED_COLUMNS.filter(col => !(col in headerIndex));
   if (missing.length > 0) {
@@ -60,15 +73,23 @@ function _validateColumns(headerIndex) {
   };
 }
 
+/**
+ * Builds a lowercase column-name → index map. First occurrence wins on duplicate
+ * headers, matching the behaviour of most spreadsheet tools.
+ */
 function _makeHeaderIndex(headers) {
   const index = {};
-headers.forEach((h, i) => {
+  headers.forEach((h, i) => {
     const key = String(h).trim().toLowerCase();
-    if (!(key in index)) index[key] = i;
+    if (!(key in index)) {index[key] = i;}
   });
   return index;
 }
 
+/**
+ * Extracts bounding rect fields from a row. Returns undefined (not an empty object)
+ * when no rect columns are present so the field can be omitted cleanly from the element.
+ */
 function _parseRect(headerIndex, row) {
   const fields = [
     ['rect x', 'x'], ['rect y', 'y'], ['rect top', 'top'], ['rect left', 'left'],
@@ -78,13 +99,18 @@ function _parseRect(headerIndex, row) {
   let hasAny   = false;
   for (const [col, key] of fields) {
     const idx = headerIndex[col];
-    if (idx === undefined) continue;
+    if (idx === undefined) {continue;}
     const raw = row[idx];
-    if (raw !== '' && raw != null) { rect[key] = Number(raw); hasAny = true; }
+    if (raw !== '' && raw !== null) { rect[key] = Number(raw); hasAny = true; }
   }
   return hasAny ? rect : undefined;
 }
 
+/**
+ * RFC 4180 CSV parser handling quoted fields, escaped double-quotes (doubled ""),
+ * and both CRLF and LF line endings. Not replaced with split(',') because quoted
+ * cells can contain commas and newlines that a simple split would incorrectly break.
+ */
 function _splitCsvRecords(text) {
   const records = [];
   let record    = [];
@@ -107,10 +133,15 @@ function _splitCsvRecords(text) {
     }
   }
   record.push(cell);
-  if (record.some(c => c !== '')) records.push(record);
+  if (record.some(c => c !== '')) {records.push(record);}
   return records;
 }
 
+/**
+ * Maps a CSV/Excel row to an element object. Empty strings are converted to
+ * undefined via `|| undefined`, then all undefined keys are deleted before return
+ * so the element has no empty-string noise in its property set.
+ */
 function _buildElementFromRow(headerIndex, row, cssProperties) {
   const col = (name) => {
     const idx = headerIndex[name.toLowerCase()];
@@ -129,7 +160,7 @@ function _buildElementFromRow(headerIndex, row, cssProperties) {
     xpath:                col('XPath')                    || undefined,
     shadowPath:           col('Shadow Path')              || undefined,
     tier:                 col('Tier')                     || undefined,
-    depth:                col('Depth') !== '' ? Number(col('Depth')) : undefined,
+    depth: col('Depth') !== '' ? Number(col('Depth')) : undefined,
     pageSection:          col('Page Section')             || undefined,
     classHierarchy:       _safeJsonParse(col('Class Hierarchy')),
     neighbours:           _safeJsonParse(col('Neighbours')),
@@ -140,16 +171,21 @@ function _buildElementFromRow(headerIndex, row, cssProperties) {
   const styles = {};
   cssProperties.forEach(prop => {
     const idx = headerIndex[prop.toLowerCase()];
-    if (idx === undefined) return;
+    if (idx === undefined) {return;}
     const val = row[idx];
-    if (val !== '' && val != null) styles[prop] = String(val);
+    if (val !== '' && val !== null) {styles[prop] = String(val);}
   });
-  if (Object.keys(styles).length > 0) el.styles = styles;
+  if (Object.keys(styles).length > 0) {el.styles = styles;}
 
-  Object.keys(el).forEach(k => { if (el[k] === undefined) delete el[k]; });
+  Object.keys(el).forEach(k => { if (el[k] === undefined) {delete el[k];} });
   return el;
 }
 
+/**
+ * Constructs a report object from a key/value metadata map and the parsed element list.
+ * The triple-case key lookup (original, lowercase, uppercase) handles CSVs from tools
+ * that export metadata headers with inconsistent capitalisation.
+ */
 function _buildReportFromMeta(metaMap, elements) {
   const get = (key) => metaMap[key] ?? metaMap[key.toLowerCase()] ?? metaMap[key.toUpperCase()] ?? '';
   return {
@@ -169,6 +205,7 @@ function _buildReportFromMeta(metaMap, elements) {
 
 function _parseCsv(text) {
   const cssProperties = get('extraction.cssProperties', []);
+  // Strip UTF-8 BOM (\uFEFF) prepended by Excel-generated CSVs — corrupts the first cell without this.
   const raw           = text.replace(/^\uFEFF/, '');
   const records       = _splitCsvRecords(raw);
 
@@ -199,12 +236,12 @@ function _parseCsv(text) {
 
   const headerIndex  = _makeHeaderIndex(records[headerIdx]);
   const colCheck     = _validateColumns(headerIndex);
-  if (!colCheck.valid) return { success: false, error: colCheck.error };
+  if (!colCheck.valid) {return { success: false, error: colCheck.error };}
 
   const elements = [];
   for (let i = headerIdx + 1; i < records.length; i++) {
     const row = records[i];
-    if (row.every(c => c === '')) continue;
+    if (row.every(c => c === '')) {continue;}
     elements.push(_buildElementFromRow(headerIndex, row, cssProperties));
   }
 
@@ -212,8 +249,9 @@ function _parseCsv(text) {
 }
 
 function _parseExcel(buffer) {
+  // XLSX is bundled separately and injected via globalThis — not available in all contexts.
   const XLSX = globalThis.XLSX;
-  if (!XLSX) return { success: false, error: 'Excel support unavailable — try JSON format' };
+  if (!XLSX) {return { success: false, error: 'Excel support unavailable — try JSON format' };}
 
   const cssProperties = get('extraction.cssProperties', []);
   const wb            = XLSX.read(buffer, { type: 'array' });
@@ -228,7 +266,7 @@ function _parseExcel(buffer) {
   if (metaWs) {
     const metaRows = XLSX.utils.sheet_to_json(metaWs, { header: 1 });
     for (const row of metaRows) {
-      if (row[0] && row[1] !== undefined) metaMap[String(row[0]).trim()] = String(row[1] ?? '');
+      if (row[0] && row[1] !== undefined) {metaMap[String(row[0]).trim()] = String(row[1] ?? '');}
     }
   }
 
@@ -238,7 +276,7 @@ function _parseExcel(buffer) {
 
   if (!elemWs) {
     for (const name of wb.SheetNames) {
-      if (name === 'Metadata') continue;
+      if (name === 'Metadata') {continue;}
       const ws      = wb.Sheets[name];
       const preview = XLSX.utils.sheet_to_json(ws, { header: 1, range: 0 });
       if (preview.length > 0 && _looksLikeElementHeader(preview[0].map(String))) {
@@ -253,11 +291,11 @@ function _parseExcel(buffer) {
   }
 
   const elemRows = XLSX.utils.sheet_to_json(elemWs, { defval: '' });
-  if (elemRows.length === 0) return { success: true, warning: null, report: _buildReportFromMeta(metaMap, []) };
+  if (elemRows.length === 0) {return { success: true, warning: null, report: _buildReportFromMeta(metaMap, []) };}
 
   const firstHeaderIndex = _makeHeaderIndex(Object.keys(elemRows[0]));
   const colCheck         = _validateColumns(firstHeaderIndex);
-  if (!colCheck.valid) return { success: false, error: colCheck.error };
+  if (!colCheck.valid) {return { success: false, error: colCheck.error };}
 
   const elements = elemRows.map(rowObj => {
     const headerIndex = _makeHeaderIndex(Object.keys(rowObj));
@@ -268,6 +306,18 @@ function _parseExcel(buffer) {
   return { success: true, warning: colCheck.warning, report: _buildReportFromMeta(metaMap, elements) };
 }
 
+/**
+ * Reads, parses, validates, and persists an extraction report from a user-supplied file.
+ * Never throws — all failures are returned as {success:false, error}.
+ *
+ * The isDuplicate path returns {success:false, isDuplicate:true, existingReport} so
+ * the caller can surface a "replace existing report?" prompt before retrying with
+ * forceReplace:true.
+ *
+ * @param {File} file
+ * @param {{forceReplace?: boolean}} [options]
+ * @returns {Promise<{success: boolean, report?: Object, warning?: string, isDuplicate?: boolean, existingReport?: Object, error?: string}>}
+ */
 async function importReportFromFile(file, { forceReplace = false } = {}) {
   if (file.size === 0) {
     return { success: false, error: 'File is empty' };
@@ -291,13 +341,13 @@ async function importReportFromFile(file, { forceReplace = false } = {}) {
     } else if (format === 'csv') {
       const text   = await file.text();
       const result = _parseCsv(text);
-      if (!result.success) return result;
+      if (!result.success) {return result;}
       parsed        = result.report;
       importWarning = result.warning ?? null;
     } else {
       const buffer = await file.arrayBuffer();
       const result = _parseExcel(buffer);
-      if (!result.success) return result;
+      if (!result.success) {return result;}
       parsed        = result.report;
       importWarning = result.warning ?? null;
     }
@@ -311,7 +361,7 @@ async function importReportFromFile(file, { forceReplace = false } = {}) {
     parsed.totalElements = parsed.elements.length;
   }
 
-  if (parsed.version && !_versionAtLeast(parsed.version, '3.0')) {
+  if (parsed.version && !versionAtLeast(parsed.version, '3.0')) {
     return { success: false, error: 'Report version too old — must be 3.0 or higher' };
   }
 
@@ -339,4 +389,3 @@ async function importReportFromFile(file, { forceReplace = false } = {}) {
 }
 
 export { importReportFromFile };
-

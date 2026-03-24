@@ -1,3 +1,10 @@
+/**
+ * Ordered XPath selector strategies organised into 23 tiers (0–22) by stability.
+ * Lower tier = higher confidence (exact text > test attributes > positional index).
+ * Runs in the content-script context; all methods are synchronous.
+ * Invariant: every static method returns an array — never null or undefined.
+ * Called by: xpath/generator.js via `getAllStrategies()`.
+ */
 import {
   cleanText,
   isStableId,
@@ -11,15 +18,25 @@ import {
 } from '../selector-utils.js';
 import { escapeXPath } from './validator.js';
 
+/**
+ * Confidence score per tier. Exported for the generator to attach to results.
+ * Note: tier 6 (semantic ancestor) outscores tier 5 (data-*) because an ancestor
+ * landmark with an ID is a very strong anchor — intentional.
+ */
 const TIER_ROBUSTNESS = {
   0: 99, 1: 98, 2: 95, 3: 94, 4: 88, 5: 85, 6: 93, 7: 80, 8: 82, 9: 75,
   10: 76, 11: 80, 12: 72, 13: 74, 14: 68, 15: 64, 16: 64, 17: 60, 18: 58,
   19: 90, 20: 80, 21: 65, 22: 30
 };
 
+/**
+ * Collection of static XPath strategy methods covering 23 tiers.
+ * Each method returns an array of `{ xpath, strategy, tier }` candidates.
+ * The generator tries candidates in tier order and accepts the first unique one.
+ */
 class XPathStrategies {
 
-  // Tier 0: Exact visible text
+  /** Tier 0 — exact visible text; highest confidence but fragile to i18n/copy changes. */
   static tier0ExactText(element, tag) {
     const results = [];
     const text = cleanText(element.textContent);
@@ -29,7 +46,7 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 1: Test automation attributes
+  /** Tier 1 — test-automation attributes; stable by engineering convention. */
   static tier1TestAttributes(element, tag) {
     const results = [];
     const testAttrs = ['data-testid', 'data-test', 'data-qa', 'data-cy', 'data-automation-id'];
@@ -42,7 +59,7 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 2: Stable ID
+  /** Tier 2 — stable `id` attribute; filtered by `isStableId` to exclude generated values. */
   static tier2StableId(element, tag) {
     const results = [];
     const {id} = element;
@@ -52,7 +69,10 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 3: Normalized text (normalize-space)
+  /**
+   * Tier 3 — `normalize-space(.)` text match; more forgiving than `text()` for mixed-content nodes
+   * where whitespace-only text nodes would break an exact match.
+   */
   static tier3NormalizedText(element, tag) {
     const results = [];
     const text = cleanText(element.textContent);
@@ -62,11 +82,10 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 4: Stable attributes (data-*, role, type, name, etc.)
-  // FIX: collectStableAttributes returns [{name,value}] array — iterate correctly
+  /** Tier 4 — highest-priority stable attributes from `collectStableAttributes`; capped at 3 candidates. */
   static tier4StableAttributes(element, tag) {
     const results = [];
-    const stableAttrs = collectStableAttributes(element); // [{name, value}, ...]
+    const stableAttrs = collectStableAttributes(element);
     for (const attr of stableAttrs.slice(0, 3)) {
       if (attr && attr.name && attr.value && isStableValue(attr.value)) {
         results.push({ xpath: `//${tag}[@${attr.name}=${escapeXPath(attr.value)}]`, strategy: 'stable-attr', tier: 4 });
@@ -75,10 +94,10 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 5: data-* attributes specifically
+  /** Tier 5 — `data-*` attributes; capped at 3 to avoid runaway candidate generation. */
   static tier5DataAttributes(element, tag) {
     const results = [];
-    const dataAttrs = getDataAttributes(element); // {name: value}
+    const dataAttrs = getDataAttributes(element);
     for (const [name, value] of Object.entries(dataAttrs).slice(0, 3)) {
       if (name && value && isStableValue(value)) {
         results.push({ xpath: `//${tag}[@${name}=${escapeXPath(value)}]`, strategy: 'data-attr', tier: 5 });
@@ -87,7 +106,10 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 6: Semantic ancestor (form, nav, header, etc.) with stable ID
+  /**
+   * Tier 6 — scopes the tag under the nearest semantic landmark ancestor (form, nav, etc.)
+   * that has a stable ID. A landmark with a stable ID is a very reliable anchor.
+   */
   static tier6SemanticAncestor(element, tag) {
     const results = [];
     const ancestor = findBestSemanticAncestor(element);
@@ -100,11 +122,12 @@ class XPathStrategies {
     return results;
   }
 
-  static tier7NearbyText(_element, _tag) {
+  /** Tier 7 — nearby text anchor (reserved, not yet implemented). */
+  static tier7NearbyText() {
     return [];
   }
 
-  // Tier 8: Sibling with stable ID
+  /** Tier 8 — anchors the element relative to an immediately adjacent sibling with a stable ID. */
   static tier8SiblingContext(element, tag) {
     const results = [];
     const prev = element.previousElementSibling;
@@ -120,13 +143,15 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 9: Closest stable-attribute ancestor as root + descendant tag
-  // FIX: getStableAncestorChain returns [{element, attr, depth}] — use anc.element not anc directly
+  /**
+   * Tier 9 — scopes the tag under the closest stable-attribute ancestor.
+   * Uses the first entry from `getStableAncestorChain` (closest ancestor).
+   */
   static tier9AncestorChain(element, tag) {
     const results = [];
-    const chain = getStableAncestorChain(element, 3); // [{element, attr, depth}]
+    const chain = getStableAncestorChain(element, 3);
     if (chain.length === 0) {return results;}
-    const ancestor = chain[0]; // closest ancestor with a stable attribute
+    const ancestor = chain[0];
     const ancTag = getUniversalTag(ancestor.element);
     if (ancestor.element.id && isStableId(ancestor.element.id)) {
       results.push({ xpath: `//${ancTag}[@id=${escapeXPath(ancestor.element.id)}]//${tag}`, strategy: 'ancestor-chain', tier: 9 });
@@ -136,7 +161,7 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 10: type + name (form inputs)
+  /** Tier 10 — `[type][name]` compound predicate; reliable for named form inputs. */
   static tier10TypeAndName(element, tag) {
     const results = [];
     const type = element.getAttribute('type');
@@ -147,7 +172,7 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 11: aria-label
+  /** Tier 11 — `aria-label`; accessible but may change with i18n. */
   static tier11AriaLabel(element, tag) {
     const results = [];
     const ariaLabel = element.getAttribute('aria-label');
@@ -157,7 +182,10 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 12: Contains first few words of text content
+  /**
+   * Tier 12 — `contains(normalize-space(.),…)` with the first 4 words of text.
+   * More resilient than exact text for elements with trailing whitespace or punctuation.
+   */
   static tier12PartialText(element, tag) {
     const results = [];
     const text = cleanText(element.textContent);
@@ -173,7 +201,11 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 13: Parent with stable ID + indexed direct child
+  /**
+   * Tier 13 — parent element with a stable ID plus an optional positional index.
+   * Uses same-tag sibling count (not all children) for position predicates — XPath
+   * `tag[N]` selects the Nth element of that specific tag type, not the Nth child.
+   */
   static tier13ParentWithId(element, tag) {
     const results = [];
     const parent = element.parentElement;
@@ -192,7 +224,7 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 14: Class combination (stable classes only)
+  /** Tier 14 — class name containment; excludes CSS-in-JS generated class names. */
   static tier14ClassCombination(element, tag) {
     const results = [];
     const classAttr = element.getAttribute('class');
@@ -207,14 +239,14 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 15: Walk up to find nearest ancestor with any stable attribute
+  /** Tier 15 — walks up to 5 ancestors looking for any stable attribute to scope the tag under. */
   static tier15AncestorAttributePath(element, tag) {
     const results = [];
     let current = element.parentElement;
     let depth = 0;
     while (current && depth < 5) {
       const currTag = getUniversalTag(current);
-      const attrs = collectStableAttributes(current); // [{name, value}]
+      const attrs = collectStableAttributes(current);
       if (attrs.length > 0) {
         const attr = attrs[0];
         results.push({ xpath: `//${currTag}[@${attr.name}=${escapeXPath(attr.value)}]//${tag}`, strategy: 'ancestor-attr-path', tier: 15 });
@@ -226,7 +258,7 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 16: role attribute
+  /** Tier 16 — `role` attribute; common on custom components but not always unique. */
   static tier16RoleAttribute(element, tag) {
     const results = [];
     const role = element.getAttribute('role');
@@ -236,7 +268,7 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 17: href or src
+  /** Tier 17 — `href` / `src` attribute; length-capped and `javascript:` URIs excluded. */
   static tier17HrefOrSrc(element, tag) {
     const results = [];
     const href = element.getAttribute('href');
@@ -250,7 +282,7 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 18: alt or title
+  /** Tier 18 — `alt` / `title` attribute; useful for images and icon buttons. */
   static tier18AltOrTitle(element, tag) {
     const results = [];
     const alt = element.getAttribute('alt');
@@ -264,9 +296,12 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 19: Absolute path (full ancestor chain)
-  // FIX: Use same-tag sibling count for position predicates, not all-children count
-  static tier19AbsolutePath(element, tag) {
+  /**
+   * Tier 19 — absolute positional path from document root; breaks on DOM reorders
+   * but is always unique. Uses same-tag sibling count for position predicates, not
+   * all-children count — XPath `tag[N]` is type-specific, not child-position-specific.
+   */
+  static tier19AbsolutePath(element) {
     const results = [];
     let current = element;
     const path = [];
@@ -277,7 +312,6 @@ class XPathStrategies {
         break;
       }
       const currTag = getUniversalTag(current);
-      // FIX: same-tag siblings only — XPath position predicates are tag-specific
       const sameTag = Array.from(parent.children).filter(c => c.tagName === current.tagName);
       if (sameTag.length === 1) {
         path.unshift(currTag);
@@ -293,8 +327,11 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 20: Tag position within direct parent
-  // FIX: Removed newline from template literal. Use parent.children, not querySelectorAll (deep).
+  /**
+   * Tier 20 — tag position within direct parent only.
+   * Uses `parent.children` (direct children) not `querySelectorAll` (deep descendants)
+   * so the position index is accurate for direct-child XPath axes.
+   */
   static tier20TagWithPosition(element, tag) {
     const results = [];
     const parent = element.parentElement;
@@ -308,7 +345,7 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 21: Tag position within grandparent > parent context
+  /** Tier 21 — tag position scoped under grandparent › parent context; more specific than tier 20. */
   static tier21TypePosition(element, tag) {
     const results = [];
     const parent = element.parentElement;
@@ -323,7 +360,10 @@ class XPathStrategies {
     return results;
   }
 
-  // Tier 22: Global document index — last resort
+  /**
+   * Tier 22 — global document position index; O(n) over all DOM elements.
+   * Last resort — always unique but breaks on any DOM insertion before this element.
+   */
   static tier22FallbackIndex(element) {
     const results = [];
     const allElements = Array.from(document.querySelectorAll('*'));
@@ -335,6 +375,10 @@ class XPathStrategies {
   }
 }
 
+/**
+ * Returns the full ordered strategy list for use by the generator.
+ * @returns {Array<{tier: number, fn: Function, name: string}>}
+ */
 function getAllStrategies() {
   return [
     { tier: 0,  fn: (el, tag) => XPathStrategies.tier0ExactText(el, tag),             name: 'exact-text' },

@@ -1,8 +1,20 @@
+/**
+ * Builds a multi-sheet XLSX workbook from a comparison result and triggers a download.
+ * Runs in the popup context — depends on the global XLSX library loaded via libs/xlsx.full.min.js.
+ * Invariant: never throws — all failures return {success:false}.
+ * Called by: export-workflow.js → exportToExcel().
+ */
 import { get }  from '../../../config/defaults.js';
 import logger    from '../../../infrastructure/logger.js';
 
+/** White text used on all dark header cells. */
 const HEADER_FONT_COLOR = 'FFFFFF';
 
+/**
+ * Retrieves the global XLSX library object.
+ * Throws a descriptive error when the library has not been loaded — this surfaces
+ * as a {success:false} result at the exportToExcel call site rather than a silent failure.
+ */
 function getXLSX() {
   const {XLSX} = globalThis;
   if (!XLSX) {
@@ -11,6 +23,7 @@ function getXLSX() {
   return XLSX;
 }
 
+/** Maps a severity string to the hex fill color configured in export.excel.*Color. */
 function _severityColor(severity) {
   return {
     critical: get('export.excel.criticalColor'),
@@ -20,6 +33,7 @@ function _severityColor(severity) {
   }[severity] ?? 'FFFFFF';
 }
 
+/** Returns an XLSX cell style object for header row cells. */
 function _headerCellStyle(headerColor) {
   return {
     fill:      { patternType: 'solid', fgColor: { rgb: headerColor } },
@@ -28,6 +42,7 @@ function _headerCellStyle(headerColor) {
   };
 }
 
+/** Returns an XLSX cell style object for a severity-coloured data cell. */
 function _severityCellStyle(severity) {
   const color  = _severityColor(severity);
   const isDark = severity === 'critical' || severity === 'high';
@@ -37,30 +52,38 @@ function _severityCellStyle(severity) {
   };
 }
 
+/** Applies the configured header background and bold white font to every cell in row 0. */
 function _applyHeaderRow(ws, XLSX) {
-  if (!ws['!ref']) {return;}
+  if (!ws['!ref']) { return; }
   const headerColor = get('export.excel.headerColor');
   const range = XLSX.utils.decode_range(ws['!ref']);
   for (let {c} = range.s; c <= range.e.c; c++) {
     const addr = XLSX.utils.encode_cell({ r: 0, c });
-    if (ws[addr]) {ws[addr].s = _headerCellStyle(headerColor);}
+    if (ws[addr]) { ws[addr].s = _headerCellStyle(headerColor); }
   }
 }
 
+/** Freezes the top row so headers stay visible when scrolling large sheets. */
 function _applyFreezePane(ws) {
   ws['!freeze'] = { xSplit: 0, ySplit: 1, topLeftCell: 'A2', state: 'frozen' };
 }
 
+/** Colours every data cell in the severity column based on its string value. */
 function _applySeverityColumnStyles(ws, XLSX, severityColIndex, dataStartRow = 1) {
-  if (!ws['!ref']) {return;}
+  if (!ws['!ref']) { return; }
   const range = XLSX.utils.decode_range(ws['!ref']);
   for (let r = dataStartRow; r <= range.e.r; r++) {
     const addr = XLSX.utils.encode_cell({ r, c: severityColIndex });
     const cell = ws[addr];
-    if (cell?.v) {cell.s = _severityCellStyle(cell.v);}
+    if (cell?.v) { cell.s = _severityCellStyle(cell.v); }
   }
 }
 
+/**
+ * Builds a five-sheet workbook and triggers an XLSX download. Never throws.
+ * @param {object} comparisonResult - Fully-resolved comparison result from compare-workflow.
+ * @returns {{ success: true, filename: string } | { success: false, error: string }}
+ */
 function exportToExcel(comparisonResult) {
   try {
     const XLSX = getXLSX();
@@ -83,6 +106,7 @@ function exportToExcel(comparisonResult) {
   }
 }
 
+/** Appends the Summary sheet with report metadata and severity counts. */
 function _addSummarySheet(wb, result, XLSX) {
   const headerColor = get('export.excel.headerColor');
   const s           = result.comparison.summary;
@@ -136,6 +160,7 @@ function _addSummarySheet(wb, result, XLSX) {
   XLSX.utils.book_append_sheet(wb, ws, 'Summary');
 }
 
+/** Appends the Differences sheet: one row per property diff across all matched elements. */
 function _addDifferencesSheet(wb, result, XLSX) {
   const headers = [
     'Element ID', 'Tag Name', 'Element ID Attr', 'Class Name',
@@ -175,6 +200,7 @@ function _addDifferencesSheet(wb, result, XLSX) {
   XLSX.utils.book_append_sheet(wb, ws, 'Differences');
 }
 
+/** Appends the Matched Elements sheet: one row per matched pair with strategy and confidence. */
 function _addMatchedElementsSheet(wb, result, XLSX) {
   const headers = [
     'Element ID', 'Tag Name', 'Element ID Attr', 'Class Name',
@@ -205,6 +231,7 @@ function _addMatchedElementsSheet(wb, result, XLSX) {
   XLSX.utils.book_append_sheet(wb, ws, 'Matched Elements');
 }
 
+/** Appends the Unmatched Elements sheet with red/green row fills for removed/added elements. */
 function _addUnmatchedSheet(wb, result, XLSX) {
   const headers = ['Status', 'Element ID', 'Tag Name', 'Element ID Attr', 'Class Name'];
   const rows    = [];
@@ -236,6 +263,7 @@ function _addUnmatchedSheet(wb, result, XLSX) {
   XLSX.utils.book_append_sheet(wb, ws, 'Unmatched Elements');
 }
 
+/** Appends the By Severity sheet: elements grouped into four colour-coded severity sections. */
 function _addSeveritySheet(wb, result, XLSX) {
   const groups = { critical: [], high: [], medium: [], low: [] };
 
