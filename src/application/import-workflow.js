@@ -1,11 +1,3 @@
-/**
- * Parses and imports extraction reports from JSON, CSV, and Excel files into IDB.
- * Runs in the MV3 service worker.
- * Failure mode contained here: all parse and validation errors are returned as
- * {success:false} — this function never throws. The one exception is the isDuplicate
- * path which returns an extra field so the caller can offer a replace prompt.
- * Callers: popup.js (importReportFromFile).
- */
 import { get } from '../config/defaults.js';
 import logger from '../infrastructure/logger.js';
 import { versionAtLeast } from './compare-workflow.js';
@@ -14,7 +6,6 @@ import { isValidReport, loadAllReports, saveReport } from './report-manager.js';
 const ELEMENT_HEADER_ANCHORS = new Set(['hpid', 'tag name', 'css selector', 'xpath', 'absolute hpid']);
 const MIN_ANCHOR_MATCHES     = 2;
 
-/** Infers the import format from the file extension. Returns null for unsupported types. */
 function _detectFormat(filename) {
   const ext = filename.toLowerCase().split('.').pop();
   if (ext === 'json')                  {return 'json';}
@@ -23,20 +14,11 @@ function _detectFormat(filename) {
   return null;
 }
 
-/**
- * Parses a CSV/Excel cell value as JSON. Returns undefined (not null) so callers
- * can distinguish an empty cell from a cell containing the JSON string "null".
- */
 function _safeJsonParse(cell) {
   if (!cell || !String(cell).trim()) {return undefined;}
   try { return JSON.parse(cell); } catch { return undefined; }
 }
 
-/**
- * Returns true if a record row contains at least MIN_ANCHOR_MATCHES of the known
- * element column headers. Used to locate the header row in files where metadata
- * rows precede the data table.
- */
 function _looksLikeElementHeader(record) {
   let matches = 0;
   for (const cell of record) {
@@ -49,12 +31,6 @@ function _looksLikeElementHeader(record) {
 const REQUIRED_COLUMNS    = ['hpid', 'tag name'];
 const RECOMMENDED_COLUMNS = ['css selector', 'xpath'];
 
-/**
- * Validates the parsed header index against required and recommended column lists.
- * Missing required columns return {valid:false} — import cannot proceed without them.
- * Missing recommended columns return {valid:true, warning} — import continues but
- * some matching phases will be skipped during comparison.
- */
 function _validateColumns(headerIndex) {
   const missing = REQUIRED_COLUMNS.filter(col => !(col in headerIndex));
   if (missing.length > 0) {
@@ -73,10 +49,6 @@ function _validateColumns(headerIndex) {
   };
 }
 
-/**
- * Builds a lowercase column-name → index map. First occurrence wins on duplicate
- * headers, matching the behaviour of most spreadsheet tools.
- */
 function _makeHeaderIndex(headers) {
   const index = {};
   headers.forEach((h, i) => {
@@ -86,10 +58,6 @@ function _makeHeaderIndex(headers) {
   return index;
 }
 
-/**
- * Extracts bounding rect fields from a row. Returns undefined (not an empty object)
- * when no rect columns are present so the field can be omitted cleanly from the element.
- */
 function _parseRect(headerIndex, row) {
   const fields = [
     ['rect x', 'x'], ['rect y', 'y'], ['rect top', 'top'], ['rect left', 'left'],
@@ -106,11 +74,6 @@ function _parseRect(headerIndex, row) {
   return hasAny ? rect : undefined;
 }
 
-/**
- * RFC 4180 CSV parser handling quoted fields, escaped double-quotes (doubled ""),
- * and both CRLF and LF line endings. Not replaced with split(',') because quoted
- * cells can contain commas and newlines that a simple split would incorrectly break.
- */
 function _splitCsvRecords(text) {
   const records = [];
   let record    = [];
@@ -137,11 +100,6 @@ function _splitCsvRecords(text) {
   return records;
 }
 
-/**
- * Maps a CSV/Excel row to an element object. Empty strings are converted to
- * undefined via `|| undefined`, then all undefined keys are deleted before return
- * so the element has no empty-string noise in its property set.
- */
 function _buildElementFromRow(headerIndex, row, cssProperties) {
   const col = (name) => {
     const idx = headerIndex[name.toLowerCase()];
@@ -181,11 +139,6 @@ function _buildElementFromRow(headerIndex, row, cssProperties) {
   return el;
 }
 
-/**
- * Constructs a report object from a key/value metadata map and the parsed element list.
- * The triple-case key lookup (original, lowercase, uppercase) handles CSVs from tools
- * that export metadata headers with inconsistent capitalisation.
- */
 function _buildReportFromMeta(metaMap, elements) {
   const get = (key) => metaMap[key] ?? metaMap[key.toLowerCase()] ?? metaMap[key.toUpperCase()] ?? '';
   return {
@@ -205,7 +158,7 @@ function _buildReportFromMeta(metaMap, elements) {
 
 function _parseCsv(text) {
   const cssProperties = get('extraction.cssProperties', []);
-  // Strip UTF-8 BOM (\uFEFF) prepended by Excel-generated CSVs — corrupts the first cell without this.
+
   const raw           = text.replace(/^\uFEFF/, '');
   const records       = _splitCsvRecords(raw);
 
@@ -213,8 +166,6 @@ function _parseCsv(text) {
     return { success: false, error: 'CSV file is empty or unreadable' };
   }
 
-  // Scan all records to find the header row (by recognising element column names)
-  // and collect any key/value metadata rows found before it
   const metaMap  = {};
   let headerIdx  = -1;
 
@@ -224,7 +175,7 @@ function _parseCsv(text) {
       headerIdx = i;
       break;
     }
-    // Treat as metadata if it has a non-empty key and value
+
     if (rec.length >= 2 && rec[0] && rec[1] !== undefined && rec[1] !== '') {
       metaMap[rec[0].trim()] = rec[1];
     }
@@ -249,7 +200,7 @@ function _parseCsv(text) {
 }
 
 function _parseExcel(buffer) {
-  // XLSX is bundled separately and injected via globalThis — not available in all contexts.
+
   const XLSX = globalThis.XLSX;
   if (!XLSX) {return { success: false, error: 'Excel support unavailable — try JSON format' };}
 
@@ -260,7 +211,6 @@ function _parseExcel(buffer) {
     return { success: false, error: 'Excel file contains no sheets' };
   }
 
-  // Read metadata from 'Metadata' sheet if present — not required
   const metaMap = {};
   const metaWs  = wb.Sheets['Metadata'];
   if (metaWs) {
@@ -270,8 +220,6 @@ function _parseExcel(buffer) {
     }
   }
 
-  // Find element sheet — prefer 'Elements' by name, then scan all other sheets
-  // for a header row that passes the element column check
   let elemWs = wb.Sheets['Elements'];
 
   if (!elemWs) {
@@ -306,18 +254,6 @@ function _parseExcel(buffer) {
   return { success: true, warning: colCheck.warning, report: _buildReportFromMeta(metaMap, elements) };
 }
 
-/**
- * Reads, parses, validates, and persists an extraction report from a user-supplied file.
- * Never throws — all failures are returned as {success:false, error}.
- *
- * The isDuplicate path returns {success:false, isDuplicate:true, existingReport} so
- * the caller can surface a "replace existing report?" prompt before retrying with
- * forceReplace:true.
- *
- * @param {File} file
- * @param {{forceReplace?: boolean}} [options]
- * @returns {Promise<{success: boolean, report?: Object, warning?: string, isDuplicate?: boolean, existingReport?: Object, error?: string}>}
- */
 async function importReportFromFile(file, { forceReplace = false } = {}) {
   if (file.size === 0) {
     return { success: false, error: 'File is empty' };
@@ -355,8 +291,6 @@ async function importReportFromFile(file, { forceReplace = false } = {}) {
     return { success: false, error: 'File could not be parsed — check it is a valid UI Compare report' };
   }
 
-  // Always reconcile totalElements with actual parsed count — prevents
-  // count-mismatch errors from partial exports or files without metadata
   if (Array.isArray(parsed.elements)) {
     parsed.totalElements = parsed.elements.length;
   }
@@ -389,3 +323,4 @@ async function importReportFromFile(file, { forceReplace = false } = {}) {
 }
 
 export { importReportFromFile };
+

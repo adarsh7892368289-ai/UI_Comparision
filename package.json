@@ -24,7 +24,9 @@
     "lint:fix": "eslint src/ --ext .js --fix",
     "check:circular": "madge --circular --extensions js src/"
   },
-  "dependencies": {},
+  "dependencies": {
+    "strip-comments": "^2.0.1"
+  },
   "devDependencies": {
     "@jest/globals": "^29.7.0",
     "copy-webpack-plugin": "^14.0.0",
@@ -45,8 +47,8 @@
     },
     "transform": {},
     "testMatch": [
-      "**/tests/**/*.test.js",
-      "**/__tests__/**/*.test.js"
+      "**/tests*.test.js",
+      "**/__tests__*.test.js"
     ],
     "coverageDirectory": "coverage",
     "coverageThreshold": {
@@ -58,9 +60,10 @@
       }
     },
     "collectCoverageFrom": [
-      "src/core/**/*.js",
-      "src/config/**/*.js",
-      "!src/**/*.test.js"
+      "src/core*.js",
+      "src/config*.js",
+      "!src*.test.js"
     ]
   }
 }
+

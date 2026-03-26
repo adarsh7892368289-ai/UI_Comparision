@@ -1,12 +1,3 @@
-/**
- * Orchestrates the full comparison workflow: pre-flight URL checks, schema version
- * validation, element matching, visual diffing, and IDB persistence. Runs in the
- * MV3 service worker.
- * Failure mode contained here: PreFlightError and CompatibilityError are re-thrown
- * as-is so the caller can distinguish user-actionable failures from infrastructure
- * errors. All other errors are wrapped into a plain Error to normalise the message.
- * Callers: background.js (compareReports, exportComparisonAsHTML, getCachedComparison).
- */
 import logger from '../infrastructure/logger.js';
 import storage, { buildPairKey } from '../infrastructure/idb-repository.js';
 import { getReportById } from './report-manager.js';
@@ -18,11 +9,6 @@ import { captureVisualDiffs } from './visual-workflow.js';
 
 const MINIMUM_SCHEMA_VERSION = '3.0';
 
-/**
- * Thrown when the URL pre-flight check determines the two reports are incompatible
- * or warrant a caution. Carries the full compatResult so the caller can surface
- * details without re-running the check.
- */
 class PreFlightError extends Error {
   constructor(code, compatResult) {
     super(`Pre-flight check failed: ${code}`);
@@ -32,10 +18,6 @@ class PreFlightError extends Error {
   }
 }
 
-/**
- * Thrown when either report's schema version is below MINIMUM_SCHEMA_VERSION.
- * The message is user-facing and instructs the user to recapture both reports.
- */
 class CompatibilityError extends Error {
   constructor(baselineVersion, compareVersion) {
     super(
@@ -50,7 +32,6 @@ class CompatibilityError extends Error {
   }
 }
 
-/** Parses a "major.minor" version string into numeric parts. Treats null/undefined as "0.0". */
 function parseVersion(versionStr) {
   const parts = (versionStr ?? '0.0').split('.');
   return {
@@ -59,10 +40,6 @@ function parseVersion(versionStr) {
   };
 }
 
-/**
- * Returns true if versionStr is >= minStr. Major version alone determines the result
- * when the majors differ — 2.9 is less than 3.0 purely on major without checking minor.
- */
 function versionAtLeast(versionStr, minStr) {
   const subject = parseVersion(versionStr);
   const minimum = parseVersion(minStr);
@@ -72,7 +49,6 @@ function versionAtLeast(versionStr, minStr) {
   return subject.minor >= minimum.minor;
 }
 
-/** Throws CompatibilityError if either report is below the minimum required schema version. */
 function assertVersionCompatibility(baselineVersion, compareVersion) {
   const baselineSufficient = versionAtLeast(baselineVersion, MINIMUM_SCHEMA_VERSION);
   const compareSufficient  = versionAtLeast(compareVersion,  MINIMUM_SCHEMA_VERSION);
@@ -81,11 +57,6 @@ function assertVersionCompatibility(baselineVersion, compareVersion) {
   }
 }
 
-/**
- * Consumes the async comparison generator, forwarding progress frames to onProgress
- * and capturing the final result frame. Only the last result frame is returned —
- * any intermediate result frames emitted before the generator completes are discarded.
- */
 async function drainComparisonGenerator(gen, onProgress) {
   let finalResult = null;
   for await (const frame of gen) {
@@ -98,24 +69,6 @@ async function drainComparisonGenerator(gen, onProgress) {
   return finalResult;
 }
 
-/**
- * Main comparison entry point. Validates reports, runs URL pre-flight checks,
- * executes element matching, captures visual diffs, and persists the result.
- *
- * PreFlightError and CompatibilityError propagate as-is — callers must catch
- * by type. All other errors are wrapped into a plain Error.
- *
- * @param {Object} options
- * @param {string} options.baselineId
- * @param {string} options.compareId
- * @param {string} [options.mode='static']
- * @param {{baselineTabId: number, compareTabId: number}|null} [options.tabContext]
- * @param {boolean} [options.includeScreenshots=true]
- * @param {((label: string, pct: number) => void)|null} [options.onProgress]
- * @param {boolean} [options.skipPreFlightGate=false] - Skip URL compatibility checks;
- *   used in tests and programmatic comparisons where URLs are known to be valid.
- * @returns {Promise<Object>} Full comparison result including visualDiffs and matching stats.
- */
 async function compareReports(options = {}) {
   const {
     baselineId,
@@ -202,10 +155,6 @@ async function compareReports(options = {}) {
   }
 }
 
-/**
- * Gate for the visual diff phase. Returns a skipped result immediately if the user
- * has disabled screenshots, otherwise delegates to captureVisualDiffs.
- */
 async function runVisualPhase(result, tabContext, includeScreenshots) {
   const skip = reason => ({ status: 'skipped', reason, diffs: new Map() });
 
@@ -217,11 +166,6 @@ async function runVisualPhase(result, tabContext, includeScreenshots) {
   return captureVisualDiffs(result, tabContext);
 }
 
-/**
- * Strips a full ambiguous match entry down to its identifiers and selector strings.
- * Full element objects are not structured-clone serialisable and would exceed IDB
- * storage limits if stored whole.
- */
 function slimAmbiguousEntry(entry) {
   const el = entry.baselineElement;
   return {
@@ -236,15 +180,6 @@ function slimAmbiguousEntry(entry) {
   };
 }
 
-/**
- * Saves the comparison result to IDB via the WAL-guarded saveComparison path.
- * Two conversions happen here before writing:
- * 1. visualDiffs Map → plain object: Maps are not reliably structured-clone
- *    serialisable across all Chrome versions and cannot be stored in IDB directly.
- * 2. Full element objects in comparison results → slim selector/ID records: storing
- *    full elements would duplicate everything already held in STORE_ELEMENTS and
- *    would push individual records past the practical IDB value size limit.
- */
 async function persistComparison(result, baselineId, compareId, mode) {
   const id      = crypto.randomUUID();
   const pairKey = buildPairKey(baselineId, compareId, mode);
@@ -304,15 +239,6 @@ async function persistComparison(result, baselineId, compareId, mode) {
   }
 }
 
-/**
- * Looks up a stored comparison by report pair and mode.
- * Returns null on any error or a cache miss — callers treat null as "not cached".
- *
- * @param {string} baselineId
- * @param {string} compareId
- * @param {string} mode
- * @returns {Promise<Object|null>}
- */
 async function getCachedComparison(baselineId, compareId, mode) {
   if (!baselineId || !compareId) {
     return null;
@@ -325,13 +251,6 @@ async function getCachedComparison(baselineId, compareId, mode) {
   }
 }
 
-/**
- * Reconstructs the full comparison object from two separate IDB reads (meta + diffs)
- * and passes it to the HTML exporter. Meta and diffs are stored separately so list
- * reads stay cheap — the full object only needs to be assembled at export time.
- *
- * @returns {Promise<{success: boolean, error?: string}>}
- */
 async function exportComparisonAsHTML(baselineId, compareId, mode) {
   const meta = await getCachedComparison(baselineId, compareId, mode);
   if (!meta) {
@@ -362,3 +281,4 @@ async function exportComparisonAsHTML(baselineId, compareId, mode) {
 }
 
 export { compareReports, getCachedComparison, exportComparisonAsHTML, PreFlightError, CompatibilityError, parseVersion, versionAtLeast };
+

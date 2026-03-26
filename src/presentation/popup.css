@@ -744,7 +744,6 @@ button:disabled {
   letter-spacing: var(--tracking-caps);
 }
 
-/* ── VS divider — Stripe pill-between-lines ── */
 .vs-divider {
   display: flex;
   align-items: center;
@@ -771,14 +770,12 @@ button:disabled {
   flex-shrink: 0;
 }
 
-/* ── Card internal separator ── */
 .card-sep {
   border: none;
   border-top: 1px solid var(--color-border-subtle);
   margin: var(--space-1) 0;
 }
 
-/* ── Segmented control — Linear inline option group ── */
 .segmented-control {
   display: flex;
   background: var(--color-surface-overlay);
@@ -826,14 +823,12 @@ button:disabled {
 
 .seg-option:hover .seg-label { color: var(--color-text-primary); }
 
-/* ── Field hint — contextual help text under a form-field ── */
 .field-hint {
   font-size: var(--text-xs);
   color: var(--color-text-tertiary);
   line-height: 1.45;
 }
 
-/* Hide both hints by default; show only the one matching the selected mode */
 #mode-hint-static  { display: none; }
 #mode-hint-dynamic { display: block; }
 
@@ -842,7 +837,6 @@ button:disabled {
 .segmented-control:has([value="dynamic"]:checked) ~ #mode-hint-static  { display: none; }
 .segmented-control:has([value="dynamic"]:checked) ~ #mode-hint-dynamic { display: block; }
 
-/* ── Toggle row — label left, thumb right (iOS/Android convention) ── */
 .toggle-row {
   display: flex;
   align-items: center;
@@ -879,7 +873,6 @@ button:disabled {
   line-height: 1.4;
 }
 
-/* ── card--toolbar: compact inline toolbar card ── */
 .card--toolbar {
   flex-direction: row;
   align-items: center;
@@ -892,7 +885,6 @@ button:disabled {
   flex-shrink: 0;
 }
 
-/* ── Modern search bar — Linear/Vercel pill style ── */
 .search-bar-wrap {
   position: relative;
   display: flex;
@@ -936,7 +928,6 @@ button:disabled {
   box-shadow: 0 0 0 3px var(--color-brand-ring);
 }
 
-/* Hide webkit search cancel button — we use our own UX */
 .search-bar__input::-webkit-search-cancel-button { display: none; }
 
 .search-bar__kbd {
@@ -956,9 +947,7 @@ button:disabled {
   transition: opacity var(--dur-fast) var(--ease-standard);
 }
 
-/* Hide kbd hint while input is focused — clean typing experience */
 .search-bar__input:focus ~ .search-bar__kbd { opacity: 0; }
-
 
 .result-card {
   background: var(--color-surface-raised);
@@ -1306,7 +1295,6 @@ button, [role="button"], input, select {
 .reports-list::-webkit-scrollbar-track { background: transparent; }
 .reports-list::-webkit-scrollbar-thumb { background: var(--color-surface-sunken); border-radius: var(--radius-full); }
 
-/* ── Visual toggle track + thumb (mechanism only; layout is .toggle-row) ── */
 .visual-toggle__track {
   position: relative;
   flex-shrink: 0;
@@ -1352,7 +1340,6 @@ button, [role="button"], input, select {
   outline: 2px solid var(--color-brand);
   outline-offset: 2px;
 }
-
 
 .match-breakdown { margin: var(--space-2) 0; }
 
@@ -1516,3 +1503,4 @@ button, [role="button"], input, select {
   color: var(--color-brand);
   opacity: 0.8;
 }
+

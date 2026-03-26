@@ -1,12 +1,3 @@
-/**
- * Redux-style state machine for the popup UI: holds UI state, dispatches transitions,
- * and notifies subscribers synchronously after each state change.
- * Runs in the popup execution context.
- * Invariant: `state` is always replaced with a new object — never mutated in place.
- * Called by: popup.js for all UI state reads and writes.
- */
-
-// Canonical empty state; also used by the RESET transition to return to baseline.
 const initialState = {
   activeTab: 'extract',
   reports: [],
@@ -25,8 +16,6 @@ const initialState = {
   error: null
 };
 
-// Each transition is a pure function: (state, payload) => newState.
-// Transitions never throw — dispatch is always safe to call.
 const transitions = {
   TAB_CHANGED: (state, { tab }) => ({
     ...state,
@@ -104,7 +93,7 @@ const transitions = {
 
   IMPORT_COMPLETE: (state, { report }) => ({
     ...state,
-    // Replace existing entry with same ID to avoid duplicates from re-imports.
+
     reports: [report, ...state.reports.filter(r => r.id !== report.id)]
   }),
 
@@ -168,14 +157,8 @@ const transitions = {
   RESET: () => ({ ...initialState })
 };
 
-/**
- * Synchronous Redux-style store for popup UI state.
- * Does NOT own persistence — state is lost when the popup closes.
- * Invariant: listeners must not dispatch inside their callback — synchronous re-entrancy
- * is not detected and will cause listeners to fire in an unexpected order.
- */
 class PopupState {
-  /** Initialises with `initialState`; history buffer capped at 50 entries. */
+
   constructor() {
     this.state = initialState;
     this.listeners = [];
@@ -183,18 +166,12 @@ class PopupState {
     this.maxHistorySize = 50;
   }
 
-  /**
-   * Applies a named transition to the current state and notifies all listeners.
-   * Logs and returns early for unknown transition types rather than throwing.
-   *
-   * @param {string} type - Transition name (e.g. `'EXTRACTION_STARTED'`).
-   * @param {object} payload - Data passed to the transition function.
-   */
   dispatch(type, payload = {}) {
     const transition = transitions[type];
 
     if (!transition) {
-      console.error(`Unknown transition: ${type}`); // eslint-disable-line no-console
+      // eslint-disable-next-line no-console
+      console.error(`Unknown transition: ${type}`);
       return;
     }
 
@@ -210,18 +187,12 @@ class PopupState {
       try {
         fn(this.state, type, payload, prevState);
       } catch (error) {
-        console.error('State listener error:', error); // eslint-disable-line no-console
+        // eslint-disable-next-line no-console
+        console.error('State listener error:', error);
       }
     });
   }
 
-  /**
-   * Registers a listener that is called immediately with the current state (as `'INIT'`)
-   * and again after every subsequent `dispatch`. Returns an unsubscribe function.
-   *
-   * @param {(state: object, type: string, payload: object, prevState: object|null) => void} fn
-   * @returns {() => void} Call to remove this listener.
-   */
   subscribe(fn) {
     this.listeners.push(fn);
     fn(this.state, 'INIT', {}, null);
@@ -231,17 +202,14 @@ class PopupState {
     };
   }
 
-  /** Returns the current state object. Do not mutate the returned object. */
   get() {
     return this.state;
   }
 
-  /** Returns a shallow copy of the dispatch history for debugging. */
   getHistory() {
     return [...this.history];
   }
 
-  /** Resets state to `initialState` and clears history, then fires RESET listeners. */
   reset() {
     this.state = initialState;
     this.history = [];
@@ -249,7 +217,7 @@ class PopupState {
   }
 }
 
-// Singleton shared across all popup.js imports.
 const popupState = new PopupState();
 
 export { popupState, PopupState };
+

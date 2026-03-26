@@ -1,25 +1,11 @@
-/**
- * Application-layer CRUD operations for extraction reports. Owns validation,
- * sanitisation, and the mapping between IDB's split-store format (meta + elements)
- * and the full report shape callers expect. Runs in the MV3 service worker.
- * Failure mode contained here: all IDB errors are caught and returned as
- * {success:false} or [] — this module never throws to its callers.
- * Callers: background.js, compare-workflow.js, export-workflow.js, import-workflow.js.
- */
 import storage from '../infrastructure/idb-repository.js';
 import logger from '../infrastructure/logger.js';
 
-/** Returns true only for non-empty strings that parse to a valid Date. */
 function isValidTimestamp(timestamp) {
   if (typeof timestamp !== 'string') {return false;}
   return !isNaN(new Date(timestamp).getTime());
 }
 
-/**
- * Validates a full report object including its elements array.
- * Used at save time — not at list-load time, where only metadata fields are present.
- * @returns {{valid: boolean, errors: string[]}}
- */
 function isValidReport(report) {
   if (!report || typeof report !== 'object') {
     return { valid: false, errors: ['Report must be an object'] };
@@ -57,12 +43,6 @@ function isValidReport(report) {
   return { valid: true, errors: [] };
 }
 
-/**
- * Validates report metadata fields only — no elements check. Used when reading the
- * report list from IDB, where elements are stored in a separate store and are not
- * present in the metadata record.
- * @returns {{valid: boolean, errors: string[]}}
- */
 function isValidMeta(meta) {
   if (!meta || typeof meta !== 'object') {
     return { valid: false, errors: ['Meta must be an object'] };
@@ -86,12 +66,6 @@ function isValidMeta(meta) {
   return { valid: errors.length === 0, errors };
 }
 
-/**
- * Type-coerces all report fields to their expected types before IDB storage.
- * A missing id falls back to a timestamp string rather than throwing — this is
- * intentional for imported reports that may not carry an original ID.
- * Always called after isValidReport passes, not before.
- */
 function sanitizeReport(report) {
   return {
     id:            String(report.id || Date.now()),
@@ -107,13 +81,6 @@ function sanitizeReport(report) {
   };
 }
 
-/**
- * Returns all valid report metadata records, sorted newest-first. Corrupt records
- * are silently filtered out with a warning log rather than failing the whole load.
- * The client-side sort is defensive — IDB returns newest-first via the index, but
- * this guards against any edge case where that ordering drifts.
- * @returns {Promise<Object[]>} Empty array on IDB error.
- */
 async function loadAllReports() {
   try {
     const reports = await storage.loadReports();
@@ -134,11 +101,6 @@ async function loadAllReports() {
   }
 }
 
-/**
- * Validates, sanitises, and persists a report. Validation runs against the raw
- * input before sanitisation so malformed data is rejected rather than silently coerced.
- * @returns {Promise<{success: boolean, id?: string, error?: string}>}
- */
 async function saveReport(report) {
   try {
     const validation = isValidReport(report);
@@ -160,10 +122,6 @@ async function saveReport(report) {
   }
 }
 
-/**
- * Deletes a report and all comparisons referencing it via the IDB atomic delete.
- * @returns {Promise<{success: boolean, error?: string}>}
- */
 async function deleteReport(reportId) {
   try {
     const result = await storage.deleteReport(reportId);
@@ -179,12 +137,6 @@ async function deleteReport(reportId) {
   }
 }
 
-/**
- * Loads a full report (metadata + elements) by ID. Loads the full report list first
- * and linear-searches for the ID — O(n) on the number of reports. This is acceptable
- * given the MAX_COMPARISONS cap of 20, but callers in hot paths should cache the result.
- * @returns {Promise<Object|null>} Null if not found or on IDB error.
- */
 async function getReportById(reportId) {
   try {
     const reports = await storage.loadReports();
@@ -198,11 +150,6 @@ async function getReportById(reportId) {
   }
 }
 
-/**
- * Deletes all reports and their associated data in one atomic IDB transaction.
- * Loads the report count first so it can be included in the success response.
- * @returns {Promise<{success: boolean, count?: number, error?: string}>}
- */
 async function deleteAllReports() {
   try {
     const reports = await storage.loadReports();
@@ -217,12 +164,6 @@ async function deleteAllReports() {
   }
 }
 
-/**
- * Filters reports by a query string matched against title and URL (case-insensitive)
- * and ID (case-sensitive — UUIDs are not normalised). Loads all reports into memory;
- * no IDB index is used.
- * @returns {Promise<Object[]>} Empty array on error.
- */
 async function searchReports(query) {
   try {
     const reports = await loadAllReports();
@@ -238,12 +179,6 @@ async function searchReports(query) {
   }
 }
 
-/**
- * Returns a snapshot of storage usage: report count, total and average element counts,
- * and IDB quota figures from checkQuota(). The quota field falls back to a zero-value
- * object when checkQuota() returns null (API unavailable or error).
- * @returns {Promise<{reportsCount, totalElements, avgElements, quota}|null>} Null on error.
- */
 async function getStorageStats() {
   try {
     const quota         = await storage.checkQuota();
@@ -272,3 +207,4 @@ export {
   saveReport,
   searchReports
 };
+
